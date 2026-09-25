@@ -2,10 +2,11 @@
 
 Non-custodial swaps of shielded ZEC (Ironwood pool) for USDC. The deposit address's spend key is
 split `±(e + z)`: the maker holds `e`, the user holds `z`. An EVM contract pays out against
-whichever half is revealed, checking it on Pallas. Two routes share the one contract: **Base**,
-paying the user's account (fast cash-out into Zapp's P2P rails), and **Ethereum + Railgun**,
-shielding the payout into the user's private Railgun balance with no user account on-chain.
-Target client is the Android wallet `~/dev/zapp/zapp-android` (iOS later).
+whichever half is revealed, checking it on Pallas. The payout goes into the user's private
+Railgun balance on Ethereum, with no user account on-chain; withdrawing from it to any Ethereum
+address comes later. The contract can also pay an account (the earlier Base route, still tested),
+but the owner shelved that route for the app on 2026-09-25. Target client is the Android wallet
+`~/dev/zapp/zapp-android` (iOS later).
 
 Read `docs/local/plan.md` next (gitignored, internal): the decisions that change the original
 design, the task tracks, open questions. `docs/local/private-usd.md` is the Railgun route's
@@ -30,9 +31,10 @@ vectors, a testnet maker. The original design and threat model are in
 - **All nine passed live on Ethereum Sepolia itself** (`.testnet/e2e-railgun-sepolia.log`), and
   Railgun's own wallet SDK (`balance.cjs`) shows both payouts in the user's `0zk` wallet as
   Spendable: they cleared Railgun's screening.
-- **Next: the Android client (plan Track D), `docs/local/android.md`.** Its first tasks are the
-  JNI crate and a testnet spike of the SDK refund sweep. The Railgun route adds the phone's
-  Railgun wallet (brief section 7, Spike A).
+- **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
+  (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
+  in-app Railgun wallet (M5: Railgun's TypeScript SDK in nodejs-mobile, proofs by `mopro`) runs
+  alongside. New app code is named `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
 - Not started: maker hardening (Track B), audit (Track A), the onramp (brief section 3.3).
 - Git: `main` tracks `github.com/JustZappIt/zecSwap` (private). Commit and push only when the
   owner asks. `docs/local/` (the plan and the Android handoff) is gitignored and lives only on
