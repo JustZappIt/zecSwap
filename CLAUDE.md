@@ -33,8 +33,8 @@ vectors, a testnet maker. The original design and threat model are in
   Spendable: they cleared Railgun's screening.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
-  in-app Railgun wallet (M5: Railgun's TypeScript SDK in nodejs-mobile, proofs by `mopro`) runs
-  alongside. New app code is named `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
+  in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
+  not nodejs-mobile, which is unmaintained and lacks 16 KB page support) runs alongside. New app code is named `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
 - Not started: maker hardening (Track B), audit (Track A), the onramp (brief section 3.3).
 - Git: `main` tracks `github.com/JustZappIt/zecSwap` (private). Commit and push only when the
   owner asks. `docs/local/` (the plan and the Android handoff) is gitignored and lives only on
