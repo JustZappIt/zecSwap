@@ -3,7 +3,9 @@ use ff::FromUniformBytes;
 use pasta_curves::pallas;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::{Error, SecretShare, ViewingKeys};
+use zeroize::Zeroizing;
+
+use crate::{AuthKey, Error, SecretShare, ViewingKeys};
 
 const ROOT_PERSONALIZATION: &[u8; 16] = b"ZecSwap_UserRoot";
 const EXPAND_PERSONALIZATION: &[u8; 16] = b"ZecSwap_UserKeys";
@@ -13,6 +15,11 @@ const MAKER_PERSONALIZATION: &[u8; 16] = b"ZecSwap_MakerKey";
 pub struct UserSwapKeys {
     pub share: SecretShare,
     pub viewing: ViewingKeys,
+    /// The swap's `user` when it pays into Railgun.
+    pub auth: AuthKey,
+    /// What the Railgun note the swap pays into is built from (`zecswap_railgun::Keys::note`),
+    /// so the note can be rebuilt from the seed to send the payout after an interruption.
+    pub note_entropy: Zeroizing<[u8; 32]>,
 }
 
 /// Derives the user's keys for one swap from the wallet seed, so an interrupted swap can
@@ -50,9 +57,13 @@ pub fn derive_user_keys(
             .as_array()
     };
 
+    let mut note_entropy = Zeroizing::new([0; 32]);
+    note_entropy.copy_from_slice(&expand(4)[..32]);
     Ok(UserSwapKeys {
         share: SecretShare::from_scalar(pallas::Scalar::from_uniform_bytes(&expand(0)))?,
         viewing: ViewingKeys::from_uniform(&expand(1), &expand(2)),
+        auth: AuthKey::from_uniform(&expand(3))?,
+        note_entropy,
     })
 }
 
@@ -81,13 +92,19 @@ mod tests {
             .unwrap()
             .share
             .public();
+        let base_auth = derive_user_keys(&SEED, NetworkType::Main, 0, 0)
+            .unwrap()
+            .auth
+            .address();
         for other in [
             derive_user_keys(&SEED, NetworkType::Main, 0, 1),
             derive_user_keys(&SEED, NetworkType::Main, 1, 0),
             derive_user_keys(&SEED, NetworkType::Test, 0, 0),
             derive_user_keys(&[43; 64], NetworkType::Main, 0, 0),
         ] {
-            assert_ne!(other.unwrap().share.public(), base);
+            let other = other.unwrap();
+            assert_ne!(other.share.public(), base);
+            assert_ne!(other.auth.address(), base_auth);
         }
     }
 }

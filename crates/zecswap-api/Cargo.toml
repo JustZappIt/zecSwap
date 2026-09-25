@@ -1,6 +1,6 @@
 [package]
 name = "zecswap-api"
-description = "The ZecSwap maker's quote API on the wire, shared by makers and wallets"
+description = "The ZecSwap maker's and relayer's APIs on the wire, shared with wallets"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,4 @@ publish = false
 alloy-primitives = { version = "~1.5", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 zecswap-core = { path = "../zecswap-core" }
+zecswap-railgun = { path = "../zecswap-railgun" }

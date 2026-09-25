@@ -1,0 +1,11 @@
+{
+  "name": "zecswap-railgun-engine-check",
+  "private": true,
+  "description": "Checks zecswap-railgun against Railgun's own engine: `npm ci`, then `node vectors.cjs > ../tests/engine-vectors.json`, or pipe `cargo run -p zecswap-railgun --example note` into `node check.cjs`",
+  "dependencies": {
+    "@railgun-community/engine": "9.8.0",
+    "@railgun-community/shared-models": "8.2.0",
+    "@railgun-community/wallet": "11.1.0",
+    "memdown": "6.1.1"
+  }
+}

@@ -7,9 +7,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use zcash_address::ZcashAddress;
 use zcash_protocol::consensus::Parameters;
-use zecswap_chain::base::{PrivateKeySigner, Settlement, Stage};
+use zecswap_chain::evm::{PrivateKeySigner, Settlement, Stage};
 use zecswap_chain::zcash::{AccountUuid, TxId};
-use zecswap_client::{MakerApi, User, UserSwap};
+use zecswap_client::{MakerApi, RelayerApi, Route, User, UserSwap};
 use zecswap_core::JointAccount;
 
 use crate::Session;
@@ -20,11 +20,19 @@ const CHAIN_POLL: Duration = Duration::from_secs(15);
 
 pub(crate) struct SwapArgs {
     pub(crate) maker: String,
-    pub(crate) base_rpc: String,
+    pub(crate) rpc: String,
     pub(crate) contract: Address,
     pub(crate) token: Address,
     pub(crate) units: u32,
-    pub(crate) payout_key: PrivateKeySigner,
+    pub(crate) payee: Payee,
+}
+
+/// Where the swap pays.
+pub(crate) enum Payee {
+    /// An account the user holds the key to, which sends its own transactions.
+    Account(PrivateKeySigner),
+    /// The Railgun wallet of this seed, through a relayer.
+    Railgun { relayer: String, max_fee: u128 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -36,10 +44,23 @@ struct Run {
 }
 
 pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
-    let settlement = Settlement::connect(&args.base_rpc, args.contract, args.payout_key)?;
+    let (settlement, route) = match args.payee {
+        Payee::Account(key) => (
+            Settlement::connect(&args.rpc, args.contract, key)?,
+            Route::Account,
+        ),
+        Payee::Railgun { relayer, max_fee } => (
+            Settlement::read_only(&args.rpc, args.contract)?,
+            Route::Railgun {
+                relayer: RelayerApi::new(relayer)?,
+                max_fee,
+            },
+        ),
+    };
     let network = ctx.wallet.network().network_type();
     let maker = MakerApi::new(args.maker)?;
-    let user = User::new(&ctx.store.seed()?, network, settlement, maker, args.token);
+    let seed = ctx.store.seed()?;
+    let user = User::new(&seed, network, settlement, maker, args.token, route);
 
     let mut run = match ctx.store.load::<Run>(STATE)? {
         Some(mut run) if !run.finished => {
@@ -119,8 +140,16 @@ async fn deposit(ctx: &mut Session, run: &mut Run, joint: &JointAccount) -> Resu
 }
 
 async fn claim(ctx: &mut Session, user: &User, run: &mut Run) -> Result<()> {
-    let amount = user.claim(&run.swap).await?;
-    println!("claimed; withdrew {amount}");
+    let paid = user.claim(&run.swap).await?;
+    match (paid.tx, user.settlement().account()) {
+        (None, _) => println!("claimed; nothing was left to pay"),
+        (Some(tx), Some(account)) => println!("claimed; paid {} to {account} in {tx}", paid.amount),
+        (Some(tx), None) => println!(
+            "claimed; shielded {} into {} in {tx}",
+            paid.amount,
+            user.railgun().address()
+        ),
+    }
     finish(ctx, run)
 }
 

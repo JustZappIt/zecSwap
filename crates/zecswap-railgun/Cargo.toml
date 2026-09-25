@@ -1,0 +1,27 @@
+[package]
+name = "zecswap-railgun"
+description = "Railgun keys, 0zk addresses and shield notes, so a swap can pay into the user's private balance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+bech32 = "0.11"
+bloock-blake-rs = "0.1"
+ctr = "0.9"
+curve25519-dalek = "4"
+hmac = "0.12"
+light-poseidon = "0.4"
+sha2 = "0.10"
+sha3 = "0.10"
+zeroize.workspace = true
+
+[dev-dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

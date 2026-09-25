@@ -9,14 +9,16 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use rand_core::{OsRng, RngCore};
 use zcash_address::ZcashAddress;
 use zcash_protocol::consensus::Parameters;
-use zecswap_chain::base::{OnChainSwap, Settlement, Stage};
+use zecswap_chain::evm::{OnChainSwap, Settlement, Stage};
 use zecswap_chain::zcash::AccountUuid;
-use zecswap_client::{MakerApi, User, UserSwap};
+use zecswap_client::{MakerApi, Paid, RelayerApi, Route, User, UserSwap};
+use zecswap_core::derive_user_keys;
 use zecswap_maker::Status;
 
-use crate::env::{Env, MakerNode, Zcash};
+use crate::env::{Env, MakerNode, Needs, RELAYER_FEE, Zcash};
 
-pub(crate) const ALL: [&str; 6] = [
+/// Paid to an account, on any chain.
+const ACCOUNT: [&str; 6] = [
     "happy",
     "no-deposit",
     "underpaid",
@@ -24,37 +26,65 @@ pub(crate) const ALL: [&str; 6] = [
     "never-claimed",
     "abandoned-claim",
 ];
+/// Paid into Railgun, where the deployment has it.
+const RAILGUN: [&str; 3] = ["railgun-happy", "railgun-resume", "railgun-no-deposit"];
 
 const POLL: Duration = Duration::from_secs(15);
 const TIMEOUT: Duration = Duration::from_secs(80 * 60);
 
-pub(crate) fn select(only: &[String]) -> Result<Vec<&'static str>> {
+/// The named scenarios, or every one this chain can run.
+pub(crate) fn select(only: &[String], railgun: bool) -> Result<Vec<&'static str>> {
+    let known: Vec<&'static str> = ACCOUNT
+        .iter()
+        .chain(if railgun { &RAILGUN[..] } else { &[] })
+        .copied()
+        .collect();
     if only.is_empty() {
-        return Ok(ALL.to_vec());
+        return Ok(known);
     }
     only.iter()
         .map(|name| {
-            ALL.iter()
+            known
+                .iter()
                 .find(|known| **known == name.as_str())
                 .copied()
-                .ok_or_else(|| anyhow!("unknown scenario {name}; known: {}", ALL.join(", ")))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "unknown scenario {name} here; known: {} (Railgun ones need ZECSWAP_E2E_RAILGUN)",
+                        known.join(", ")
+                    )
+                })
         })
         .collect()
 }
 
-pub(crate) fn deposits(names: &[&str]) -> usize {
-    names.iter().filter(|name| **name != "no-deposit").count()
+pub(crate) fn needs(names: &[&str]) -> Needs {
+    let relayed = names.iter().filter(|name| pays_into_railgun(name)).count();
+    Needs {
+        accounts: names.len() - relayed,
+        relayed,
+        deposits: names
+            .iter()
+            .filter(|name| !name.ends_with("no-deposit"))
+            .count(),
+    }
+}
+
+fn pays_into_railgun(name: &str) -> bool {
+    name.starts_with("railgun-")
 }
 
 pub(crate) async fn run(env: Arc<Env>, name: &'static str) -> Result<()> {
     let player = Player::join(env, name, name == "silent-maker").await?;
     match name {
         "happy" => happy(&player).await,
-        "no-deposit" => no_deposit(&player).await,
+        "no-deposit" | "railgun-no-deposit" => no_deposit(&player).await,
         "underpaid" => underpaid(&player).await,
         "silent-maker" => silent_maker(&player).await,
         "never-claimed" => never_claimed(&player).await,
         "abandoned-claim" => abandoned_claim(&player).await,
+        "railgun-happy" => railgun_happy(&player).await,
+        "railgun-resume" => railgun_resume(&player).await,
         other => bail!("unknown scenario {other}"),
     }
 }
@@ -70,7 +100,7 @@ async fn happy(p: &Player) -> Result<()> {
     p.claim(&swap).await?;
     let (user, swap) = (&p.user, &swap);
     p.poll("a repeated claim to withdraw nothing", move || async move {
-        Ok(match user.claim(swap).await? {
+        Ok(match user.claim(swap).await?.amount {
             0 => Step::Done(()),
             amount => Step::Fail(anyhow!("a repeated claim withdrew {amount}")),
         })
@@ -143,6 +173,33 @@ async fn abandoned_claim(p: &Player) -> Result<()> {
     p.sweep_back(&swap, account).await
 }
 
+/// Paid into Railgun: after `ready`, the relayer takes the signed claim lock, reveals, and
+/// shields the payout to the note the swap committed to; the maker sweeps the ZEC.
+async fn railgun_happy(p: &Player) -> Result<()> {
+    let swap = p.open().await?;
+    let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
+    p.wait_for(&swap, Stage::Ready).await?;
+    p.claim(&swap).await?;
+    let again = p.user.claim(&swap).await?;
+    ensure!(again.tx.is_none(), "a repeated claim paid out again");
+    p.expect_swept_by_maker(&swap).await?;
+    p.forget(account).await
+}
+
+/// The app dies right after its share is revealed: the claim landed and the payout never
+/// did. Claiming again only pays out.
+async fn railgun_resume(p: &Player) -> Result<()> {
+    let swap = p.open().await?;
+    let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
+    p.wait_for(&swap, Stage::Ready).await?;
+    p.user.lock_claim(&swap).await?;
+    p.claim_lock_until(&swap).await?;
+    p.reveal_only(&swap).await?;
+    p.claim(&swap).await?;
+    p.expect_swept_by_maker(&swap).await?;
+    p.forget(account).await
+}
+
 struct Player {
     env: Arc<Env>,
     name: &'static str,
@@ -159,9 +216,19 @@ enum Step<T> {
 impl Player {
     async fn join(env: Arc<Env>, name: &'static str, silent_maker: bool) -> Result<Self> {
         let maker = MakerApi::new(node(&env, silent_maker).url().await)?;
-        let settlement = Settlement::connect(&env.base_rpc, env.contract, env.payout_key())?;
+        let (settlement, route) = if pays_into_railgun(name) {
+            let route = Route::Railgun {
+                relayer: RelayerApi::new(env.relayer_url.clone())?,
+                max_fee: RELAYER_FEE.into(),
+            };
+            (Settlement::read_only(&env.evm_rpc, env.contract)?, route)
+        } else {
+            let settlement = Settlement::connect(&env.evm_rpc, env.contract, env.payout_key())?;
+            (settlement, Route::Account)
+        };
         let network = env.network.network_type();
-        let user = User::new(&env.seed, network, settlement, maker, env.token);
+        let user = User::new(&env.seed, network, settlement, maker, env.token, route)
+            .with_min_time_to_t0(env.min_time_to_t0);
         Ok(Self {
             env,
             name,
@@ -180,9 +247,10 @@ impl Player {
 
     async fn open(&self) -> Result<UserSwap> {
         let swap = self.user.open(OsRng.next_u32() >> 1, 1).await?;
+        // The index is logged so a failed run's deposits can be taken back with the user share.
         self.log(format!(
-            "opened {} for {} zat",
-            swap.swap_id, swap.quote.deposit_zat
+            "opened {} for {} zat, index {}",
+            swap.swap_id, swap.quote.deposit_zat, swap.index
         ));
         Ok(swap)
     }
@@ -209,11 +277,15 @@ impl Player {
     }
 
     async fn claim(&self, swap: &UserSwap) -> Result<()> {
-        let amount = self.user.claim(swap).await?;
-        let (chain, token, payout) = (self.user.settlement(), self.env.token, self.user.payout());
+        let paid = self.user.claim(swap).await?;
+        let chain = self.user.settlement();
+        let Some(account) = chain.account() else {
+            return self.expect_shielded(swap, paid).await;
+        };
+        let (token, amount) = (self.env.token, paid.amount);
         // The balance read can reach a node that hasn't seen the withdrawal yet.
         self.poll("the payout to arrive", move || async move {
-            let balance = chain.token_balance(token, payout).await?;
+            let balance = chain.token_balance(token, account).await?;
             Ok(match balance.cmp(&amount) {
                 Ordering::Equal => Step::Done(()),
                 Ordering::Less => Step::Wait,
@@ -222,6 +294,57 @@ impl Player {
         })
         .await?;
         self.log(format!("claimed and withdrew {amount}"));
+        Ok(())
+    }
+
+    /// The payout reached Railgun as the note the swap committed to, for the amount less the
+    /// relayer's and Railgun's fees, and the user's Railgun wallet opens it.
+    async fn expect_shielded(&self, swap: &UserSwap, paid: Paid) -> Result<()> {
+        let tx = paid.tx.context("the claim paid nothing out")?;
+        let chain = self.user.settlement();
+        let notes = self
+            .poll("the payout's receipt", move || async move {
+                Ok(Step::Done(chain.shielded(tx).await?))
+            })
+            .await?;
+        let [shielded] = notes.as_slice() else {
+            bail!("the payout shielded {} notes", notes.len());
+        };
+        let before_fees = swap.quote.amount - u128::from(RELAYER_FEE);
+        ensure!(
+            shielded.note == self.user.payout_note(swap.index)?,
+            "the payout went to another note"
+        );
+        ensure!(
+            shielded.token == self.env.token
+                && paid.amount == before_fees
+                && shielded.value + shielded.fee == before_fees,
+            "Railgun took {} + {} of {}, expected {before_fees}",
+            shielded.value,
+            shielded.fee,
+            paid.amount
+        );
+        let wallet = self.user.railgun();
+        ensure!(
+            wallet.open(&shielded.note).is_some(),
+            "the Railgun wallet cannot open its own note"
+        );
+        self.log(format!(
+            "shielded {} into {} in {tx}",
+            shielded.value,
+            wallet.address()
+        ));
+        Ok(())
+    }
+
+    /// Sends the claim alone, as a relayer that reveals and is then cut off would have. Anyone
+    /// may send it while the lock is held.
+    async fn reveal_only(&self, swap: &UserSwap) -> Result<()> {
+        let network = self.env.network.network_type();
+        let z = derive_user_keys(&self.env.seed, network, 0, swap.index)?.share;
+        let maker = self.env.attentive.maker().await;
+        let tx = maker.settlement().claim(swap.swap_id, &z).await?;
+        self.log(format!("revealed the share alone in {tx}"));
         Ok(())
     }
 

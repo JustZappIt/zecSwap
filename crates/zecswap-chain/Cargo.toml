@@ -1,6 +1,6 @@
 [package]
 name = "zecswap-chain"
-description = "Zcash light-wallet and Base settlement adapters shared by ZecSwap participants"
+description = "Zcash light-wallet and EVM settlement adapters shared by ZecSwap participants"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -45,7 +45,10 @@ zcash_keys = { version = "0.16", features = ["orchard"] }
 zcash_primitives = "0.30"
 zcash_protocol.workspace = true
 zecswap-core = { path = "../zecswap-core" }
+zecswap-railgun = { path = "../zecswap-railgun" }
 
 [dev-dependencies]
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
+hex = "0.4"
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

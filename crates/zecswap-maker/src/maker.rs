@@ -8,9 +8,9 @@ use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
-use zecswap_chain::base::{B256, OnChainSwap, OpenRequest, Settlement, swap_id};
+use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, swap_id};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Prover, TxId, Wallet, connect};
-use zecswap_core::{JointAccount, SecretShare, SwapContext, derive_maker_share};
+use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, derive_maker_share};
 use zeroize::Zeroizing;
 
 use crate::config::{Config, Secrets};
@@ -19,6 +19,7 @@ use crate::store::{Store, Swap};
 
 pub struct Maker {
     config: Config,
+    account: Address,
     lock_duration: u64,
     root: Zeroizing<[u8; 32]>,
     chain_id: u64,
@@ -63,12 +64,20 @@ impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir)?;
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
-        let settlement = Settlement::connect(&config.base_rpc, config.contract, secrets.base_key)?;
-        let chain_id = settlement.chain_id().await.context("reaching Base")?;
+        let account = secrets.evm_key.address();
+        let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
+        let chain_id = settlement
+            .chain_id()
+            .await
+            .context("reaching the settlement chain")?;
         let lock_duration = settlement.lock_duration().await?;
         config.timing.check(lock_duration)?;
+        let mut wallet = Wallet::open(config.data_dir.join("wallet.sqlite"), config.network())?;
+        if let Some(confirmations) = config.confirmations {
+            wallet = wallet.with_confirmations(confirmations);
+        }
         let zcash = Zcash {
-            wallet: Wallet::open(config.data_dir.join("wallet.sqlite"), config.network())?,
+            wallet,
             client: connect(&config.lightwalletd)
                 .await
                 .context("reaching lightwalletd")?,
@@ -81,6 +90,7 @@ impl Maker {
             settlement,
             zcash: Mutex::new(zcash),
             prover: Prover::default(),
+            account,
             lock_duration,
             config,
         })
@@ -88,6 +98,11 @@ impl Maker {
 
     pub fn settlement(&self) -> &Settlement {
         &self.settlement
+    }
+
+    /// The account that opens swaps and holds the inventory.
+    pub fn account(&self) -> Address {
+        self.account
     }
 
     pub fn listen(&self) -> std::net::SocketAddr {
@@ -104,9 +119,14 @@ impl Maker {
         if request.payout.is_zero() {
             return Err(MakerError::Rejected("payout address is zero".into()));
         }
+        if request.payout_note.is_some() && self.settlement.railgun().await?.is_zero() {
+            return Err(MakerError::Rejected(
+                "this deployment cannot pay into Railgun".into(),
+            ));
+        }
         let inventory = self
             .settlement
-            .balance_of(self.settlement.account(), self.config.token)
+            .balance_of(self.account, self.config.token)
             .await?;
         if inventory < terms.amount {
             return Err(MakerError::Unavailable);
@@ -118,6 +138,7 @@ impl Maker {
         let nonce = self.store.insert_quote(
             quote_id,
             request.payout,
+            request.payout_note,
             terms.amount,
             terms.deposit_zat,
             expires_at,
@@ -125,6 +146,7 @@ impl Maker {
         let e = self.maker_share(nonce)?;
         Ok(Quote {
             quote_id: quote_id.into(),
+            maker: self.account,
             maker_share: e.public(),
             maker_proof: self.context(quote_id).prove_maker(&e, OsRng),
             chain_id: self.chain_id,
@@ -146,7 +168,10 @@ impl Maker {
             .take_quote(&quote_id.0, unix_now())?
             .ok_or(MakerError::UnknownQuote)?;
         let maker_share = self.maker_share(quote.nonce)?.public();
-        let payout: [u8; 20] = quote.payout.into();
+        let payout = Payout {
+            user: quote.payout.into(),
+            note: quote.payout_note.map(|note| note.0),
+        };
         let Acceptance {
             user_share,
             user_proof,
@@ -157,7 +182,7 @@ impl Maker {
             .map_err(|_| MakerError::Rejected("user share proof does not verify".into()))?;
         let joint = JointAccount::derive(&maker_share, &user_share, &viewing_keys)
             .map_err(|e| MakerError::Rejected(e.to_string()))?;
-        let id = swap_id(&user_share);
+        let id = swap_id(self.account, &user_share);
 
         // Watch the deposit address before the user can learn it from the chain.
         let zcash_account = {
@@ -195,8 +220,13 @@ impl Maker {
                 user: swap.quote.payout,
                 t0: now + timing.t0_after,
                 t1: swap.t1,
+                payout_note: swap.quote.payout_note,
             })
             .await?;
+        // The user can only deposit once it sees the swap, which on a slow chain can be minutes
+        // after `now` when opens queue behind each other; `cancel_after` counts from here.
+        self.store
+            .set_opened_at(&id, self.settlement.now().await?)?;
         info!(%id, amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
         Ok(Accepted { swap_id: id })
     }

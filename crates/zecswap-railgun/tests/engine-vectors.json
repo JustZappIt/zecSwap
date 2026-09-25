@@ -1,0 +1,89 @@
+{
+  "engine": "9.8.0",
+  "wallets": [
+    {
+      "seed": "0x5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+      "index": 0,
+      "spendingPrivateKey": "0x08b2d974aa7fffd9d068b78c34434c534ddcd9343fcbf5aa12cf78e1a3c1ccb9",
+      "spendingPublicKey": [
+        "0x3008064177791584c9378d04a8f382f43195f76d3fd6f758a50076dcd392ae4c",
+        "0x2834610a1ec9e739a664edc0c8eb0839065e2debfbc592d5e75e3c978bcc29a0"
+      ],
+      "viewingPrivateKey": "0x9a9e1ca3b9476dc8500b43f30f34104c92a3eedfd727757ffd0ad15da8e11572",
+      "viewingPublicKey": "0xdf2dfb942aa6fb8cf9fe60d7984cd10b20b59027e677ecb4960d764f7d42408a",
+      "nullifyingKey": "0x191c0148087eae6e205cdd0811e5c33581f0b8947907a3c2a11b9ec81220761d",
+      "masterPublicKey": "0x2ac7a8341580f1243d35c5e2ca8b87c6c3e2b569ded3c86a4f3381acdf09ff9d",
+      "address": "0zk1qy4v02p5zkq0zfpaxhz79j5tslrv8c44d80d8jr2fuecrtxlp8lemrv7j6fe3z53ll0jm7u592n0hr8elesd0xzv6y9jpdvsyln80m95jcxhvnmagfqg5p6e9mp"
+    },
+    {
+      "seed": "0x5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+      "index": 1,
+      "spendingPrivateKey": "0x6b021e0d06d0b2d161cf0ea494e3fc1cbff12cc1b29281f7412170351b708fad",
+      "spendingPublicKey": [
+        "0x2c6273d25129a29b109a2894d9c9782c03ef2535b2a51ad808c16e012cc27a57",
+        "0x1bf569d094d9c1a39f97addec8275f7f2fe7a45cca3869d68a37bb53fcb5365a"
+      ],
+      "viewingPrivateKey": "0x4064dd49251ac6b9335305b200b0310bb22ff64692b2cb20d380b9101219ba9e",
+      "viewingPublicKey": "0x2ac164010ce76e813063dd51cbe146d98c1c449236e36913eec4bb4da5af6f45",
+      "nullifyingKey": "0x2ccb4725460a98db4cad2a706c14cf5311a888fb467c0213dcc9b5f4fa4f787b",
+      "masterPublicKey": "0x2179fd0395c9808ad2f0b9b2ada6d1b9b094357935622900a81d0e27f2f6292a",
+      "address": "0zk1qyshnlgrjhycpzkj7zum9tdx6xump9p40y6ky2gq4qwsuflj7c5j4rv7j6fe3z53lu4vzeqppnnkaqfsv0w4rjlpgmvcc8zyjgmwx6gnamztknd94ah52jp72g9"
+    },
+    {
+      "seed": "0x243c1266228fc9ff370d567ba4f805dfacc516375aecf4657cf870a4b551020d92d9b45a8181154f531c1358f742f42078a1620fca6251b1c4ec5fa6e1cf5c3a",
+      "index": 0,
+      "spendingPrivateKey": "0x044f1577207891d307fdc3843a952623cf6cb95729460874358d89e326ee5d08",
+      "spendingPublicKey": [
+        "0x0eea3b1dcb5052974d0cd0fb9d8dbd5754b6fcd849860056c4f9c253d90032ed",
+        "0x1ef7231dba6d2939e1ff449ac7026be9c70bbb6d8f5a3474415f7cab78adeea4"
+      ],
+      "viewingPrivateKey": "0x4ab69f3d7b39bc690bb9c0057e5692d06fa079d756c733a2f9df50c20debc272",
+      "viewingPublicKey": "0x31f410604ea79cda583a0c82802ee2a386f248b60255f9ec633f79cda1b5450d",
+      "nullifyingKey": "0x2d6b766f07873fa778ec4105ea517daf3a601e44bb5d900820585c347f690796",
+      "masterPublicKey": "0x05e12891e0ca2922980d4560a4718eb0618b52b68d12bf80625e7e2adee96c1c",
+      "address": "0zk1qyz7z2y3ur9zjg5cp4zkpfr336cxrz6jk6x390uqvf08u2k7a9kperv7j6fe3z53luclgyrqf6neekjc8gxg9qpwu23cdujgkcp9t70vvvlhnndpk4zs6qmc3mx"
+    },
+    {
+      "seed": "0x243c1266228fc9ff370d567ba4f805dfacc516375aecf4657cf870a4b551020d92d9b45a8181154f531c1358f742f42078a1620fca6251b1c4ec5fa6e1cf5c3a",
+      "index": 1,
+      "spendingPrivateKey": "0x13463349ff006c57a6ed42e2fcc81a03bea691ecde14e79b7047d3369dcc9778",
+      "spendingPublicKey": [
+        "0x0110babbc53e2b7cb4f621f0efec528b3c91984991928b0e571494f39d789cb8",
+        "0x09ac4435bef0dba752abb969fc43a50d2441bfa8a785b0efab1d67d8bd27b694"
+      ],
+      "viewingPrivateKey": "0xd97435e7f5508d0dfd32f5f8ad8d686cc8b94941a017d7268494bf69e5ade5bd",
+      "viewingPublicKey": "0xb7e9e156e76f8fafac58662e5826d87af3f62a880552b61f404dbb532e9a9e62",
+      "nullifyingKey": "0x2c03c68bcac80e67c3bbe42164e763fd006d05fbeecadfcb7e9ba6b40d21083c",
+      "masterPublicKey": "0x0965611e4a305f7fa6b5a1ffe242f9cc0643d746f24c39597802e400d0f4d2fa",
+      "address": "0zk1qyyk2cg7fgc97laxkksllcjzl8xqvs7hgmeycw2e0qpwgqxs7nf04rv7j6fe3z53l7m7nc2kuahcltavtpnzukpxmpa08a323qz49dslgpxmk5ewn20xysjtwkh"
+    }
+  ],
+  "notes": [
+    {
+      "receiver": 0,
+      "random": "0x11111111111111111111111111111111",
+      "shieldPrivateKey": "0x0707070707070707070707070707070707070707070707070707070707070707",
+      "shieldKey": "0xea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "sharedKey": "0x5fac733dfa6ee9da077adc9737a85ecb79ea7222bc9297b172725ba2228beca5",
+      "npk": "0x25bb9efdbb76ed9b4a1e43f14cd438c4c335a6b0800d34d35fc330dc64acf02f",
+      "encryptedBundle": [
+        "0x696da84971639721693346f749d707c63eadae1461c62c8ad7e5be63248c4562",
+        "0xe34809fa9c81ac110449fc36b794a741f232305aa7c30bae1d2426f39989dd89",
+        "0x2796952ff62638afe135f8449bfefa4cf71c2050f17fa794b3fc58896f6b19d6"
+      ]
+    },
+    {
+      "receiver": 1,
+      "random": "0x22222222222222222222222222222222",
+      "shieldPrivateKey": "0x0808080808080808080808080808080808080808080808080808080808080808",
+      "shieldKey": "0x1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+      "sharedKey": "0x4a4bdc9d9d8fc886f00fffa2f2bca3e2b0fa39abd42481d445b28fcf972a65ca",
+      "npk": "0x28e7bd5d30f82ac60446bf9359bec426fb98495f7ef7e449bb4b6814325247e2",
+      "encryptedBundle": [
+        "0x4015c8855a58aa887471955c39b8d0e6e92889a706f1a9fa0eaa9e1b473d452d",
+        "0xbc5679885ed70cdcb6fc069c344449b0fa9482555d2a887fbdbc2ecd7dacd76c",
+        "0x92d2efd86ad56d6a82326e6a1b9bb4a39316b63ecdc84fd3102355a7169d4e57"
+      ]
+    }
+  ]
+}

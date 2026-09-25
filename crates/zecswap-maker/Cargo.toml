@@ -1,6 +1,6 @@
 [package]
 name = "zecswap-maker"
-description = "ZecSwap maker: quotes, opens swaps on Base, watches deposits and sweeps claimed ZEC"
+description = "ZecSwap maker: quotes, opens swaps, watches deposits and sweeps claimed ZEC"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

@@ -5,7 +5,7 @@ use anyhow::Result;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use uuid::Uuid;
-use zecswap_chain::base::{Address, B256};
+use zecswap_chain::evm::{Address, B256};
 use zecswap_chain::zcash::{AccountUuid, TxId};
 use zecswap_core::{PublicShare, ViewingKeys};
 
@@ -14,6 +14,7 @@ const SCHEMA: &str = "
         quote_id BLOB PRIMARY KEY,
         nonce INTEGER NOT NULL UNIQUE,
         payout BLOB NOT NULL,
+        payout_note BLOB,
         amount TEXT NOT NULL,
         deposit_zat INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
@@ -34,7 +35,7 @@ const SCHEMA: &str = "
 
 const SWAP_COLUMNS: &str = "
     s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
-    q.quote_id, q.nonce, q.payout, q.amount, q.deposit_zat
+    q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat
 ";
 
 #[derive(Clone, Debug)]
@@ -43,6 +44,8 @@ pub struct Quote {
     /// Index of the maker share, derived from the root secret rather than stored.
     pub nonce: u64,
     pub payout: Address,
+    /// For a payout into Railgun, the commitment to the note it pays.
+    pub payout_note: Option<B256>,
     pub amount: u128,
     pub deposit_zat: u64,
 }
@@ -76,17 +79,19 @@ impl Store {
         &self,
         id: [u8; 32],
         payout: Address,
+        payout_note: Option<B256>,
         amount: u128,
         deposit_zat: u64,
         expires_at: u64,
     ) -> Result<u64> {
         Ok(self.conn().query_row(
-            "INSERT INTO quotes (quote_id, nonce, payout, amount, deposit_zat, expires_at)
-             VALUES (?1, (SELECT IFNULL(MAX(nonce) + 1, 0) FROM quotes), ?2, ?3, ?4, ?5)
+            "INSERT INTO quotes (quote_id, nonce, payout, payout_note, amount, deposit_zat, expires_at)
+             VALUES (?1, (SELECT IFNULL(MAX(nonce) + 1, 0) FROM quotes), ?2, ?3, ?4, ?5, ?6)
              RETURNING nonce",
             params![
                 id,
                 payout.as_slice(),
+                payout_note.as_ref().map(B256::as_slice),
                 amount.to_string(),
                 deposit_zat,
                 expires_at
@@ -102,7 +107,7 @@ impl Store {
             .query_row(
                 "UPDATE quotes SET accepted = 1
                  WHERE quote_id = ?1 AND accepted = 0 AND expires_at > ?2
-                 RETURNING quote_id, nonce, payout, amount, deposit_zat",
+                 RETURNING quote_id, nonce, payout, payout_note, amount, deposit_zat",
                 params![id, now],
                 |row| quote_at(row, 0),
             )
@@ -149,6 +154,15 @@ impl Store {
         Ok(swaps)
     }
 
+    /// Moves a swap's `opened_at` to when its `open` landed.
+    pub fn set_opened_at(&self, id: &B256, opened_at: u64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET opened_at = ?2 WHERE id = ?1",
+            params![id.as_slice(), opened_at],
+        )?;
+        Ok(())
+    }
+
     pub fn record_sweep(&self, id: &B256, txid: TxId) -> Result<()> {
         self.conn().execute(
             "UPDATE swaps SET sweep_txid = ?2 WHERE id = ?1",
@@ -189,18 +203,19 @@ fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
     })
 }
 
-/// Reads the quote columns starting at `first`, in `quote_id, nonce, payout, amount,
-/// deposit_zat` order.
+/// Reads the quote columns starting at `first`, in `quote_id, nonce, payout, payout_note,
+/// amount, deposit_zat` order.
 fn quote_at(row: &Row<'_>, first: usize) -> rusqlite::Result<Quote> {
-    let amount: String = row.get(first + 3)?;
+    let amount: String = row.get(first + 4)?;
     Ok(Quote {
         id: row.get(first)?,
         nonce: row.get(first + 1)?,
         payout: Address::from(row.get::<_, [u8; 20]>(first + 2)?),
+        payout_note: row.get::<_, Option<[u8; 32]>>(first + 3)?.map(B256::from),
         amount: amount
             .parse()
-            .map_err(|e| invalid(first + 3, Type::Text, e))?,
-        deposit_zat: row.get(first + 4)?,
+            .map_err(|e| invalid(first + 4, Type::Text, e))?,
+        deposit_zat: row.get(first + 5)?,
     })
 }
 

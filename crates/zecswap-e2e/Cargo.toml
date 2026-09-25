@@ -1,6 +1,6 @@
 [package]
 name = "zecswap-e2e"
-description = "Live end-to-end runs of every swap outcome on Base Sepolia and the Zcash testnet"
+description = "Live end-to-end runs of every swap outcome on an EVM testnet and the Zcash testnet"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +19,10 @@ zcash_keys = { version = "0.16", features = ["orchard"] }
 zcash_protocol.workspace = true
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-client = { path = "../zecswap-client" }
+zecswap-core = { path = "../zecswap-core" }
 zecswap-maker = { path = "../zecswap-maker" }
+zecswap-railgun = { path = "../zecswap-railgun" }
+zecswap-relayer = { path = "../zecswap-relayer" }
 zeroize.workspace = true
 zip32 = "0.2"
 

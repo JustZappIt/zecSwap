@@ -1,20 +1,18 @@
-//! Live end-to-end runs of every swap outcome on Base Sepolia and the Zcash testnet.
+//! Live end-to-end runs of every swap outcome on an EVM testnet and the Zcash testnet.
 //!
-//! Each run deploys fresh contracts, starts an attentive and a silent maker in-process,
-//! and plays every scenario concurrently; see scripts/e2e-testnet.sh.
+//! Each run deploys fresh contracts, starts an attentive and a silent maker and a relayer
+//! in-process, and plays every scenario concurrently; see scripts/e2e-testnet.sh. Where
+//! Railgun is deployed, the scenarios that pay into it run too.
 
 mod env;
 mod scenarios;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::task::JoinSet;
 
 use crate::env::{Env, Settings};
-
-/// Late enough that every deposit is in, early enough that none has confirmed.
-const RESTART_AFTER: Duration = Duration::from_secs(8 * 60);
 
 /// Runs the named scenarios, or all of them, concurrently. Returns whether all passed.
 pub async fn run(only: &[String]) -> Result<bool> {
@@ -22,10 +20,10 @@ pub async fn run(only: &[String]) -> Result<bool> {
         println!("live e2e skipped: set ZECSWAP_E2E_FUNDER_KEY and ZECSWAP_E2E_WALLET");
         return Ok(true);
     };
-    let names = scenarios::select(only)?;
-    let env = Env::setup(settings, names.len(), scenarios::deposits(&names)).await?;
+    let names = scenarios::select(only, settings.has_railgun())?;
+    let env = Env::setup(settings, scenarios::needs(&names)).await?;
     let sync = env.spawn_sync();
-    let restart = env.spawn_restart(RESTART_AFTER);
+    let restart = env.spawn_restart();
 
     let mut runs = JoinSet::new();
     for name in names {

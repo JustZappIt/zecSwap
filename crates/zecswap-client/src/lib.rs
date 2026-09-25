@@ -4,5 +4,5 @@
 mod api;
 mod user;
 
-pub use api::MakerApi;
-pub use user::{CLAIM_MARGIN, MAX_TIME_TO_T0, MIN_TIME_TO_T0, User, UserSwap};
+pub use api::{MakerApi, RelayerApi};
+pub use user::{CLAIM_MARGIN, MAX_TIME_TO_T0, MIN_TIME_TO_T0, Paid, Route, User, UserSwap};

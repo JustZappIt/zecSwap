@@ -1,0 +1,14 @@
+{
+  "address": "0zk1qy4v02p5zkq0zfpaxhz79j5tslrv8c44d80d8jr2fuecrtxlp8lemrv7j6fe3z53ll0jm7u592n0hr8elesd0xzv6y9jpdvsyln80m95jcxhvnmagfqg5p6e9mp",
+  "commitment": "0xd129d0ff3719b23233a24ca27d7f3bea87b5339aac5f1724b29363bf1c021cda",
+  "encryptedBundle": [
+    "0xcc1d503b6c18f4e9a7fc6fb3d23522bfc40eb1a11bda537d7a89c81d559841ca",
+    "0x1f84d23fffbc1f00f9f77857ffd90f37e83bc92ada8139fada6392cd67518e89",
+    "0x0325b3e9937caf490100769c85d78d010125c343dca8455271878602c9f4ec02"
+  ],
+  "index": 0,
+  "npk": "0x28d900eb55b0f9fc508d3915824743f51b45e37eff7323176c940455917d3f56",
+  "random": "0x92d772e32e53348ac2d17f30eeb2a557",
+  "seed": "0x5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+  "shieldKey": "0xcd0e5e97ba2bc4d52c2a3d74d9e60cade742c8de260978174070c6ccff411fa9"
+}

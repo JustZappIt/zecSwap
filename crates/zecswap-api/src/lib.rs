@@ -1,21 +1,29 @@
-//! The maker's quote API on the wire. A maker only proposes here: wallets check every term
-//! against the contract before depositing.
+//! The maker's quote API and the relayer's API on the wire. A maker only proposes here:
+//! wallets check every term against the contract before depositing.
 
 use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 use zecswap_core::{PublicShare, ShareProof, ViewingKeys};
 
+pub mod relayer;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuoteRequest {
     pub units: u32,
+    /// The swap's `user`: the account paid, or for a payout into Railgun, the swap's own key.
     pub payout: Address,
+    /// For a payout into Railgun, the commitment to the note it pays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout_note: Option<B256>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Quote {
     pub quote_id: B256,
+    /// The account that opens the swap, which its id binds.
+    pub maker: Address,
     #[serde(with = "bytes64")]
     pub maker_share: PublicShare,
     #[serde(with = "bytes64")]
@@ -97,7 +105,7 @@ mod bytes64 {
 }
 
 /// `u128` as a decimal string, which JSON numbers can't hold exactly.
-mod decimal {
+pub(crate) mod decimal {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
 

@@ -2,6 +2,8 @@
 pragma solidity 0.8.28;
 
 import {Pallas} from "../src/Pallas.sol";
+import {IRailgun} from "../src/ShieldVault.sol";
+import {Token} from "../src/Token.sol";
 import {ZecSwap} from "../src/ZecSwap.sol";
 import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
@@ -24,7 +26,7 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function setUp() public override {
         super.setUp();
-        swaps = new ZecSwap(LOCK);
+        swaps = new ZecSwap(LOCK, IRailgun(address(0)));
         usdc = new TestToken();
         usdc.mint(maker, INVENTORY);
         vm.startPrank(maker);
@@ -57,15 +59,33 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY - AMOUNT);
     }
 
-    function test_open_keysTheSwapByTheUserShare() public {
-        assertEq(open(), keccak256(abi.encode(z.x, z.y)));
-        assertEq(swaps.swapId([z.x, z.y]), keccak256(abi.encode(z.x, z.y)));
+    function test_open_keysTheSwapByItsMakerAndTheUserShare() public {
+        assertEq(open(), keccak256(abi.encode(maker, z.x, z.y)));
+        assertEq(swaps.swapId(maker, [z.x, z.y]), keccak256(abi.encode(maker, z.x, z.y)));
+    }
+
+    /// On a public mempool anyone can copy a pending `open`, but the copy is its own swap: the
+    /// maker's still opens, under the id its user expects.
+    function test_open_underCopiedSharesCannotBlockTheMaker() public {
+        address copier = makeAddr("copier");
+        TestToken junk = new TestToken();
+        junk.mint(copier, 1);
+        vm.startPrank(copier);
+        junk.approve(address(swaps), 1);
+        swaps.deposit(address(junk), 1);
+        bytes32 copy = swaps.open(address(junk), 1, [e.x, e.y], [z.x, z.y], copier, t0, t1, bytes32(0));
+        vm.stopPrank();
+
+        bytes32 id = open();
+        assertTrue(copy != id);
+        assertEq(swaps.getSwap(id).maker, maker);
+        assertEq(swaps.getSwap(id).token, address(usdc));
     }
 
     function test_open_emitsTheSharesForTheUserToVerify() public {
         vm.expectEmit(address(swaps));
         emit ZecSwap.Opened(
-            keccak256(abi.encode(z.x, z.y)),
+            keccak256(abi.encode(maker, z.x, z.y)),
             maker,
             user,
             address(usdc),
@@ -73,7 +93,8 @@ contract ZecSwapTest is SpendAuthVectors {
             [e.x, e.y],
             [z.x, z.y],
             t0,
-            t1
+            t1,
+            bytes32(0)
         );
         open();
     }
@@ -81,17 +102,19 @@ contract ZecSwapTest is SpendAuthVectors {
     function test_open_rejectsZeroAmountAndZeroUser() public {
         vm.startPrank(maker);
         vm.expectRevert(ZecSwap.ZeroAmount.selector);
-        swaps.open(address(usdc), 0, [e.x, e.y], [z.x, z.y], user, t0, t1);
+        swaps.open(address(usdc), 0, [e.x, e.y], [z.x, z.y], user, t0, t1, bytes32(0));
         vm.expectRevert(ZecSwap.ZeroAddress.selector);
-        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], address(0), t0, t1);
+        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], address(0), t0, t1, bytes32(0));
     }
 
     function test_open_rejectsDeadlinesOutOfOrder() public {
         vm.startPrank(maker);
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, uint64(block.timestamp), t1);
+        swaps.open(
+            address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, uint64(block.timestamp), t1, bytes32(0)
+        );
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t0);
+        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t0, bytes32(0));
     }
 
     function test_open_rejectsInvalidAndDegenerateKeys() public {
@@ -100,10 +123,10 @@ contract ZecSwapTest is SpendAuthVectors {
         vm.startPrank(maker);
         for (uint256 i; i < badMakerKeys.length; ++i) {
             vm.expectRevert(ZecSwap.InvalidKey.selector);
-            swaps.open(address(usdc), AMOUNT, badMakerKeys[i], [z.x, z.y], user, t0, t1);
+            swaps.open(address(usdc), AMOUNT, badMakerKeys[i], [z.x, z.y], user, t0, t1, bytes32(0));
         }
         vm.expectRevert(ZecSwap.InvalidKey.selector);
-        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x + Pallas.P, z.y], user, t0, t1);
+        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x + Pallas.P, z.y], user, t0, t1, bytes32(0));
     }
 
     function test_open_neverReusesAShare() public {
@@ -115,10 +138,16 @@ contract ZecSwapTest is SpendAuthVectors {
         openWith(e, fresh);
     }
 
+    function test_open_rejectsARailgunPayoutWhereThereIsNoRailgun() public {
+        vm.prank(maker);
+        vm.expectRevert(ZecSwap.NoShieldedPayouts.selector);
+        swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t1, keccak256("note"));
+    }
+
     function test_open_rejectsMoreThanTheInventory() public {
         vm.prank(maker);
         vm.expectRevert(ZecSwap.InsufficientBalance.selector);
-        swaps.open(address(usdc), uint128(INVENTORY + 1), [e.x, e.y], [z.x, z.y], user, t0, t1);
+        swaps.open(address(usdc), uint128(INVENTORY + 1), [e.x, e.y], [z.x, z.y], user, t0, t1, bytes32(0));
     }
 
     // ready
@@ -171,7 +200,7 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Claimed));
 
         vm.startPrank(user);
-        vm.expectRevert(ZecSwap.TransferFailed.selector);
+        vm.expectRevert(Token.TransferFailed.selector);
         swaps.withdraw(address(usdc), AMOUNT, user);
         usdc.setPaused(false);
         swaps.withdraw(address(usdc), AMOUNT, user);
@@ -426,15 +455,15 @@ contract ZecSwapTest is SpendAuthVectors {
         vm.startPrank(maker);
         vm.expectRevert(ZecSwap.ZeroAmount.selector);
         swaps.deposit(address(usdc), 0);
-        vm.expectRevert(ZecSwap.TransferFailed.selector);
+        vm.expectRevert(Token.TransferFailed.selector);
         swaps.deposit(makeAddr("not a token"), 1);
     }
 
     function test_constructor_rejectsDegenerateLockDurations() public {
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        new ZecSwap(0);
+        new ZecSwap(0, IRailgun(address(0)));
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        new ZecSwap(uint256(type(uint32).max) + 1);
+        new ZecSwap(uint256(type(uint32).max) + 1, IRailgun(address(0)));
     }
 
     function test_gas_claim() public {
@@ -459,7 +488,14 @@ contract ZecSwapTest is SpendAuthVectors {
     function openWith(Vector memory makerShare, Vector memory userShare) internal returns (bytes32) {
         vm.prank(maker);
         return swaps.open(
-            address(usdc), AMOUNT, [makerShare.x, makerShare.y], [userShare.x, userShare.y], user, t0, t1
+            address(usdc),
+            AMOUNT,
+            [makerShare.x, makerShare.y],
+            [userShare.x, userShare.y],
+            user,
+            t0,
+            t1,
+            bytes32(0)
         );
     }
 }

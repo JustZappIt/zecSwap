@@ -5,7 +5,7 @@
 
 use anyhow::{Result, ensure};
 use serde::Deserialize;
-use zecswap_chain::base::{OnChainSwap, Stage};
+use zecswap_chain::evm::{OnChainSwap, Stage};
 use zecswap_chain::zcash::Funds;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,7 +121,7 @@ fn open_action(obs: &Observation, timing: &Timing) -> Action {
 #[cfg(test)]
 mod tests {
     use rand_core::OsRng;
-    use zecswap_chain::base::Address;
+    use zecswap_chain::evm::Address;
     use zecswap_core::SecretShare;
 
     use super::*;
@@ -161,6 +161,8 @@ mod tests {
                 maker_share: SecretShare::random(OsRng).public(),
                 user_share: SecretShare::random(OsRng).public(),
                 secret: [0; 32],
+                payout_note: None,
+                paid_out: false,
             },
             funds: Funds { total, spendable },
             synced: true,

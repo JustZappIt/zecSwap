@@ -3,18 +3,26 @@ use rand_core::{CryptoRng, RngCore};
 use crate::{Error, PublicShare, SecretShare, ShareProof};
 
 const MAKER_TAG: &[u8; 16] = b"ZecSwap/v1/maker";
-const USER_TAG: &[u8; 16] = b"ZecSwap/v1/user_";
+const USER_TAG: &[u8; 16] = b"ZecSwap/v2/user_";
 
 /// The quote a share's proof of knowledge is bound to, so it cannot be replayed into
 /// another swap, chain or contract.
 ///
 /// The maker proves `E` before it sees `Z`, so its proof binds only `E`; the user's
-/// binds both shares and the payout address.
+/// binds both shares and the payout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SwapContext {
     pub chain_id: u64,
     pub contract: [u8; 20],
     pub quote_id: [u8; 32],
+}
+
+/// Where a swap pays: the contract's `user`, and for a payout into Railgun, the commitment to
+/// the note it goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Payout {
+    pub user: [u8; 20],
+    pub note: Option<[u8; 32]>,
 }
 
 impl SwapContext {
@@ -30,7 +38,7 @@ impl SwapContext {
         &self,
         maker: &PublicShare,
         z: &SecretShare,
-        payout: &[u8; 20],
+        payout: &Payout,
         rng: R,
     ) -> ShareProof {
         z.prove(&self.user_message(maker, &z.public(), payout), rng)
@@ -40,7 +48,7 @@ impl SwapContext {
         &self,
         maker: &PublicShare,
         user: &PublicShare,
-        payout: &[u8; 20],
+        payout: &Payout,
         proof: &ShareProof,
     ) -> Result<(), Error> {
         user.verify(&self.user_message(maker, user, payout), proof)
@@ -52,16 +60,17 @@ impl SwapContext {
         message
     }
 
-    fn user_message(&self, maker: &PublicShare, user: &PublicShare, payout: &[u8; 20]) -> Vec<u8> {
+    fn user_message(&self, maker: &PublicShare, user: &PublicShare, payout: &Payout) -> Vec<u8> {
         let mut message = self.header(USER_TAG);
         message.extend_from_slice(&maker.to_affine_bytes());
         message.extend_from_slice(&user.to_affine_bytes());
-        message.extend_from_slice(payout);
+        message.extend_from_slice(&payout.user);
+        message.extend_from_slice(&payout.note.unwrap_or_default());
         message
     }
 
     fn header(&self, tag: &[u8; 16]) -> Vec<u8> {
-        let mut message = Vec::with_capacity(16 + 8 + 20 + 32 + 64 + 64 + 20);
+        let mut message = Vec::with_capacity(16 + 8 + 20 + 32 + 64 + 64 + 20 + 32);
         message.extend_from_slice(tag);
         message.extend_from_slice(&self.chain_id.to_be_bytes());
         message.extend_from_slice(&self.contract);
@@ -111,7 +120,10 @@ mod tests {
     #[test]
     fn user_proof_binds_maker_share_and_payout() {
         let (e, z) = (SecretShare::random(OsRng), SecretShare::random(OsRng));
-        let payout = [3; 20];
+        let payout = Payout {
+            user: [3; 20],
+            note: Some([5; 32]),
+        };
         let proof = context().prove_user(&e.public(), &z, &payout, OsRng);
         assert_eq!(
             context().verify_user(&e.public(), &z.public(), &payout, &proof),
@@ -119,14 +131,28 @@ mod tests {
         );
 
         let other_maker = SecretShare::random(OsRng).public();
+        let other_user = Payout {
+            user: [4; 20],
+            ..payout
+        };
+        let other_note = Payout {
+            note: Some([6; 32]),
+            ..payout
+        };
+        let no_note = Payout {
+            note: None,
+            ..payout
+        };
         assert_eq!(
             context().verify_user(&other_maker, &z.public(), &payout, &proof),
             Err(Error::InvalidProof)
         );
-        assert_eq!(
-            context().verify_user(&e.public(), &z.public(), &[4; 20], &proof),
-            Err(Error::InvalidProof)
-        );
+        for other in [other_user, other_note, no_note] {
+            assert_eq!(
+                context().verify_user(&e.public(), &z.public(), &other, &proof),
+                Err(Error::InvalidProof)
+            );
+        }
     }
 
     #[test]
@@ -134,8 +160,12 @@ mod tests {
         let e = SecretShare::random(OsRng);
         let proof = context().prove_maker(&e, OsRng);
         let maker = SecretShare::random(OsRng).public();
+        let payout = Payout {
+            user: [0; 20],
+            note: None,
+        };
         assert_eq!(
-            context().verify_user(&maker, &e.public(), &[0; 20], &proof),
+            context().verify_user(&maker, &e.public(), &payout, &proof),
             Err(Error::InvalidProof)
         );
     }

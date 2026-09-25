@@ -1,5 +1,5 @@
-//! The ZecSwap maker: quotes swaps, opens them on Base, watches deposits, and settles every
-//! outcome from what the chains show.
+//! The ZecSwap maker: quotes swaps, opens them on the settlement chain, watches deposits, and
+//! settles every outcome from what the chains show.
 
 pub mod api;
 mod config;

@@ -52,8 +52,9 @@ enum Command {
     Status,
     /// Pays `zatoshis` to `address`.
     Send { address: String, zatoshis: u64 },
-    /// Runs the user side of a swap against a maker, resuming an unfinished one. The payout
-    /// account's key is read from `USER_PRIVATE_KEY`.
+    /// Runs the user side of a swap against a maker, resuming an unfinished one. It pays the
+    /// account whose key is in `USER_PRIVATE_KEY`, or with `--relayer`, this seed's Railgun
+    /// wallet.
     Swap {
         #[arg(
             long,
@@ -61,14 +62,21 @@ enum Command {
             default_value = "http://127.0.0.1:8787"
         )]
         maker: String,
-        #[arg(long, env = "BASE_RPC_URL")]
-        base_rpc: String,
+        /// The settlement chain's RPC.
+        #[arg(long, env = "EVM_RPC_URL")]
+        rpc: String,
         #[arg(long, env = "ZECSWAP_CONTRACT")]
         contract: Address,
         #[arg(long, env = "ZECSWAP_TOKEN")]
         token: Address,
         #[arg(long, default_value_t = 1)]
         units: u32,
+        /// Pay into Railgun, with this relayer sending the transactions.
+        #[arg(long, env = "ZECSWAP_RELAYER_URL")]
+        relayer: Option<String>,
+        /// The most the relayer may keep, in token base units.
+        #[arg(long, default_value_t = 2_000_000)]
+        max_fee: u128,
     },
 }
 
@@ -146,22 +154,29 @@ async fn main() -> Result<()> {
         Command::Send { address, zatoshis } => send(&mut ctx, &address, zatoshis).await,
         Command::Swap {
             maker,
-            base_rpc,
+            rpc,
             contract,
             token,
             units,
+            relayer,
+            max_fee,
         } => {
-            let payout_key = std::env::var("USER_PRIVATE_KEY")
-                .context("USER_PRIVATE_KEY is not set")?
-                .parse()
-                .context("USER_PRIVATE_KEY")?;
+            let payee = match relayer {
+                Some(relayer) => swap::Payee::Railgun { relayer, max_fee },
+                None => swap::Payee::Account(
+                    std::env::var("USER_PRIVATE_KEY")
+                        .context("USER_PRIVATE_KEY is not set")?
+                        .parse()
+                        .context("USER_PRIVATE_KEY")?,
+                ),
+            };
             let args = swap::SwapArgs {
                 maker,
-                base_rpc,
+                rpc,
                 contract,
                 token,
                 units,
-                payout_key,
+                payee,
             };
             swap::run(&mut ctx, args).await
         }

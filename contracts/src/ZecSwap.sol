@@ -2,22 +2,24 @@
 pragma solidity 0.8.28;
 
 import {Pallas} from "./Pallas.sol";
-
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-}
+import {IRailgun, ShieldVault} from "./ShieldVault.sol";
+import {Token} from "./Token.sol";
 
 /// @title ZecSwap
 /// @notice Settles atomic swaps of shielded ZEC for ERC-20 tokens held by makers.
 /// @dev The ZEC sits in an Orchard address whose spend key is ±(e + z): the maker holds e,
-/// the user holds z, and this contract stores E = [e]·G and Z = [z]·G. Revealing z credits
-/// the user (and lets the maker sweep the ZEC); revealing e refunds the maker (and lets the
-/// user sweep it back). A reveal is only accepted under a lock its party took in an earlier
-/// transaction, and the other party cannot lock while it is held, so a reveal can never
-/// lose a race and leave both halves public. A lock that lapses unused hands the other party
-/// the next turn, so neither can lock the other out for good. Reveals make no token calls either: payouts are
-/// withdrawn separately, so a paused or blacklisting token cannot revert a reveal.
+/// the user holds z, and this contract stores E = [e]·G and Z = [z]·G. Revealing z pays the user
+/// (and lets the maker sweep the ZEC); revealing e refunds the maker (and lets the user sweep it
+/// back). A reveal is only accepted under a lock its party took in an earlier transaction, and the
+/// other party cannot lock while it is held, so a reveal can never lose a race and leave both
+/// halves public. A lock that lapses unused hands the other party the next turn, so neither can
+/// lock the other out for good. Reveals make no token calls either: payouts leave separately, so a
+/// paused or blacklisting token cannot revert a reveal.
+///
+/// A claim pays either the user's account, which withdraws it, or, where Railgun is deployed, the
+/// user's Railgun balance: the maker commits at open to a note the user built, and `payout` can
+/// only shield to it. Such a user has no account on this chain. Its `user` is a key of that swap
+/// alone, which signs for the claim lock and the payout, and relayers send them.
 contract ZecSwap {
     enum Stage {
         None,
@@ -31,6 +33,8 @@ contract ZecSwap {
         address maker;
         uint64 t0;
         Stage stage;
+        /// Whether a claimed swap's Railgun payout has left.
+        bool paidOut;
         address user;
         uint64 t1;
         address token;
@@ -44,12 +48,29 @@ contract ZecSwap {
         /// The share revealed at settlement: the user's once Claimed, the maker's once Refunded.
         /// Kept in storage so the other party can read it without querying logs.
         uint256 secret;
+        /// The `noteCommitment` of the Railgun note a claim pays; zero pays `user`'s balance.
+        bytes32 payoutNote;
     }
+
+    bytes32 private constant DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
+    bytes32 private constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
+    bytes32 private constant RESCUE_TYPEHASH =
+        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)");
+    /// secp256k1's n / 2. A signature with a larger `s` is the malleated twin of one without.
+    uint256 private constant HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
     /// @notice How long a lock gives its holder to land the reveal.
     uint256 public immutable LOCK_DURATION;
+    /// @notice Railgun's shield entry point; zero where claims can only pay accounts.
+    IRailgun public immutable RAILGUN;
+    /// @notice The code every swap's vault runs: each is an EIP-1167 proxy to this one.
+    ShieldVault public immutable VAULT_LOGIC;
+    bytes32 private immutable VAULT_CODE_HASH;
 
     mapping(bytes32 id => Swap) private swaps;
+    /// @notice Keyed by `keccak256(abi.encode(maker, makerKey))`: a maker's share is single-use.
     mapping(bytes32 makerKey => bool) public makerKeyUsed;
     /// @notice What each account can withdraw: makers' inventory and users' claimed payouts.
     mapping(address owner => mapping(address token => uint256)) public balanceOf;
@@ -65,11 +86,14 @@ contract ZecSwap {
         uint256[2] makerKey,
         uint256[2] userKey,
         uint64 t0,
-        uint64 t1
+        uint64 t1,
+        bytes32 payoutNote
     );
     event MarkedReady(bytes32 indexed id);
     event ClaimLocked(bytes32 indexed id, uint64 until);
     event Claimed(bytes32 indexed id, uint256 userSecret);
+    event PaidOut(bytes32 indexed id, address relayer, uint256 fee);
+    event Rescued(bytes32 indexed id, address relayer, uint256 fee);
     event RefundLocked(bytes32 indexed id, uint64 until);
     event Refunded(bytes32 indexed id, uint256 makerSecret);
 
@@ -84,17 +108,24 @@ contract ZecSwap {
     error LockUnavailable();
     error LockNotHeld();
     error WrongSecret();
-    error TransferFailed();
+    error NoShieldedPayouts();
+    error WrongNote();
+    error BadSignature();
+    error Expired();
+    error VaultNotDeployed();
 
-    constructor(uint256 lockDuration) {
+    constructor(uint256 lockDuration, IRailgun railgun) {
         if (lockDuration == 0 || lockDuration > type(uint32).max) revert InvalidDeadlines();
         LOCK_DURATION = lockDuration;
+        RAILGUN = railgun;
+        VAULT_LOGIC = new ShieldVault();
+        VAULT_CODE_HASH = keccak256(_vaultCode());
     }
 
     /// @notice Adds to the caller's inventory, from which it opens swaps.
     function deposit(address token, uint256 amount) external {
         if (amount == 0) revert ZeroAmount();
-        _call(token, abi.encodeCall(IERC20.transferFrom, (msg.sender, address(this), amount)));
+        Token.transferFrom(token, msg.sender, address(this), amount);
         balanceOf[msg.sender][token] += amount;
         emit Deposited(msg.sender, token, amount);
     }
@@ -104,13 +135,14 @@ contract ZecSwap {
         uint256 balance = balanceOf[msg.sender][token];
         if (amount > balance) revert InsufficientBalance();
         balanceOf[msg.sender][token] = balance - amount;
-        _call(token, abi.encodeCall(IERC20.transfer, (to, amount)));
+        Token.transfer(token, to, amount);
         emit Withdrawn(msg.sender, token, amount, to);
     }
 
     /// @notice Commits `amount` of the caller's inventory to a swap with the holder of `userKey`.
     /// @param t0 After this the user may claim without the maker's `ready`.
     /// @param t1 After this the maker may refund a `Ready` swap.
+    /// @param payoutNote The Railgun note the claim pays, or zero to pay `user`'s balance.
     function open(
         address token,
         uint128 amount,
@@ -118,18 +150,20 @@ contract ZecSwap {
         uint256[2] calldata userKey,
         address user,
         uint64 t0,
-        uint64 t1
+        uint64 t1,
+        bytes32 payoutNote
     ) external returns (bytes32 id) {
         if (amount == 0) revert ZeroAmount();
         if (user == address(0)) revert ZeroAddress();
+        if (payoutNote != 0 && address(RAILGUN) == address(0)) revert NoShieldedPayouts();
         if (t0 <= block.timestamp || t1 <= t0) revert InvalidDeadlines();
         if (
             !Pallas.isOnCurve(makerKey[0], makerKey[1]) || !Pallas.isOnCurve(userKey[0], userKey[1])
                 || makerKey[0] == userKey[0]
         ) revert InvalidKey();
 
-        id = swapId(userKey);
-        bytes32 makerKeyHash = keccak256(abi.encode(makerKey));
+        id = swapId(msg.sender, userKey);
+        bytes32 makerKeyHash = keccak256(abi.encode(msg.sender, makerKey));
         if (swaps[id].stage != Stage.None || makerKeyUsed[makerKeyHash]) revert KeyReused();
         uint256 balance = balanceOf[msg.sender][token];
         if (amount > balance) revert InsufficientBalance();
@@ -140,6 +174,7 @@ contract ZecSwap {
             maker: msg.sender,
             t0: t0,
             stage: Stage.Open,
+            paidOut: false,
             user: user,
             t1: t1,
             token: token,
@@ -150,9 +185,10 @@ contract ZecSwap {
             makerY: makerKey[1],
             userX: userKey[0],
             userY: userKey[1],
-            secret: 0
+            secret: 0,
+            payoutNote: payoutNote
         });
-        emit Opened(id, msg.sender, user, token, amount, makerKey, userKey, t0, t1);
+        emit Opened(id, msg.sender, user, token, amount, makerKey, userKey, t0, t1, payoutNote);
     }
 
     /// @notice The maker attests that the ZEC deposit is confirmed, giving up its right to
@@ -171,19 +207,21 @@ contract ZecSwap {
     function lockClaim(bytes32 id) external {
         Swap storage swap = swaps[id];
         if (msg.sender != swap.user) revert Unauthorized();
-        Stage stage = swap.stage;
-        bool claimable = stage == Stage.Ready || (stage == Stage.Open && block.timestamp >= swap.t0);
-        if (!claimable) revert WrongStage();
-        if (_locked(swap) || _turnAfterLapse(swap.claimLockUntil, swap.refundLockUntil)) {
-            revert LockUnavailable();
-        }
-        uint64 until = uint64(block.timestamp + LOCK_DURATION);
-        swap.claimLockUntil = until;
-        emit ClaimLocked(id, until);
+        _lockClaim(id, swap);
     }
 
-    /// @notice Reveals the user's share and credits the amount to the user, to withdraw at
-    /// will. Callable by anyone while the claim lock is held.
+    /// @notice `lockClaim` on the signature of the swap's `user`, sent by anyone. The lock it
+    /// takes outlasts `deadline`, so one signature takes at most one lock.
+    function lockClaimWithSig(bytes32 id, uint64 deadline, bytes calldata signature) external {
+        if (block.timestamp > deadline) revert Expired();
+        if (deadline >= block.timestamp + LOCK_DURATION) revert InvalidDeadlines();
+        Swap storage swap = swaps[id];
+        _checkSignature(swap.user, keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)), signature);
+        _lockClaim(id, swap);
+    }
+
+    /// @notice Reveals the user's share and credits the amount to the user to withdraw at will,
+    /// or holds it for `payout` into Railgun. Callable by anyone while the claim lock is held.
     function claim(bytes32 id, uint256 userSecret) external {
         Swap storage swap = swaps[id];
         if (swap.stage != Stage.Open && swap.stage != Stage.Ready) revert WrongStage();
@@ -191,8 +229,53 @@ contract ZecSwap {
         if (!Pallas.isSpendAuthMul(userSecret, swap.userX, swap.userY)) revert WrongSecret();
         swap.stage = Stage.Claimed;
         swap.secret = userSecret;
-        balanceOf[swap.user][swap.token] += swap.amount;
+        if (swap.payoutNote == 0) balanceOf[swap.user][swap.token] += swap.amount;
         emit Claimed(id, userSecret);
+    }
+
+    /// @notice Shields a claimed swap's amount into Railgun, to the note committed at open, less
+    /// the fee its user signed for the relayer that sends this. A step apart from `claim`, so
+    /// Railgun or the token failing can delay the payout but never the reveal.
+    function payout(
+        bytes32 id,
+        bytes32 npk,
+        IRailgun.ShieldCiphertext calldata ciphertext,
+        uint128 fee,
+        bytes calldata signature
+    ) external {
+        Swap storage swap = swaps[id];
+        if (swap.stage != Stage.Claimed || swap.payoutNote == 0 || swap.paidOut) revert WrongStage();
+        if (noteCommitment(npk, ciphertext) != swap.payoutNote) revert WrongNote();
+        _checkSignature(swap.user, keccak256(abi.encode(PAYOUT_TYPEHASH, id, msg.sender, fee)), signature);
+        swap.paidOut = true;
+        bytes memory code = _vaultCode();
+        address vault;
+        assembly ("memory-safe") {
+            vault := create2(0, add(code, 0x20), mload(code), id)
+        }
+        if (vault == address(0)) revert VaultNotDeployed();
+        Token.transfer(swap.token, vault, swap.amount);
+        ShieldVault(vault).shield(RAILGUN, swap.token, npk, ciphertext, fee, msg.sender);
+        emit PaidOut(id, msg.sender, fee);
+    }
+
+    /// @notice Shields whatever came back to a paid-out swap's vault again, to a note its user
+    /// signs for, less the fee it signs for the relayer that sends this.
+    function rescue(
+        bytes32 id,
+        bytes32 npk,
+        IRailgun.ShieldCiphertext calldata ciphertext,
+        uint128 fee,
+        bytes calldata signature
+    ) external {
+        Swap storage swap = swaps[id];
+        if (!swap.paidOut) revert WrongStage();
+        bytes32 note = noteCommitment(npk, ciphertext);
+        _checkSignature(
+            swap.user, keccak256(abi.encode(RESCUE_TYPEHASH, id, note, msg.sender, fee)), signature
+        );
+        ShieldVault(vaultOf(id)).shield(RAILGUN, swap.token, npk, ciphertext, fee, msg.sender);
+        emit Rescued(id, msg.sender, fee);
     }
 
     /// @notice Reserves the refund for `LOCK_DURATION`: any time before `ready`, or once `t1` has
@@ -229,10 +312,49 @@ contract ZecSwap {
         return swaps[id];
     }
 
-    /// @notice A swap is keyed by the user's public share, so a user can find its swap from
-    /// its own key and can never have one share in two swaps.
-    function swapId(uint256[2] calldata userKey) public pure returns (bytes32) {
-        return keccak256(abi.encode(userKey));
+    /// @notice A swap is keyed by its maker and the user's public share, so a user finds its swap
+    /// from its own key, a share is never in two of one maker's swaps, and nobody can take a
+    /// swap's id by opening under someone else's share.
+    function swapId(address maker, uint256[2] calldata userKey) public pure returns (bytes32) {
+        return keccak256(abi.encode(maker, userKey));
+    }
+
+    /// @notice What a swap commits to as its payout note.
+    function noteCommitment(bytes32 npk, IRailgun.ShieldCiphertext calldata ciphertext)
+        public
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(npk, ciphertext));
+    }
+
+    /// @notice Where a swap's Railgun payout leaves from, and where Railgun sends it back.
+    function vaultOf(bytes32 id) public view returns (address) {
+        return address(
+            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), id, VAULT_CODE_HASH))))
+        );
+    }
+
+    /// @dev EIP-1167 creation code of a minimal proxy to `VAULT_LOGIC`: a vault costs a fraction of
+    /// deploying the logic itself.
+    function _vaultCode() private view returns (bytes memory) {
+        return abi.encodePacked(
+            hex"3d602d80600a3d3981f3363d3d373d3d3d363d73",
+            address(VAULT_LOGIC),
+            hex"5af43d82803e903d91602b57fd5bf3"
+        );
+    }
+
+    function _lockClaim(bytes32 id, Swap storage swap) private {
+        Stage stage = swap.stage;
+        bool claimable = stage == Stage.Ready || (stage == Stage.Open && block.timestamp >= swap.t0);
+        if (!claimable) revert WrongStage();
+        if (_locked(swap) || _turnAfterLapse(swap.claimLockUntil, swap.refundLockUntil)) {
+            revert LockUnavailable();
+        }
+        uint64 until = uint64(block.timestamp + LOCK_DURATION);
+        swap.claimLockUntil = until;
+        emit ClaimLocked(id, until);
     }
 
     function _locked(Swap storage swap) private view returns (bool) {
@@ -246,10 +368,16 @@ contract ZecSwap {
         return own > other && block.timestamp < uint256(own) + LOCK_DURATION;
     }
 
-    function _call(address token, bytes memory data) private {
-        (bool ok, bytes memory result) = token.call(data);
-        if (!ok || (result.length == 0 ? token.code.length == 0 : !abi.decode(result, (bool)))) {
-            revert TransferFailed();
-        }
+    /// @dev Checks an EIP-712 signature by `signer` over `structHash`, under this contract's
+    /// domain on this chain.
+    function _checkSignature(address signer, bytes32 structHash, bytes calldata signature) private view {
+        bytes32 domain = keccak256(
+            abi.encode(DOMAIN_TYPEHASH, keccak256("ZecSwap"), keccak256("1"), block.chainid, address(this))
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domain, structHash));
+        if (signature.length != 65 || uint256(bytes32(signature[32:64])) > HALF_N) revert BadSignature();
+        address recovered =
+            ecrecover(digest, uint8(signature[64]), bytes32(signature[:32]), bytes32(signature[32:64]));
+        if (recovered == address(0) || recovered != signer) revert BadSignature();
     }
 }

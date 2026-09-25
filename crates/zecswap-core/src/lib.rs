@@ -5,6 +5,7 @@
 //! public share on Pallas, so a party only ever learns both halves after the contract has
 //! paid its counterparty.
 
+mod auth;
 mod curve;
 mod error;
 mod joint;
@@ -13,10 +14,11 @@ mod share;
 mod signer;
 mod transcript;
 
+pub use auth::{AuthKey, Domain, signer};
 pub use error::Error;
 pub use joint::{JointAccount, SpendKey, ViewingKeys};
 pub use seed::{UserSwapKeys, derive_maker_share, derive_user_keys};
 pub use share::{PublicShare, SecretShare, ShareProof};
 pub use signer::{sign_pczt, sign_pczt_bytes};
-pub use transcript::SwapContext;
+pub use transcript::{Payout, SwapContext};
 pub use zcash_protocol::consensus::NetworkType;

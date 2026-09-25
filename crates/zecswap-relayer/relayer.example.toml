@@ -1,0 +1,12 @@
+# The relayer's key is read from the environment, never from this file:
+#   RELAYER_PRIVATE_KEY   pays the gas; keep it apart from any maker's key
+#
+# On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
+# the public mempool while its lock is held, but it invites griefing.
+
+evm_rpc = "https://ethereum-sepolia-rpc.publicnode.com"
+contract = "0x0000000000000000000000000000000000000000"
+listen = "127.0.0.1:8788"
+# Token base units kept from each payout (1 USDC).
+fee = 1000000
+claim_margin = 300

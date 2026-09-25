@@ -1,4 +1,4 @@
-//! Client for the ZecSwap settlement contract.
+//! Client for the ZecSwap settlement contract, on whichever EVM chain it is deployed.
 
 use std::time::Duration;
 
@@ -9,9 +9,11 @@ use alloy::primitives::keccak256;
 use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
+use alloy::sol_types::SolEvent;
 use tokio::sync::Mutex;
 use tracing::warn;
 use zecswap_core::{PublicShare, SecretShare};
+use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
 use crate::Error;
 
@@ -24,7 +26,12 @@ const SEND_ATTEMPTS: u32 = 4;
 const SEND_RETRY_DELAY: Duration = Duration::from_secs(3);
 
 sol! {
-    // `open` takes seven parameters, which the generated binding cannot shorten.
+    struct ShieldCiphertextWords {
+        bytes32[3] encryptedBundle;
+        bytes32 shieldKey;
+    }
+
+    // `open` takes eight parameters, which the generated binding cannot shorten.
     #[allow(clippy::too_many_arguments)]
     #[sol(rpc)]
     interface IZecSwap {
@@ -32,6 +39,7 @@ sol! {
             address maker;
             uint64 t0;
             uint8 stage;
+            bool paidOut;
             address user;
             uint64 t1;
             address token;
@@ -43,20 +51,44 @@ sol! {
             uint256 userX;
             uint256 userY;
             uint256 secret;
+            bytes32 payoutNote;
         }
-
 
         function deposit(address token, uint256 amount) external;
         function withdraw(address token, uint256 amount, address to) external;
-        function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1) external returns (bytes32 id);
+        function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1, bytes32 payoutNote) external returns (bytes32 id);
         function ready(bytes32 id) external;
         function lockClaim(bytes32 id) external;
+        function lockClaimWithSig(bytes32 id, uint64 deadline, bytes signature) external;
         function claim(bytes32 id, uint256 userSecret) external;
+        function payout(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
+        function rescue(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
         function lockRefund(bytes32 id) external;
         function refund(bytes32 id, uint256 makerSecret) external;
         function getSwap(bytes32 id) external view returns (Swap memory);
+        function vaultOf(bytes32 id) external view returns (address);
         function balanceOf(address maker, address token) external view returns (uint256);
         function LOCK_DURATION() external view returns (uint256);
+        function RAILGUN() external view returns (address);
+    }
+
+    #[sol(rpc)]
+    interface IRailgun {
+        struct TokenData {
+            uint8 tokenType;
+            address tokenAddress;
+            uint256 tokenSubID;
+        }
+
+        struct CommitmentPreimage {
+            bytes32 npk;
+            TokenData token;
+            uint120 value;
+        }
+
+        event Shield(uint256 treeNumber, uint256 startPosition, CommitmentPreimage[] commitments, ShieldCiphertextWords[] shieldCiphertext, uint256[] fees);
+
+        function tokenBlocklist(address token) external view returns (bool);
     }
 
     #[sol(rpc)]
@@ -90,6 +122,10 @@ pub struct OnChainSwap {
     pub user_share: PublicShare,
     /// The share settlement revealed, big-endian; zero until then.
     pub secret: [u8; 32],
+    /// The commitment to the Railgun note a claim pays, for a swap that pays into Railgun.
+    pub payout_note: Option<B256>,
+    /// Whether a claimed Railgun payout has left.
+    pub paid_out: bool,
 }
 
 impl OnChainSwap {
@@ -110,20 +146,34 @@ pub struct OpenRequest<'a> {
     pub user: Address,
     pub t0: u64,
     pub t1: u64,
+    pub payout_note: Option<B256>,
 }
 
-/// The contract keys each swap by its user share.
-pub fn swap_id(user_share: &PublicShare) -> B256 {
-    keccak256(user_share.to_affine_bytes())
+/// A note Railgun recorded shielding, as its `Shield` event reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shielded {
+    pub note: ShieldNote,
+    pub token: Address,
+    /// What the note holds, after Railgun's fee.
+    pub value: u128,
+    pub fee: u128,
 }
 
-/// A connection to the settlement contract, sending transactions as one account. Sends are
-/// serialized, and each reads its nonce from the chain once the previous one has its receipt,
-/// so a send that fails leaves no gap behind it.
+/// The contract keys each swap by its maker and user share.
+pub fn swap_id(maker: Address, user_share: &PublicShare) -> B256 {
+    let mut preimage = [0; 96];
+    preimage[12..32].copy_from_slice(maker.as_slice());
+    preimage[32..].copy_from_slice(&user_share.to_affine_bytes());
+    keccak256(preimage)
+}
+
+/// A connection to the settlement contract, sending transactions as one account, or reading
+/// only. Sends are serialized, and each reads its nonce from the chain once the previous one
+/// has its receipt, so a send that fails leaves no gap behind it.
 pub struct Settlement {
     provider: DynProvider,
     contract: IZecSwap::IZecSwapInstance<DynProvider>,
-    account: Address,
+    account: Option<Address>,
     sending: Mutex<()>,
 }
 
@@ -134,21 +184,33 @@ impl Settlement {
         signer: PrivateKeySigner,
     ) -> Result<Self, Error> {
         let account = signer.address();
-        let provider = signing_provider(rpc_url, signer)?;
-        let contract = IZecSwap::new(contract, provider.clone());
-        Ok(Self {
-            provider,
+        Ok(Self::new(
+            signing_provider(rpc_url, Some(signer))?,
             contract,
+            Some(account),
+        ))
+    }
+
+    /// For a party with no account on the chain, which reads and leaves sending to a relayer.
+    pub fn read_only(rpc_url: &str, contract: Address) -> Result<Self, Error> {
+        Ok(Self::new(signing_provider(rpc_url, None)?, contract, None))
+    }
+
+    fn new(provider: DynProvider, contract: Address, account: Option<Address>) -> Self {
+        Self {
+            contract: IZecSwap::new(contract, provider.clone()),
+            provider,
             account,
             sending: Mutex::new(()),
-        })
+        }
     }
 
     pub fn contract(&self) -> Address {
         *self.contract.address()
     }
 
-    pub fn account(&self) -> Address {
+    /// The account this connection sends as; none for a read-only one.
+    pub fn account(&self) -> Option<Address> {
         self.account
     }
 
@@ -205,7 +267,86 @@ impl Settlement {
             maker_share: share_from_words(swap.makerX, swap.makerY)?,
             user_share: share_from_words(swap.userX, swap.userY)?,
             secret: swap.secret.to_be_bytes(),
+            payout_note: (!swap.payoutNote.is_zero()).then_some(swap.payoutNote),
+            paid_out: swap.paidOut,
         }))
+    }
+
+    /// Where a swap's Railgun payout leaves from, and where Railgun sends it back.
+    pub async fn vault_of(&self, id: B256) -> Result<Address, Error> {
+        self.contract
+            .vaultOf(id)
+            .call()
+            .await
+            .map_err(Error::contract)
+    }
+
+    /// Railgun's proxy, which payouts shield into; zero where the contract pays accounts only.
+    pub async fn railgun(&self) -> Result<Address, Error> {
+        self.contract
+            .RAILGUN()
+            .call()
+            .await
+            .map_err(Error::contract)
+    }
+
+    /// Whether Railgun takes `token` now: it is there, not paused, and not blocking the token.
+    /// A payout that can't leave shouldn't be claimed; the swap unwinds instead.
+    pub async fn railgun_accepts(&self, token: Address) -> Result<bool, Error> {
+        let railgun = self.railgun().await?;
+        if railgun.is_zero() {
+            return Ok(false);
+        }
+        match IRailgun::new(railgun, &self.provider)
+            .tokenBlocklist(token)
+            .call()
+            .await
+        {
+            Ok(blocked) => Ok(!blocked),
+            // Railgun's proxy reverts every call while it is paused.
+            Err(e) if e.as_revert_data().is_some() => Ok(false),
+            Err(e) => Err(Error::contract(e)),
+        }
+    }
+
+    /// The notes a transaction shielded into Railgun.
+    pub async fn shielded(&self, tx: B256) -> Result<Vec<Shielded>, Error> {
+        let railgun = self.railgun().await?;
+        let receipt = self
+            .provider
+            .get_transaction_receipt(tx)
+            .await
+            .map_err(Error::contract)?
+            .ok_or_else(|| Error::Contract(format!("no receipt for {tx}")))?;
+        let mut notes = Vec::new();
+        for log in receipt.inner.logs() {
+            if log.address() != railgun {
+                continue;
+            }
+            let Ok(event) = IRailgun::Shield::decode_log_data(log.data()) else {
+                continue;
+            };
+            for ((preimage, ciphertext), fee) in event
+                .commitments
+                .iter()
+                .zip(&event.shieldCiphertext)
+                .zip(&event.fees)
+            {
+                notes.push(Shielded {
+                    note: ShieldNote {
+                        npk: preimage.npk.0,
+                        ciphertext: ShieldCiphertext {
+                            encrypted_bundle: ciphertext.encryptedBundle.map(|word| word.0),
+                            shield_key: ciphertext.shieldKey.0,
+                        },
+                    },
+                    token: preimage.token.tokenAddress,
+                    value: preimage.value.to(),
+                    fee: u128::try_from(*fee).map_err(Error::contract)?,
+                });
+            }
+        }
+        Ok(notes)
     }
 
     /// What `owner` can withdraw from the contract: a maker's inventory or a user's payouts.
@@ -233,6 +374,7 @@ impl Settlement {
             request.user,
             request.t0,
             request.t1,
+            request.payout_note.unwrap_or_default(),
         );
         Ok(self.submit(call).await?.transaction_hash)
     }
@@ -246,6 +388,56 @@ impl Settlement {
             .submit(self.contract.lockClaim(id))
             .await?
             .transaction_hash)
+    }
+
+    /// Takes the claim lock for the swap's `user`, which signed for it.
+    pub async fn lock_claim_with_sig(
+        &self,
+        id: B256,
+        deadline: u64,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        let call = self
+            .contract
+            .lockClaimWithSig(id, deadline, signature.to_vec().into());
+        Ok(self.submit(call).await?.transaction_hash)
+    }
+
+    /// Shields a claimed swap's amount to its committed `note`, keeping the `fee` its user
+    /// signed for this account.
+    pub async fn payout(
+        &self,
+        id: B256,
+        note: &ShieldNote,
+        fee: u128,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        let call = self.contract.payout(
+            id,
+            note.npk.into(),
+            ciphertext_words(&note.ciphertext),
+            fee,
+            signature.to_vec().into(),
+        );
+        Ok(self.submit(call).await?.transaction_hash)
+    }
+
+    /// Shields what came back to a swap's vault to a `note` its user signed for.
+    pub async fn rescue(
+        &self,
+        id: B256,
+        note: &ShieldNote,
+        fee: u128,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        let call = self.contract.rescue(
+            id,
+            note.npk.into(),
+            ciphertext_words(&note.ciphertext),
+            fee,
+            signature.to_vec().into(),
+        );
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     pub async fn claim(&self, id: B256, user_secret: &SecretShare) -> Result<B256, Error> {
@@ -302,6 +494,11 @@ impl Settlement {
         Ok(())
     }
 
+    /// What gas costs now, in wei.
+    pub async fn gas_price(&self) -> Result<u128, Error> {
+        self.provider.get_gas_price().await.map_err(Error::contract)
+    }
+
     pub async fn eth_balance(&self, owner: Address) -> Result<U256, Error> {
         self.provider
             .get_balance(owner)
@@ -310,8 +507,14 @@ impl Settlement {
     }
 
     pub async fn send_eth(&self, to: Address, wei: U256) -> Result<B256, Error> {
+        let Some(account) = self.account else {
+            return Err(Error::Config("a read-only connection cannot send".into()));
+        };
         let _sending = self.sending.lock().await;
-        let tx = TransactionRequest::default().with_to(to).with_value(wei);
+        let tx = TransactionRequest::default()
+            .with_from(account)
+            .with_to(to)
+            .with_value(wei);
         let pending = self
             .provider
             .send_transaction(tx)
@@ -324,6 +527,10 @@ impl Settlement {
         &self,
         call: CallBuilder<P, D>,
     ) -> Result<TransactionReceipt, Error> {
+        let Some(account) = self.account else {
+            return Err(Error::Config("a read-only connection cannot send".into()));
+        };
+        let call = call.from(account);
         let _sending = self.sending.lock().await;
         let mut attempts = 1;
         loop {
@@ -349,7 +556,7 @@ pub async fn deploy(
     signer: PrivateKeySigner,
     init_code: Vec<u8>,
 ) -> Result<Address, Error> {
-    let provider = signing_provider(rpc_url, signer)?;
+    let provider = signing_provider(rpc_url, Some(signer))?;
     let tx = TransactionRequest::default().with_deploy_code(init_code);
     let pending = provider
         .send_transaction(tx)
@@ -361,14 +568,20 @@ pub async fn deploy(
         .ok_or_else(|| Error::Contract("deployment created no contract".into()))
 }
 
-fn signing_provider(rpc_url: &str, signer: PrivateKeySigner) -> Result<DynProvider, Error> {
+fn signing_provider(rpc_url: &str, signer: Option<PrivateKeySigner>) -> Result<DynProvider, Error> {
     let url = rpc_url
         .parse()
-        .map_err(|e| Error::Config(format!("Base RPC URL {rpc_url}: {e}")))?;
+        .map_err(|e| Error::Config(format!("RPC URL {rpc_url}: {e}")))?;
     let http = reqwest::Client::builder()
         .timeout(RPC_TIMEOUT)
         .build()
         .map_err(Error::contract)?;
+    let Some(signer) = signer else {
+        return Ok(ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .connect_reqwest(http, url)
+            .erased());
+    };
     // The default nonce cache advances on sends that fail, and every later transaction then
     // queues behind the gap.
     Ok(ProviderBuilder::new()
@@ -396,6 +609,13 @@ async fn confirmed(
             "transaction {} reverted",
             receipt.transaction_hash
         )))
+    }
+}
+
+fn ciphertext_words(ciphertext: &ShieldCiphertext) -> ShieldCiphertextWords {
+    ShieldCiphertextWords {
+        encryptedBundle: ciphertext.encrypted_bundle.map(B256::from),
+        shieldKey: ciphertext.shield_key.into(),
     }
 }
 

@@ -1,14 +1,16 @@
 # Secrets are read from the environment, never from this file:
-#   MAKER_PRIVATE_KEY   Base account that opens swaps and holds inventory
+#   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
-base_rpc = "https://sepolia.base.org"
+evm_rpc = "https://sepolia.base.org"
 contract = "0x0000000000000000000000000000000000000000"
 token = "0x0000000000000000000000000000000000000000"
 # The maker's own wallet; claimed deposits are swept here.
 sweep_to = "utest1..."
+# Confirmations a deposit needs before `ready`; unset, 10 (3 for the maker's own notes).
+# confirmations = 10
 data_dir = "maker-data"
 listen = "127.0.0.1:8787"
 

@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use orchard::keys::SpendAuthorizingKey;
@@ -56,9 +57,11 @@ pub struct Wallet {
     db: Db,
     network: Network,
     blocks: MemoryBlockCache,
+    confirmations: ConfirmationsPolicy,
 }
 
 impl Wallet {
+    /// Opens a wallet that spends its own notes after 3 confirmations, and others' after 10.
     pub fn open(path: impl AsRef<Path>, network: Network) -> Result<Self, Error> {
         let mut db =
             WalletDb::for_path(path, network, SystemClock, OsRng).map_err(Error::wallet)?;
@@ -68,7 +71,16 @@ impl Wallet {
             db,
             network,
             blocks: MemoryBlockCache::default(),
+            confirmations: ConfirmationsPolicy::default(),
         })
+    }
+
+    /// Spends any note after `confirmations` instead. A deposit then counts sooner, and a
+    /// chain reorganization is likelier to undo it after it counted: for testnets, or amounts
+    /// small enough to risk.
+    pub fn with_confirmations(mut self, confirmations: NonZeroU32) -> Self {
+        self.confirmations = ConfirmationsPolicy::new_symmetrical(confirmations, false);
+        self
     }
 
     pub fn network(&self) -> Network {
@@ -127,7 +139,7 @@ impl Wallet {
     }
 
     pub fn funds(&self, account: AccountUuid) -> Result<Funds, Error> {
-        let summary = self.db.get_wallet_summary(ConfirmationsPolicy::default())?;
+        let summary = self.db.get_wallet_summary(self.confirmations)?;
         let Some(balance) = summary
             .as_ref()
             .and_then(|s| s.account_balances().get(&account))
@@ -205,7 +217,7 @@ impl Wallet {
             to.clone(),
             None,
             MaxSpendMode::Everything,
-            ConfirmationsPolicy::default(),
+            self.confirmations,
             &LockedInputPolicy::Exclude,
             None,
         )
@@ -245,7 +257,7 @@ impl Wallet {
             &GreedyInputSelector::new(),
             &change_strategy,
             request,
-            ConfirmationsPolicy::default(),
+            self.confirmations,
             &SpendPolicy::default(),
             None,
             None,

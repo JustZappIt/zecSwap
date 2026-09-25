@@ -7,3 +7,4 @@
 !.env.example
 .testnet/
 docs/local/
+node_modules/

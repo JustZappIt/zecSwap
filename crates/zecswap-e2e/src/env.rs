@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,11 +11,12 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use zcash_address::ZcashAddress;
 use zcash_keys::keys::UnifiedSpendingKey;
-use zecswap_chain::base::{Address, PrivateKeySigner, Settlement, U256, deploy};
+use zecswap_chain::evm::{Address, PrivateKeySigner, Settlement, U256, deploy};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Network, Prover, Wallet, connect};
 use zecswap_maker::policy::Timing;
 use zecswap_maker::pricing::Pricing;
 use zecswap_maker::{Chain, Config, Maker, Secrets};
+use zecswap_relayer::Relayer;
 use zeroize::Zeroizing;
 
 /// Short enough to exercise lock expiry in one run, long enough to land any reveal.
@@ -22,12 +24,26 @@ const LOCK_DURATION: u64 = 10 * 60;
 /// One unit of the test token costs about 202 000 zatoshis; the rest covers the fee.
 pub(crate) const NOTE_ZAT: u64 = 300_000;
 const INVENTORY: u128 = 1_000_000_000;
-const MAKER_GAS_WEI: u64 = 2_000_000_000_000_000;
-const PAYOUT_GAS_WEI: u64 = 500_000_000_000_000;
+/// What the relayer keeps from each Railgun payout: 0.02 of the test token.
+pub(crate) const RELAYER_FEE: u64 = 20_000;
+/// Gas each account is funded for, at the chain's gas price and `GAS_MARGIN` times over. The
+/// deployer's covers both contracts, the silent maker's its inventory and moves, a payout
+/// account's a claim lock, claim and withdrawal, the relayer's a lock, claim and payout each.
+const DEPLOY_GAS: u64 = 5_000_000;
+const MAKER_GAS: u64 = 1_500_000;
+const PAYOUT_GAS: u64 = 500_000;
+const RELAYED_GAS: u64 = 1_500_000;
+const GAS_MARGIN: u128 = 4;
 const SYNC_INTERVAL: Duration = Duration::from_secs(15);
+/// Testnet's target block interval, in seconds.
+const BLOCK_TIME: u64 = 75;
 
 pub(crate) struct Settings {
-    base_rpc: String,
+    evm_rpc: String,
+    /// Railgun's proxy on that chain, which enables the Railgun scenarios.
+    railgun: Option<Address>,
+    /// Confirmations a note needs before it counts; the wallets' default, 10, unless set.
+    confirmations: Option<NonZeroU32>,
     lightwalletd: String,
     funder: PrivateKeySigner,
     wallet_dir: PathBuf,
@@ -56,8 +72,22 @@ impl Settings {
                     .join("target/zecswap-e2e")
                     .join(unix_now().to_string())
             });
+        let railgun = std::env::var("ZECSWAP_E2E_RAILGUN")
+            .ok()
+            .filter(|address| !address.is_empty())
+            .map(|address| address.parse())
+            .transpose()
+            .context("ZECSWAP_E2E_RAILGUN")?;
+        let confirmations = std::env::var("ZECSWAP_E2E_CONFIRMATIONS")
+            .ok()
+            .filter(|count| !count.is_empty())
+            .map(|count| count.parse())
+            .transpose()
+            .context("ZECSWAP_E2E_CONFIRMATIONS")?;
         Ok(Some(Self {
-            base_rpc: var_or("ZECSWAP_E2E_BASE_RPC", "https://sepolia.base.org"),
+            evm_rpc: var_or("ZECSWAP_E2E_EVM_RPC", "https://sepolia.base.org"),
+            railgun,
+            confirmations,
             lightwalletd: var_or("ZECSWAP_E2E_LIGHTWALLETD", "https://testnet.zec.rocks:443"),
             funder: funder.parse().context("ZECSWAP_E2E_FUNDER_KEY")?,
             wallet_dir: workspace.join(wallet_dir),
@@ -65,16 +95,61 @@ impl Settings {
             artifacts: workspace.join("contracts/out"),
         }))
     }
+
+    pub(crate) fn has_railgun(&self) -> bool {
+        self.railgun.is_some()
+    }
+
+    /// The run's deadlines, sized to how long a deposit takes to confirm. With the wallets'
+    /// 10 confirmations they are the client's and maker's defaults.
+    fn pace(&self) -> Pace {
+        let confirmations = self.confirmations.map_or(10, NonZeroU32::get);
+        let confirm = u64::from(confirmations) * BLOCK_TIME;
+        let t0_after = 10 * 60 + 2 * confirm;
+        Pace {
+            timing: Timing {
+                quote_ttl: 300,
+                t0_after,
+                t1_after: t0_after + 5 * 60,
+                cancel_after: 3 * 60,
+                t0_margin: 5 * 60,
+                reveal_margin: 2 * 60,
+                tick: 15,
+            },
+            min_time_to_t0: t0_after - 10 * 60,
+            restart_after: Duration::from_secs((confirm * 3 / 5).max(2 * 60)),
+        }
+    }
 }
 
-/// What every scenario shares: one fresh deployment, an attentive and a silent maker, and
-/// a funded Zcash wallet whose treasury account pays the deposits.
+struct Pace {
+    timing: Timing,
+    /// The soonest `t0` the user accepts: time for a deposit to confirm.
+    min_time_to_t0: u64,
+    /// When the attentive maker restarts: after the deposits are in, before they confirm.
+    restart_after: Duration,
+}
+
+/// What each run needs of its scenarios.
+pub(crate) struct Needs {
+    /// Scenarios paid to an account, each funded for its own transactions.
+    pub(crate) accounts: usize,
+    /// Scenarios paid into Railgun, whose transactions the relayer pays for.
+    pub(crate) relayed: usize,
+    pub(crate) deposits: usize,
+}
+
+/// What every scenario shares: one fresh deployment, an attentive and a silent maker, a
+/// relayer, and a funded Zcash wallet whose treasury account pays the deposits.
 pub(crate) struct Env {
     started: Instant,
     pub(crate) network: Network,
-    pub(crate) base_rpc: String,
+    pub(crate) evm_rpc: String,
     pub(crate) contract: Address,
     pub(crate) token: Address,
+    pub(crate) relayer_url: String,
+    pub(crate) min_time_to_t0: u64,
+    restart_after: Duration,
     pub(crate) zcash: Mutex<Zcash>,
     pub(crate) prover: Prover,
     pub(crate) treasury: AccountUuid,
@@ -91,11 +166,7 @@ pub(crate) struct Zcash {
 }
 
 impl Env {
-    pub(crate) async fn setup(
-        settings: Settings,
-        players: usize,
-        deposits: usize,
-    ) -> Result<Arc<Self>> {
+    pub(crate) async fn setup(settings: Settings, needs: Needs) -> Result<Arc<Self>> {
         let started = Instant::now();
         let network = Network::TestNetwork;
         std::fs::create_dir_all(&settings.work_dir)?;
@@ -110,7 +181,11 @@ impl Env {
                 .context("reading the wallet seed")?
                 .trim(),
         )?;
+        let pace = settings.pace();
         let mut wallet = Wallet::open(settings.wallet_dir.join("wallet.sqlite"), network)?;
+        if let Some(confirmations) = settings.confirmations {
+            wallet = wallet.with_confirmations(confirmations);
+        }
         let mut client = connect(&settings.lightwalletd).await?;
         wallet.sync(&mut client).await?;
         let treasury = wallet
@@ -118,36 +193,46 @@ impl Env {
             .context("the wallet has no seed-derived account")?;
         let treasury_key = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
             .map_err(|e| anyhow::anyhow!("deriving the treasury key: {e:?}"))?;
-        let (contract, token) = deploy_contracts(&settings, players).await?;
+        let (contract, token, gas_price) = deploy_contracts(&settings, &needs).await?;
+        let deposits = needs.deposits;
         log(
             started,
             "setup",
             format!("deployed ZecSwap {contract} and token {token}"),
         );
-        let chain = Settlement::connect(&settings.base_rpc, contract, settings.funder.clone())?;
+        let chain = Settlement::connect(&settings.evm_rpc, contract, settings.funder.clone())?;
+        let fund = |gas: u64| U256::from(u128::from(gas) * gas_price * GAS_MARGIN);
         let silent_key = PrivateKeySigner::random();
         chain
-            .send_eth(silent_key.address(), U256::from(MAKER_GAS_WEI))
+            .send_eth(silent_key.address(), fund(MAKER_GAS))
             .await?;
-        for maker in [chain.account(), silent_key.address()] {
+        for maker in [settings.funder.address(), silent_key.address()] {
             chain.mint_test_token(token, maker, INVENTORY).await?;
         }
         chain.add_inventory(token, INVENTORY).await?;
-        Settlement::connect(&settings.base_rpc, contract, silent_key.clone())?
+        Settlement::connect(&settings.evm_rpc, contract, silent_key.clone())?
             .add_inventory(token, INVENTORY)
             .await?;
-        let mut payout_keys = Vec::with_capacity(players);
-        for _ in 0..players {
+        let mut payout_keys = Vec::with_capacity(needs.accounts);
+        for _ in 0..needs.accounts {
             let key = PrivateKeySigner::random();
-            chain
-                .send_eth(key.address(), U256::from(PAYOUT_GAS_WEI))
-                .await?;
+            chain.send_eth(key.address(), fund(PAYOUT_GAS)).await?;
             payout_keys.push(key);
         }
+        let relayer_key = PrivateKeySigner::random();
+        if needs.relayed > 0 {
+            chain
+                .send_eth(
+                    relayer_key.address(),
+                    fund(RELAYED_GAS * needs.relayed as u64),
+                )
+                .await?;
+        }
+        let relayer_url = start_relayer(&settings, contract, relayer_key).await?;
         log(
             started,
             "setup",
-            "funded both makers and every payout account",
+            "funded both makers, the relayer and every payout account",
         );
 
         // Base first: it is quick and fails fast, while the split spends ZEC and waits.
@@ -174,24 +259,25 @@ impl Env {
         let maker_config = |name: &str| Config {
             network: Chain::Testnet,
             lightwalletd: settings.lightwalletd.clone(),
-            base_rpc: settings.base_rpc.clone(),
+            evm_rpc: settings.evm_rpc.clone(),
             contract,
             token,
             sweep_to: sweep_to.clone(),
+            confirmations: settings.confirmations,
             data_dir: settings.work_dir.join(name),
             listen: "127.0.0.1:0".parse().expect("socket address"),
             pricing: pricing(),
-            timing: timing(),
+            timing: pace.timing.clone(),
         };
         let attentive_config = maker_config("attentive-maker");
         let attentive_secrets = Secrets {
-            base_key: settings.funder.clone(),
+            evm_key: settings.funder.clone(),
             root: maker_root(&attentive_config.data_dir)?,
         };
         let attentive = MakerNode::start(attentive_config, attentive_secrets, true).await?;
         let silent_config = maker_config("silent-maker");
         let silent_secrets = Secrets {
-            base_key: silent_key,
+            evm_key: silent_key,
             root: maker_root(&silent_config.data_dir)?,
         };
         let silent = MakerNode::start(silent_config, silent_secrets, false).await?;
@@ -199,9 +285,12 @@ impl Env {
         Ok(Arc::new(Self {
             started,
             network,
-            base_rpc: settings.base_rpc,
+            evm_rpc: settings.evm_rpc,
             contract,
             token,
+            relayer_url,
+            min_time_to_t0: pace.min_time_to_t0,
+            restart_after: pace.restart_after,
             zcash: Mutex::new(Zcash { wallet, client }),
             prover,
             treasury,
@@ -242,10 +331,10 @@ impl Env {
 
     /// Restarts the attentive maker from its stored state partway through, which every
     /// in-flight swap then has to survive.
-    pub(crate) fn spawn_restart(self: &Arc<Self>, after: Duration) -> JoinHandle<()> {
+    pub(crate) fn spawn_restart(self: &Arc<Self>) -> JoinHandle<()> {
         let env = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(after).await;
+            tokio::time::sleep(env.restart_after).await;
             env.log("setup", "restarting the attentive maker");
             if let Err(e) = env.attentive.restart().await {
                 env.log("setup", format!("maker restart failed: {e:#}"));
@@ -381,27 +470,56 @@ async fn split_treasury(
     }
 }
 
-async fn deploy_contracts(settings: &Settings, players: usize) -> Result<(Address, Address)> {
-    // What setup sends to the other accounts, plus a margin for its own gas.
-    let needed = U256::from(MAKER_GAS_WEI + PAYOUT_GAS_WEI * players as u64) * U256::from(2);
+/// Deploys both contracts once the funder is known to cover the run; returns the gas price
+/// the run's funding is priced at.
+async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address, Address, u128)> {
     let funder = settings.funder.address();
-    let balance = Settlement::connect(&settings.base_rpc, Address::ZERO, settings.funder.clone())?
-        .eth_balance(funder)
-        .await?;
+    let chain = Settlement::connect(&settings.evm_rpc, Address::ZERO, settings.funder.clone())?;
+    let gas_price = chain.gas_price().await?;
+    let gas = DEPLOY_GAS
+        + MAKER_GAS * 2
+        + PAYOUT_GAS * needs.accounts as u64
+        + RELAYED_GAS * needs.relayed as u64;
+    let needed = U256::from(u128::from(gas) * gas_price * GAS_MARGIN);
+    let balance = chain.eth_balance(funder).await?;
     ensure!(
         balance >= needed,
-        "the funder {funder} holds {balance} wei on Base and needs {needed}"
+        "the funder {funder} holds {balance} wei and needs {needed} at {gas_price} wei per gas"
     );
     let token = deploy(
-        &settings.base_rpc,
+        &settings.evm_rpc,
         settings.funder.clone(),
         creation_code(&settings.artifacts, "TestToken")?,
     )
     .await?;
     let mut code = creation_code(&settings.artifacts, "ZecSwap")?;
     code.extend_from_slice(&U256::from(LOCK_DURATION).to_be_bytes::<32>());
-    let contract = deploy(&settings.base_rpc, settings.funder.clone(), code).await?;
-    Ok((contract, token))
+    code.extend_from_slice(&settings.railgun.unwrap_or_default().into_word().0);
+    let contract = deploy(&settings.evm_rpc, settings.funder.clone(), code).await?;
+    Ok((contract, token, gas_price))
+}
+
+/// Runs a relayer in-process, with its own key: it must never be a maker.
+async fn start_relayer(
+    settings: &Settings,
+    contract: Address,
+    key: PrivateKeySigner,
+) -> Result<String> {
+    let config = zecswap_relayer::Config {
+        evm_rpc: settings.evm_rpc.clone(),
+        contract,
+        listen: "127.0.0.1:0".parse().expect("socket address"),
+        fee: RELAYER_FEE,
+        claim_margin: 3 * 60,
+    };
+    let relayer = Arc::new(Relayer::new(config, key).await?);
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let router = zecswap_relayer::api::router(relayer);
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+    Ok(url)
 }
 
 fn creation_code(artifacts: &Path, name: &str) -> Result<Vec<u8>> {
@@ -421,20 +539,6 @@ fn pricing() -> Pricing {
         spread_bps: 100,
         unit: 1_000_000,
         max_units: 20,
-    }
-}
-
-/// `t0` leaves room for ten confirmations of a deposit; `t1` follows soon after so the
-/// refund scenarios finish within the hour.
-fn timing() -> Timing {
-    Timing {
-        quote_ttl: 300,
-        t0_after: 35 * 60,
-        t1_after: 40 * 60,
-        cancel_after: 3 * 60,
-        t0_margin: 5 * 60,
-        reveal_margin: 2 * 60,
-        tick: 15,
     }
 }
 
