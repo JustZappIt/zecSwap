@@ -1,0 +1,51 @@
+[package]
+name = "zecswap-chain"
+description = "Zcash light-wallet and Base settlement adapters shared by ZecSwap participants"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+alloy = { version = "1.8", default-features = false, features = [
+    "contract",
+    "provider-http",
+    "reqwest-rustls-tls",
+    "rpc-types",
+    "signer-local",
+    "sol-types",
+    "std",
+] }
+# zcash_transparent pins a pre-release digest 0.11 (through bip32) and alloy-primitives 1.6+
+# needs a stable one (through sha3 0.11); a build can hold only one digest 0.11. 1.5 uses
+# sha3 0.10, which is why alloy stays on 1.x. The type parser must match its minor.
+alloy-primitives = { version = "~1.5", default-features = false }
+alloy-sol-type-parser = { version = "~1.5", default-features = false }
+async-trait = "0.1"
+orchard = { workspace = true, features = ["circuit"] }
+pczt = { workspace = true, features = ["prover"] }
+rand_core.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+secrecy = "0.8"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+tonic = { version = "0.14", default-features = false, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
+tracing = "0.1"
+zcash_address.workspace = true
+zcash_client_backend = { version = "0.24", features = [
+    "lightwalletd-tonic",
+    "lightwalletd-tonic-tls-webpki-roots",
+    "orchard",
+    "pczt",
+    "sync",
+] }
+zcash_client_sqlite = { version = "0.22", features = ["orchard", "serde", "transparent-inputs"] }
+zcash_keys = { version = "0.16", features = ["orchard"] }
+zcash_primitives = "0.30"
+zcash_protocol.workspace = true
+zecswap-core = { path = "../zecswap-core" }
+
+[dev-dependencies]
+alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

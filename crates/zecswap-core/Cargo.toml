@@ -1,0 +1,29 @@
+[package]
+name = "zecswap-core"
+description = "Split-key primitives for shielded ZEC atomic swaps settled against a Pallas-verifying contract"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+blake2b_simd.workspace = true
+ff.workspace = true
+group.workspace = true
+orchard.workspace = true
+pasta_curves.workspace = true
+pczt.workspace = true
+rand_core.workspace = true
+zcash_address.workspace = true
+zcash_protocol.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+incrementalmerkletree = "0.8"
+orchard = { workspace = true, features = ["circuit"] }
+pczt = { workspace = true, features = ["io-finalizer", "prover", "spend-finalizer", "tx-extractor", "zcp-builder"] }
+rand_chacha = "0.3"
+shardtree = "0.7"
+zcash_note_encryption = "0.4"
+zcash_primitives = "0.30"
+zcash_protocol = { workspace = true, features = ["local-consensus"] }

@@ -1,0 +1,213 @@
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+use anyhow::Result;
+use rusqlite::types::Type;
+use rusqlite::{Connection, OptionalExtension, Row, params};
+use uuid::Uuid;
+use zecswap_chain::base::{Address, B256};
+use zecswap_chain::zcash::{AccountUuid, TxId};
+use zecswap_core::{PublicShare, ViewingKeys};
+
+const SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS quotes (
+        quote_id BLOB PRIMARY KEY,
+        nonce INTEGER NOT NULL UNIQUE,
+        payout BLOB NOT NULL,
+        amount TEXT NOT NULL,
+        deposit_zat INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        accepted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS swaps (
+        id BLOB PRIMARY KEY,
+        quote_id BLOB NOT NULL UNIQUE REFERENCES quotes (quote_id),
+        user_share BLOB NOT NULL,
+        viewing_keys BLOB NOT NULL,
+        zcash_account TEXT NOT NULL,
+        opened_at INTEGER NOT NULL,
+        t1 INTEGER NOT NULL,
+        sweep_txid BLOB,
+        settled INTEGER NOT NULL DEFAULT 0
+    );
+";
+
+const SWAP_COLUMNS: &str = "
+    s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
+    q.quote_id, q.nonce, q.payout, q.amount, q.deposit_zat
+";
+
+#[derive(Clone, Debug)]
+pub struct Quote {
+    pub id: [u8; 32],
+    /// Index of the maker share, derived from the root secret rather than stored.
+    pub nonce: u64,
+    pub payout: Address,
+    pub amount: u128,
+    pub deposit_zat: u64,
+}
+
+/// A swap the maker has sent `open` for, whether or not it has landed.
+pub struct Swap {
+    pub id: B256,
+    pub quote: Quote,
+    pub user_share: PublicShare,
+    pub viewing: ViewingKeys,
+    pub zcash_account: AccountUuid,
+    pub opened_at: u64,
+    /// The `t1` sent with `open`. `open` fails from `t0` on, so by `t1` the swap is on-chain if
+    /// it ever will be.
+    pub t1: u64,
+    pub sweep: Option<TxId>,
+    pub settled: bool,
+}
+
+pub struct Store(Mutex<Connection>);
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self(Mutex::new(conn)))
+    }
+
+    /// Records a quote under the next unused nonce and returns that nonce.
+    pub fn insert_quote(
+        &self,
+        id: [u8; 32],
+        payout: Address,
+        amount: u128,
+        deposit_zat: u64,
+        expires_at: u64,
+    ) -> Result<u64> {
+        Ok(self.conn().query_row(
+            "INSERT INTO quotes (quote_id, nonce, payout, amount, deposit_zat, expires_at)
+             VALUES (?1, (SELECT IFNULL(MAX(nonce) + 1, 0) FROM quotes), ?2, ?3, ?4, ?5)
+             RETURNING nonce",
+            params![
+                id,
+                payout.as_slice(),
+                amount.to_string(),
+                deposit_zat,
+                expires_at
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Claims a live quote; each can be accepted once.
+    pub fn take_quote(&self, id: &[u8; 32], now: u64) -> Result<Option<Quote>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "UPDATE quotes SET accepted = 1
+                 WHERE quote_id = ?1 AND accepted = 0 AND expires_at > ?2
+                 RETURNING quote_id, nonce, payout, amount, deposit_zat",
+                params![id, now],
+                |row| quote_at(row, 0),
+            )
+            .optional()?)
+    }
+
+    pub fn insert_swap(&self, swap: &Swap) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t1)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                swap.id.as_slice(),
+                swap.quote.id,
+                swap.user_share.to_affine_bytes(),
+                swap.viewing.to_bytes(),
+                swap.zcash_account.expose_uuid().to_string(),
+                swap.opened_at,
+                swap.t1,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn swap(&self, id: &B256) -> Result<Option<Swap>> {
+        let sql = format!(
+            "SELECT {SWAP_COLUMNS} FROM swaps s JOIN quotes q USING (quote_id) WHERE s.id = ?1"
+        );
+        Ok(self
+            .conn()
+            .query_row(&sql, params![id.as_slice()], swap_from_row)
+            .optional()?)
+    }
+
+    pub fn unsettled_swaps(&self) -> Result<Vec<Swap>> {
+        let sql = format!(
+            "SELECT {SWAP_COLUMNS} FROM swaps s JOIN quotes q USING (quote_id)
+             WHERE s.settled = 0 ORDER BY s.opened_at"
+        );
+        let conn = self.conn();
+        let mut statement = conn.prepare(&sql)?;
+        let swaps = statement
+            .query_map([], swap_from_row)?
+            .collect::<Result<_, _>>()?;
+        Ok(swaps)
+    }
+
+    pub fn record_sweep(&self, id: &B256, txid: TxId) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET sweep_txid = ?2 WHERE id = ?1",
+            params![id.as_slice(), txid.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    pub fn settle(&self, id: &B256) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET settled = 1 WHERE id = ?1",
+            params![id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
+    let account: String = row.get(3)?;
+    let account = Uuid::parse_str(&account).map_err(|e| invalid(3, Type::Text, e))?;
+    Ok(Swap {
+        id: B256::from(row.get::<_, [u8; 32]>(0)?),
+        user_share: PublicShare::from_affine_bytes(&row.get(1)?)
+            .map_err(|e| invalid(1, Type::Blob, e))?,
+        viewing: ViewingKeys::from_bytes(&row.get(2)?).map_err(|e| invalid(2, Type::Blob, e))?,
+        zcash_account: AccountUuid::from_uuid(account),
+        opened_at: row.get(4)?,
+        t1: row.get(5)?,
+        sweep: row.get::<_, Option<[u8; 32]>>(6)?.map(TxId::from_bytes),
+        settled: row.get(7)?,
+        quote: quote_at(row, 8)?,
+    })
+}
+
+/// Reads the quote columns starting at `first`, in `quote_id, nonce, payout, amount,
+/// deposit_zat` order.
+fn quote_at(row: &Row<'_>, first: usize) -> rusqlite::Result<Quote> {
+    let amount: String = row.get(first + 3)?;
+    Ok(Quote {
+        id: row.get(first)?,
+        nonce: row.get(first + 1)?,
+        payout: Address::from(row.get::<_, [u8; 20]>(first + 2)?),
+        amount: amount
+            .parse()
+            .map_err(|e| invalid(first + 3, Type::Text, e))?,
+        deposit_zat: row.get(first + 4)?,
+    })
+}
+
+fn invalid(
+    column: usize,
+    kind: Type,
+    e: impl std::error::Error + Send + Sync + 'static,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, kind, Box::new(e))
+}

@@ -1,0 +1,29 @@
+[package]
+name = "zecswap-maker"
+description = "ZecSwap maker: quotes, opens swaps on Base, watches deposits and sweeps claimed ZEC"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+alloy-primitives = { version = "~1.5", features = ["serde"] }
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+rand_core.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = "1"
+zcash_address.workspace = true
+zecswap-api = { path = "../zecswap-api" }
+zecswap-chain = { path = "../zecswap-chain" }
+zecswap-core = { path = "../zecswap-core" }
+zeroize.workspace = true

@@ -1,0 +1,29 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 10000
+fs_permissions = [{ access = "read", path = "./test/vectors" }]
+
+[profile.default.fuzz]
+runs = 1024
+
+[profile.default.invariant]
+runs = 256
+depth = 128
+fail_on_revert = false
+
+# Differential fuzzing of Pallas.sol against the Rust implementation:
+#   cargo build --release -p zecswap-core --example evm_vectors
+#   FOUNDRY_PROFILE=ffi forge test
+[profile.ffi]
+ffi = true
+
+[profile.ffi.fuzz]
+runs = 256
+
+[fmt]
+line_length = 110

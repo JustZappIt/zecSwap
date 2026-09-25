@@ -1,0 +1,9 @@
+[toolchain]
+# Matches zcash-android-wallet-sdk so both native libraries build with one compiler.
+channel = "1.92.0"
+targets = [
+    "armv7-linux-androideabi",
+    "aarch64-linux-android",
+    "i686-linux-android",
+    "x86_64-linux-android",
+]

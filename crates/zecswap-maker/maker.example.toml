@@ -1,0 +1,29 @@
+# Secrets are read from the environment, never from this file:
+#   MAKER_PRIVATE_KEY   Base account that opens swaps and holds inventory
+#   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
+
+network = "testnet"
+lightwalletd = "https://testnet.zec.rocks:443"
+base_rpc = "https://sepolia.base.org"
+contract = "0x0000000000000000000000000000000000000000"
+token = "0x0000000000000000000000000000000000000000"
+# The maker's own wallet; claimed deposits are swept here.
+sweep_to = "utest1..."
+data_dir = "maker-data"
+listen = "127.0.0.1:8787"
+
+[pricing]
+# Token base units (6 decimals for USDC) per whole ZEC, before the spread.
+price_per_zec = 40000000
+spread_bps = 100
+unit = 50000000
+max_units = 20
+
+[timing]
+quote_ttl = 120
+t0_after = 2700
+t1_after = 6300
+cancel_after = 900
+t0_margin = 300
+reveal_margin = 600
+tick = 15

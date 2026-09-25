@@ -1,0 +1,9 @@
+/target
+.DS_Store
+/contracts/out
+/contracts/cache
+/contracts/broadcast/*/31337
+.env*
+!.env.example
+.testnet/
+docs/local/
