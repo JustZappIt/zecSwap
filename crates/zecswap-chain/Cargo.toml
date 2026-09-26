@@ -51,4 +51,5 @@ zecswap-railgun = { path = "../zecswap-railgun" }
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 hex = "0.4"
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

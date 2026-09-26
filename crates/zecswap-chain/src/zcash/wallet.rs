@@ -28,7 +28,7 @@ use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_primitives::transaction::builder::BundlePadding;
-use zcash_protocol::consensus::{Network, Parameters};
+use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{ShieldedPool, TxId};
 use zecswap_core::{JointAccount, SpendKey, sign_pczt};
@@ -291,7 +291,7 @@ impl Wallet {
 
     async fn birthday_at_tip(client: &mut Lightwalletd) -> Result<AccountBirthday, Error> {
         let tip = lightwalletd::chain_tip(client).await?;
-        let treestate = lightwalletd::tree_state(client, tip).await?;
+        let treestate = lightwalletd::tree_state(client, birthday_tree_height(tip)?).await?;
         AccountBirthday::from_treestate(treestate, None)
             .map_err(|e| Error::Wallet(format!("account birthday: {e:?}")))
     }
@@ -324,6 +324,16 @@ impl Wallet {
     }
 }
 
+fn birthday_tree_height(tip: BlockHeight) -> Result<BlockHeight, Error> {
+    // A tree state describes the block BEFORE the birthday. A birthday above the tip
+    // can produce an empty scan range after the previous joint account was deleted.
+    // https://github.com/zcash/librustzcash/issues/2301
+    u32::from(tip)
+        .checked_sub(1)
+        .map(BlockHeight::from_u32)
+        .ok_or_else(|| Error::Wallet("cannot create an account at genesis".into()))
+}
+
 fn sign_own_spends(pczt: Pczt, ask: &SpendAuthorizingKey) -> Result<Pczt, Error> {
     let orchard = unsigned_spends(pczt.orchard());
     let ironwood = unsigned_spends(pczt.ironwood());
@@ -350,3 +360,6 @@ fn unsigned_spends(bundle: &pczt::orchard::Bundle) -> Vec<usize> {
         .map(|(index, _)| index)
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

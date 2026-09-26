@@ -132,6 +132,7 @@ async fn underpaid(p: &Player) -> Result<()> {
 /// maker still collects the ZEC when it comes back.
 async fn silent_maker(p: &Player) -> Result<()> {
     let swap = p.open().await?;
+    p.node().sleep().await;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
     let t0 = p.user.state(&swap).await?.t0;
     p.wait_for_chain_time(t0).await?;

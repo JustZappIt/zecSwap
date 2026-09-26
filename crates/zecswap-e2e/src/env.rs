@@ -280,7 +280,7 @@ impl Env {
             evm_key: silent_key,
             root: maker_root(&silent_config.data_dir)?,
         };
-        let silent = MakerNode::start(silent_config, silent_secrets, false).await?;
+        let silent = MakerNode::start(silent_config, silent_secrets, true).await?;
 
         Ok(Arc::new(Self {
             started,
@@ -343,7 +343,7 @@ impl Env {
     }
 }
 
-/// A maker running in-process: its API on a local port and, unless silent, its watchtower.
+/// A maker running in-process: its API on a local port and a controllable watchtower.
 pub(crate) struct MakerNode {
     config: Config,
     secrets: Secrets,
@@ -375,7 +375,15 @@ impl MakerNode {
         self.running.lock().await.maker.clone()
     }
 
-    /// Starts the watchtower of a maker that has been silent so far.
+    /// Simulates a maker outage after it accepts a swap, before the deposit.
+    pub(crate) async fn sleep(&self) {
+        if let Some(watchtower) = self.running.lock().await.watchtower.take() {
+            watchtower.abort();
+            let _ = watchtower.await;
+        }
+    }
+
+    /// Restarts the watchtower after a simulated outage.
     pub(crate) async fn wake(&self) {
         let mut running = self.running.lock().await;
         if running.watchtower.is_none() {
@@ -402,12 +410,25 @@ impl Running {
             axum::serve(listener, router).await.ok();
         });
         let watchtower = watching.then(|| tokio::spawn(maker.clone().run()));
-        Ok(Self {
+        let mut running = Self {
             maker,
             url,
             server,
             watchtower,
-        })
+        };
+        if watching {
+            let ready = tokio::time::timeout(Duration::from_secs(120), async {
+                while running.maker.check_watchtower().is_err() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+            if ready.is_err() {
+                running.stop();
+                anyhow::bail!("maker watchtower did not complete its initial pass");
+            }
+        }
+        Ok(running)
     }
 
     fn stop(&mut self) {

@@ -29,3 +29,4 @@ cancel_after = 900
 t0_margin = 300
 reveal_margin = 600
 tick = 15
+# Quote and accept return 503 until a pass completes, and if none completes for 3 * tick seconds.

@@ -41,7 +41,9 @@ impl IntoResponse for MakerError {
         let status = match &self {
             MakerError::Rejected(_) => StatusCode::BAD_REQUEST,
             MakerError::UnknownQuote => StatusCode::NOT_FOUND,
-            MakerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            MakerError::Unavailable | MakerError::WatchtowerUnavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             MakerError::Internal(e) => {
                 error!("{e:#}");
                 return (

@@ -1,11 +1,13 @@
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
+use futures_util::FutureExt;
 use rand_core::{OsRng, RngCore};
 use tokio::sync::Mutex;
-use tokio::time::MissedTickBehavior;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
 use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, swap_id};
@@ -16,6 +18,7 @@ use zeroize::Zeroizing;
 use crate::config::{Config, Secrets};
 use crate::policy::{self, Action, Observation};
 use crate::store::{Store, Swap};
+use crate::watchtower::{self, Health};
 
 pub struct Maker {
     config: Config,
@@ -28,11 +31,59 @@ pub struct Maker {
     settlement: Settlement,
     zcash: Mutex<Zcash>,
     prover: Prover,
+    health: Health,
 }
 
 struct Zcash {
-    wallet: Wallet,
+    wallet: Option<Wallet>,
     client: Lightwalletd,
+}
+
+impl Zcash {
+    fn open_wallet(config: &Config) -> Result<Wallet> {
+        let wallet = Wallet::open(config.data_dir.join("wallet.sqlite"), config.network())?;
+        Ok(match config.confirmations {
+            Some(confirmations) => wallet.with_confirmations(confirmations),
+            None => wallet,
+        })
+    }
+
+    fn wallet(&self) -> Result<&Wallet> {
+        self.wallet.as_ref().context("Zcash wallet needs reopening")
+    }
+
+    async fn sync_with<F, Fut>(&mut self, config: &Config, sync: F) -> Result<bool>
+    where
+        F: FnOnce(Wallet, Lightwalletd) -> Fut,
+        Fut: Future<Output = (Wallet, Result<(), zecswap_chain::Error>)>,
+    {
+        let wallet = match self.wallet.take() {
+            Some(wallet) => wallet,
+            None => Self::open_wallet(config)?,
+        };
+        // Own the wallet inside the unwind boundary: a panic drops the connection and
+        // block cache instead of allowing partially updated in-memory state to escape.
+        match AssertUnwindSafe(async { sync(wallet, self.client.clone()).await })
+            .catch_unwind()
+            .await
+        {
+            Ok((wallet, result)) => {
+                self.wallet = Some(wallet);
+                match result {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        warn!("acting on the last synced Zcash state: {e}");
+                        Ok(false)
+                    }
+                }
+            }
+            Err(_) => {
+                error!("Zcash sync panicked; reopening wallet and acting on the last synced state");
+                self.wallet = Some(Self::open_wallet(config)?);
+                Ok(false)
+            }
+        }
+    }
 }
 
 /// The maker's own record of a swap.
@@ -50,6 +101,8 @@ pub enum MakerError {
     UnknownQuote,
     #[error("cannot fill that amount right now")]
     Unavailable,
+    #[error("watchtower has not completed a recent pass; try again later")]
+    WatchtowerUnavailable,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -72,12 +125,8 @@ impl Maker {
             .context("reaching the settlement chain")?;
         let lock_duration = settlement.lock_duration().await?;
         config.timing.check(lock_duration)?;
-        let mut wallet = Wallet::open(config.data_dir.join("wallet.sqlite"), config.network())?;
-        if let Some(confirmations) = config.confirmations {
-            wallet = wallet.with_confirmations(confirmations);
-        }
         let zcash = Zcash {
-            wallet,
+            wallet: Some(Zcash::open_wallet(&config)?),
             client: connect(&config.lightwalletd)
                 .await
                 .context("reaching lightwalletd")?,
@@ -92,6 +141,7 @@ impl Maker {
             prover: Prover::default(),
             account,
             lock_duration,
+            health: Health::new(Duration::from_secs(config.timing.tick)),
             config,
         })
     }
@@ -109,7 +159,14 @@ impl Maker {
         self.config.listen
     }
 
+    /// New swaps require a completed watchtower pass within the last three tick intervals.
+    /// Unavailable at startup until the first pass completes.
+    pub fn check_watchtower(&self) -> Result<(), MakerError> {
+        self.health.check()
+    }
+
     pub async fn quote(&self, request: QuoteRequest) -> Result<Quote, MakerError> {
+        self.health.check()?;
         let terms = self.config.pricing.terms(request.units).ok_or_else(|| {
             MakerError::Rejected(format!(
                 "{} units is outside the quotable range",
@@ -135,6 +192,7 @@ impl Maker {
         let mut quote_id = [0; 32];
         OsRng.fill_bytes(&mut quote_id);
         let expires_at = unix_now() + self.config.timing.quote_ttl;
+        self.health.check()?;
         let nonce = self.store.insert_quote(
             quote_id,
             request.payout,
@@ -163,6 +221,13 @@ impl Maker {
         quote_id: B256,
         acceptance: Acceptance,
     ) -> Result<Accepted, MakerError> {
+        self.health.check()?;
+        let mut zcash = self.zcash.lock().await;
+        // A request can wait behind a long sync or proof after its first health check.
+        // Check again before consuming its quote or importing an account.
+        self.health.check()?;
+        let Zcash { wallet, client } = &mut *zcash;
+        let wallet = wallet.as_mut().ok_or(MakerError::WatchtowerUnavailable)?;
         let quote = self
             .store
             .take_quote(&quote_id.0, unix_now())?
@@ -185,14 +250,15 @@ impl Maker {
         let id = swap_id(self.account, &user_share);
 
         // Watch the deposit address before the user can learn it from the chain.
-        let zcash_account = {
-            let mut zcash = self.zcash.lock().await;
-            let Zcash { wallet, client } = &mut *zcash;
-            wallet
-                .import_joint(client, &joint, &format!("swap {id}"))
-                .await?
-        };
+        let zcash_account = wallet
+            .import_joint(client, &joint, &format!("swap {id}"))
+            .await?;
+        drop(zcash);
         let now = self.settlement.now().await?;
+        if let Err(e) = self.health.check() {
+            self.forget(zcash_account).await;
+            return Err(e);
+        }
         let timing = &self.config.timing;
         let swap = Swap {
             id,
@@ -240,14 +306,18 @@ impl Maker {
 
     /// The watchtower: every tick, sync and take the next step for every unsettled swap.
     pub async fn run(self: Arc<Self>) {
-        let mut ticker = tokio::time::interval(Duration::from_secs(self.config.timing.tick));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if let Err(e) = self.tick().await {
-                warn!("watchtower pass failed: {e:#}");
-            }
-        }
+        let maker = &self;
+        watchtower::run(
+            Duration::from_secs(self.config.timing.tick),
+            &self.health,
+            |panicked| async move {
+                if panicked {
+                    maker.zcash.lock().await.wallet = None;
+                }
+                maker.tick().await
+            },
+        )
+        .await;
     }
 
     async fn tick(&self) -> Result<()> {
@@ -255,14 +325,12 @@ impl Maker {
         // needs nothing from Zcash and can't wait for it.
         let synced = {
             let mut zcash = self.zcash.lock().await;
-            let Zcash { wallet, client } = &mut *zcash;
-            match wallet.sync(client).await {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!("acting on the last synced Zcash state: {e}");
-                    false
-                }
-            }
+            zcash
+                .sync_with(&self.config, |mut wallet, mut client| async move {
+                    let result = wallet.sync(&mut client).await;
+                    (wallet, result)
+                })
+                .await?
         };
         let now = self.settlement.now().await?;
         for swap in self.store.unsettled_swaps()? {
@@ -283,11 +351,9 @@ impl Maker {
         };
         let (funds, sweep_mined) = {
             let zcash = self.zcash.lock().await;
-            let funds = zcash.wallet.funds(swap.zcash_account)?;
-            let sweep_mined = swap
-                .sweep
-                .map(|txid| zcash.wallet.is_mined(txid))
-                .transpose()?;
+            let wallet = zcash.wallet()?;
+            let funds = wallet.funds(swap.zcash_account)?;
+            let sweep_mined = swap.sweep.map(|txid| wallet.is_mined(txid)).transpose()?;
             (funds, sweep_mined)
         };
         let observation = Observation {
@@ -331,6 +397,7 @@ impl Maker {
         let key = joint.spend_key(&e, &z)?;
         let mut zcash = self.zcash.lock().await;
         let Zcash { wallet, client } = &mut *zcash;
+        let wallet = wallet.as_mut().context("Zcash wallet needs reopening")?;
         let txid = wallet.sweep(&self.prover, swap.zcash_account, &key, &self.sweep_to)?;
         // Recorded first: a sweep that never reaches the network expires, and the policy then
         // sweeps again.
@@ -346,7 +413,13 @@ impl Maker {
     }
 
     async fn forget(&self, account: AccountUuid) {
-        if let Err(e) = self.zcash.lock().await.wallet.forget(account) {
+        let mut zcash = self.zcash.lock().await;
+        let result = zcash
+            .wallet
+            .as_mut()
+            .context("Zcash wallet needs reopening")
+            .and_then(|wallet| Ok(wallet.forget(account)?));
+        if let Err(e) = result {
             warn!("could not stop tracking {account:?}: {e}");
         }
     }
@@ -370,3 +443,6 @@ fn unix_now() -> u64 {
         .expect("clock is after 1970")
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests;
