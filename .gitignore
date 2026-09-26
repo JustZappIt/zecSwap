@@ -8,3 +8,4 @@
 .testnet/
 docs/local/
 node_modules/
+/android/build
