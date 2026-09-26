@@ -89,6 +89,8 @@ fn future_birthday_panics_only_with_retained_blocks_at_unchanged_tip() {
     ] {
         let (dir, mut wallet) = previous_swap(scanned);
         import_at(&mut wallet, birthday);
+        // `sync` skips every tip that panics here.
+        assert!(!panics || wallet.born_above(BlockHeight::from_u32(tip)).unwrap());
         if panics {
             let conn = rusqlite::Connection::open(dir.path().join("wallet.sqlite")).unwrap();
             let ranges: Vec<(u32, u32, u32)> = conn
@@ -132,25 +134,14 @@ fn future_birthday_panics_only_with_retained_blocks_at_unchanged_tip() {
 }
 
 #[test]
-fn new_birthday_syncs_without_waiting_for_another_block() {
+fn a_birthday_above_the_tip_imports_and_syncs_from_the_next_block() {
+    // Scanned to 4,395,105, so the import needs no rewind of the note trees.
     let (_dir, mut wallet) = previous_swap(true);
-    let tree_height = birthday_tree_height(BlockHeight::from_u32(TIP)).unwrap();
-    let birthday = AccountBirthday::from_treestate(
-        zcash_client_backend::proto::service::TreeState {
-            height: u64::from(u32::from(tree_height)),
-            hash: "00".repeat(32),
-            ..Default::default()
-        },
-        None,
-    )
-    .unwrap();
-    assert_eq!(birthday.height(), BlockHeight::from_u32(TIP));
-    import_at(&mut wallet, u32::from(birthday.height()));
-    for tip in [TIP, TIP, TIP + 1] {
-        wallet
-            .db
-            .update_chain_tip(BlockHeight::from_u32(tip))
-            .unwrap();
-    }
-    assert!(birthday_tree_height(BlockHeight::from_u32(0)).is_err());
+    import_at(&mut wallet, 4_395_106);
+    assert!(wallet.born_above(BlockHeight::from_u32(4_395_105)).unwrap());
+    assert!(!wallet.born_above(BlockHeight::from_u32(4_395_106)).unwrap());
+    wallet
+        .db
+        .update_chain_tip(BlockHeight::from_u32(4_395_106))
+        .unwrap();
 }

@@ -95,6 +95,10 @@ impl Wallet {
         if self.db.get_account_ids()?.is_empty() {
             return Ok(());
         }
+        let tip = lightwalletd::chain_tip(client).await?;
+        if self.born_above(tip)? {
+            return Ok(());
+        }
         zcash_client_backend::sync::run(
             client,
             &self.network,
@@ -289,11 +293,23 @@ impl Wallet {
         Ok(self.db.delete_account(account)?)
     }
 
+    /// A birthday one block above the tip. One at the tip would make the import rewind the
+    /// wallet to the block below, which fails when the note trees kept no checkpoint there.
     async fn birthday_at_tip(client: &mut Lightwalletd) -> Result<AccountBirthday, Error> {
         let tip = lightwalletd::chain_tip(client).await?;
-        let treestate = lightwalletd::tree_state(client, birthday_tree_height(tip)?).await?;
+        let treestate = lightwalletd::tree_state(client, tip).await?;
         AccountBirthday::from_treestate(treestate, None)
             .map_err(|e| Error::Wallet(format!("account birthday: {e:?}")))
+    }
+
+    /// Whether every account is born above `tip`, so there is nothing to scan yet. Syncing then
+    /// would queue an empty range, which panics next to the ranges a deleted account left
+    /// behind (https://github.com/zcash/librustzcash/issues/2301).
+    fn born_above(&self, tip: BlockHeight) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .get_wallet_birthday()?
+            .is_some_and(|birthday| birthday > tip))
     }
 
     fn store_proposal(
@@ -322,16 +338,6 @@ impl Wallet {
         )
         .map_err(Error::wallet)
     }
-}
-
-fn birthday_tree_height(tip: BlockHeight) -> Result<BlockHeight, Error> {
-    // A tree state describes the block BEFORE the birthday. A birthday above the tip
-    // can produce an empty scan range after the previous joint account was deleted.
-    // https://github.com/zcash/librustzcash/issues/2301
-    u32::from(tip)
-        .checked_sub(1)
-        .map(BlockHeight::from_u32)
-        .ok_or_else(|| Error::Wallet("cannot create an account at genesis".into()))
 }
 
 fn sign_own_spends(pczt: Pczt, ask: &SpendAuthorizingKey) -> Result<Pczt, Error> {
