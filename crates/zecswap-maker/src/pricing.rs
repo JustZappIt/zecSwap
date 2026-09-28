@@ -25,6 +25,28 @@ pub struct Terms {
 }
 
 impl Pricing {
+    pub fn reverse_terms(&self, units: u32) -> Option<Terms> {
+        if units == 0
+            || units > self.max_units
+            || self.price_per_zec == 0
+            || self.spread_bps >= 10_000
+        {
+            return None;
+        }
+        let amount = self.unit.checked_mul(units.into())?;
+        if amount >= (1u128 << 120) {
+            return None;
+        }
+        let deposit = amount
+            .checked_mul(ZATOSHIS_PER_ZEC)?
+            .checked_mul(BASIS_POINTS - u128::from(self.spread_bps))?
+            / self.price_per_zec.checked_mul(BASIS_POINTS)?;
+        (deposit > 0).then_some(Terms {
+            amount,
+            deposit_zat: deposit.try_into().ok()?,
+        })
+    }
+
     pub fn terms(&self, units: u32) -> Option<Terms> {
         if units == 0 || units > self.max_units {
             return None;
@@ -82,5 +104,39 @@ mod tests {
             ..pricing()
         };
         assert_eq!(free.terms(1), None);
+    }
+
+    #[test]
+    fn reverse_rounds_zec_down_and_keeps_spread_in_the_makers_favour() {
+        let terms = pricing().reverse_terms(1).unwrap();
+        assert_eq!(terms.amount, 50_000_000);
+        assert_eq!(terms.deposit_zat, 123_750_000);
+        assert!(terms.deposit_zat < pricing().terms(1).unwrap().deposit_zat);
+        assert_eq!(pricing().reverse_terms(0), None);
+        assert_eq!(pricing().reverse_terms(21), None);
+        assert_eq!(
+            Pricing {
+                spread_bps: 10_000,
+                ..pricing()
+            }
+            .reverse_terms(1),
+            None
+        );
+        assert_eq!(
+            Pricing {
+                price_per_zec: 0,
+                ..pricing()
+            }
+            .reverse_terms(1),
+            None
+        );
+        assert_eq!(
+            Pricing {
+                unit: u128::MAX,
+                ..pricing()
+            }
+            .reverse_terms(2),
+            None
+        );
     }
 }

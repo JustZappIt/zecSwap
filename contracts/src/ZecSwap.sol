@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Pallas} from "./Pallas.sol";
 import {IRailgun, ShieldVault} from "./ShieldVault.sol";
-import {Token} from "./Token.sol";
+import {Token, IERC20} from "./Token.sol";
 
 /// @title ZecSwap
 /// @notice Settles atomic swaps of shielded ZEC for ERC-20 tokens held by makers.
@@ -33,7 +33,7 @@ contract ZecSwap {
         address maker;
         uint64 t0;
         Stage stage;
-        /// Whether a claimed swap's Railgun payout has left.
+        /// Whether a Railgun payout or reverse refund has left.
         bool paidOut;
         address user;
         uint64 t1;
@@ -51,6 +51,33 @@ contract ZecSwap {
         /// The `noteCommitment` of the Railgun note a claim pays; zero pays `user`'s balance.
         bytes32 payoutNote;
     }
+
+    struct ReverseOpen {
+        address maker;
+        address user;
+        address token;
+        uint128 amount;
+        uint256[2] makerKey;
+        uint256[2] userKey;
+        uint64 t0;
+        uint64 t1;
+        bytes32 refundNote;
+        uint64 deadline;
+    }
+
+    struct ReverseFunding {
+        bytes32 refundNote;
+        uint64 blockNumber;
+    }
+
+    mapping(bytes32 id => ReverseFunding) public reverseFunding;
+    bytes32 private constant OPEN_REVERSE_TYPEHASH = keccak256(
+        "OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)"
+    );
+    bytes32 private constant READY_TYPEHASH = keccak256("Ready(bytes32 id,uint64 deadline)");
+    bytes32 private constant LOCK_REFUND_TYPEHASH = keccak256("LockRefund(bytes32 id,uint64 deadline)");
+    bytes32 private constant REFUND_PAYOUT_TYPEHASH =
+        keccak256("RefundPayout(bytes32 id,address relayer,uint128 fee)");
 
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -98,6 +125,7 @@ contract ZecSwap {
     event Refunded(bytes32 indexed id, uint256 makerSecret);
 
     error ZeroAmount();
+    error InvalidAmount();
     error ZeroAddress();
     error InsufficientBalance();
     error InvalidKey();
@@ -153,6 +181,20 @@ contract ZecSwap {
         uint64 t1,
         bytes32 payoutNote
     ) external returns (bytes32 id) {
+        return _open(msg.sender, token, amount, makerKey, userKey, user, t0, t1, payoutNote);
+    }
+
+    function _open(
+        address owner,
+        address token,
+        uint128 amount,
+        uint256[2] calldata makerKey,
+        uint256[2] calldata userKey,
+        address user,
+        uint64 t0,
+        uint64 t1,
+        bytes32 payoutNote
+    ) private returns (bytes32 id) {
         if (amount == 0) revert ZeroAmount();
         if (user == address(0)) revert ZeroAddress();
         if (payoutNote != 0 && address(RAILGUN) == address(0)) revert NoShieldedPayouts();
@@ -162,16 +204,16 @@ contract ZecSwap {
                 || makerKey[0] == userKey[0]
         ) revert InvalidKey();
 
-        id = swapId(msg.sender, userKey);
-        bytes32 makerKeyHash = keccak256(abi.encode(msg.sender, makerKey));
+        id = swapId(owner, userKey);
+        bytes32 makerKeyHash = keccak256(abi.encode(owner, makerKey));
         if (swaps[id].stage != Stage.None || makerKeyUsed[makerKeyHash]) revert KeyReused();
-        uint256 balance = balanceOf[msg.sender][token];
+        uint256 balance = balanceOf[owner][token];
         if (amount > balance) revert InsufficientBalance();
 
         makerKeyUsed[makerKeyHash] = true;
-        balanceOf[msg.sender][token] = balance - amount;
+        balanceOf[owner][token] = balance - amount;
         swaps[id] = Swap({
-            maker: msg.sender,
+            maker: owner,
             t0: t0,
             stage: Stage.Open,
             paidOut: false,
@@ -188,7 +230,93 @@ contract ZecSwap {
             secret: 0,
             payoutNote: payoutNote
         });
-        emit Opened(id, msg.sender, user, token, amount, makerKey, userKey, t0, t1, payoutNote);
+        emit Opened(id, owner, user, token, amount, makerKey, userKey, t0, t1, payoutNote);
+    }
+
+    /// @notice Called by Relay Adapt after unshielding and approving the exact escrow amount.
+    /// The stored roles remain USDC side (`maker`) and ZEC side (`user`) in both directions.
+    function openReverse(ReverseOpen calldata terms, bytes calldata signature)
+        external
+        returns (bytes32 id)
+    {
+        if (block.timestamp > terms.deadline) revert Expired();
+        if (terms.user == address(0) || terms.maker == address(0)) revert ZeroAddress();
+        if (terms.refundNote == 0) revert WrongNote();
+        if (terms.amount > type(uint120).max) revert InvalidAmount();
+        if (terms.deadline >= terms.t0) revert InvalidDeadlines();
+        if (address(RAILGUN) == address(0)) revert NoShieldedPayouts();
+        _checkSignature(
+            terms.user,
+            keccak256(
+                abi.encode(
+                    OPEN_REVERSE_TYPEHASH,
+                    terms.maker,
+                    terms.user,
+                    terms.token,
+                    terms.amount,
+                    keccak256(abi.encode(terms.makerKey)),
+                    keccak256(abi.encode(terms.userKey)),
+                    terms.t0,
+                    terms.t1,
+                    terms.refundNote,
+                    terms.deadline
+                )
+            ),
+            signature
+        );
+        // Record before the token call. A failed or short transfer rolls the entire open back.
+        balanceOf[terms.user][terms.token] += terms.amount;
+        id = _open(
+            terms.user,
+            terms.token,
+            terms.amount,
+            terms.userKey,
+            terms.makerKey,
+            terms.maker,
+            terms.t0,
+            terms.t1,
+            0
+        );
+        reverseFunding[id] = ReverseFunding(terms.refundNote, uint64(block.number));
+        uint256 beforeBalance = IERC20(terms.token).balanceOf(address(this));
+        Token.transferFrom(terms.token, msg.sender, address(this), terms.amount);
+        if (IERC20(terms.token).balanceOf(address(this)) != beforeBalance + terms.amount) {
+            revert InsufficientBalance();
+        }
+    }
+
+    function readyWithSig(bytes32 id, uint64 deadline, bytes calldata signature) external {
+        if (block.timestamp > deadline) revert Expired();
+        Swap storage swap = swaps[id];
+        if (reverseFunding[id].refundNote == 0) revert WrongStage();
+        _checkSignature(swap.maker, keccak256(abi.encode(READY_TYPEHASH, id, deadline)), signature);
+        _ready(id, swap);
+    }
+
+    function lockRefundWithSig(bytes32 id, uint64 deadline, bytes calldata signature) external {
+        if (block.timestamp > deadline) revert Expired();
+        if (deadline >= block.timestamp + LOCK_DURATION) revert InvalidDeadlines();
+        Swap storage swap = swaps[id];
+        if (reverseFunding[id].refundNote == 0) revert WrongStage();
+        _checkSignature(swap.maker, keccak256(abi.encode(LOCK_REFUND_TYPEHASH, id, deadline)), signature);
+        _lockRefund(id, swap);
+    }
+
+    function refundPayout(
+        bytes32 id,
+        bytes32 npk,
+        IRailgun.ShieldCiphertext calldata ciphertext,
+        uint128 fee,
+        bytes calldata signature
+    ) external {
+        Swap storage swap = swaps[id];
+        if (swap.stage != Stage.Refunded || swap.paidOut) revert WrongStage();
+        bytes32 note = reverseFunding[id].refundNote;
+        if (note == 0 || noteCommitment(npk, ciphertext) != note) revert WrongNote();
+        _checkSignature(
+            swap.maker, keccak256(abi.encode(REFUND_PAYOUT_TYPEHASH, id, msg.sender, fee)), signature
+        );
+        _shieldPayout(id, swap, npk, ciphertext, fee);
     }
 
     /// @notice The maker attests that the ZEC deposit is confirmed, giving up its right to
@@ -196,6 +324,11 @@ contract ZecSwap {
     function ready(bytes32 id) external {
         Swap storage swap = swaps[id];
         if (msg.sender != swap.maker) revert Unauthorized();
+        _ready(id, swap);
+    }
+
+    function _ready(bytes32 id, Swap storage swap) private {
+        if (reverseFunding[id].refundNote != 0 && block.timestamp >= swap.t0) revert Expired();
         if (swap.stage != Stage.Open || swap.refundLockUntil != 0) revert WrongStage();
         swap.stage = Stage.Ready;
         emit MarkedReady(id);
@@ -247,6 +380,16 @@ contract ZecSwap {
         if (swap.stage != Stage.Claimed || swap.payoutNote == 0 || swap.paidOut) revert WrongStage();
         if (noteCommitment(npk, ciphertext) != swap.payoutNote) revert WrongNote();
         _checkSignature(swap.user, keccak256(abi.encode(PAYOUT_TYPEHASH, id, msg.sender, fee)), signature);
+        _shieldPayout(id, swap, npk, ciphertext, fee);
+    }
+
+    function _shieldPayout(
+        bytes32 id,
+        Swap storage swap,
+        bytes32 npk,
+        IRailgun.ShieldCiphertext calldata ciphertext,
+        uint128 fee
+    ) private {
         swap.paidOut = true;
         bytes memory code = _vaultCode();
         address vault;
@@ -272,7 +415,9 @@ contract ZecSwap {
         if (!swap.paidOut) revert WrongStage();
         bytes32 note = noteCommitment(npk, ciphertext);
         _checkSignature(
-            swap.user, keccak256(abi.encode(RESCUE_TYPEHASH, id, note, msg.sender, fee)), signature
+            reverseFunding[id].refundNote == 0 ? swap.user : swap.maker,
+            keccak256(abi.encode(RESCUE_TYPEHASH, id, note, msg.sender, fee)),
+            signature
         );
         ShieldVault(vaultOf(id)).shield(RAILGUN, swap.token, npk, ciphertext, fee, msg.sender);
         emit Rescued(id, msg.sender, fee);
@@ -284,6 +429,10 @@ contract ZecSwap {
     function lockRefund(bytes32 id) external {
         Swap storage swap = swaps[id];
         if (msg.sender != swap.maker) revert Unauthorized();
+        _lockRefund(id, swap);
+    }
+
+    function _lockRefund(bytes32 id, Swap storage swap) private {
         Stage stage = swap.stage;
         bool refundable = stage == Stage.Open || (stage == Stage.Ready && block.timestamp >= swap.t1);
         if (!refundable) revert WrongStage();
@@ -304,7 +453,7 @@ contract ZecSwap {
         if (!Pallas.isSpendAuthMul(makerSecret, swap.makerX, swap.makerY)) revert WrongSecret();
         swap.stage = Stage.Refunded;
         swap.secret = makerSecret;
-        balanceOf[swap.maker][swap.token] += swap.amount;
+        if (reverseFunding[id].refundNote == 0) balanceOf[swap.maker][swap.token] += swap.amount;
         emit Refunded(id, makerSecret);
     }
 
@@ -347,7 +496,8 @@ contract ZecSwap {
 
     function _lockClaim(bytes32 id, Swap storage swap) private {
         Stage stage = swap.stage;
-        bool claimable = stage == Stage.Ready || (stage == Stage.Open && block.timestamp >= swap.t0);
+        bool claimable = stage == Stage.Ready
+            || (reverseFunding[id].refundNote == 0 && stage == Stage.Open && block.timestamp >= swap.t0);
         if (!claimable) revert WrongStage();
         if (_locked(swap) || _turnAfterLapse(swap.claimLockUntil, swap.refundLockUntil)) {
             revert LockUnavailable();

@@ -46,6 +46,7 @@ zcash_primitives = "0.30"
 zcash_protocol.workspace = true
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }
+zip32 = "0.2"
 
 [dev-dependencies]
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }

@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zecswap-testnet",
+  "account_id": "ad4b7e709f026b7a2eb07c977f85e1e4",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  },
+  "vpc_services": [
+    { "binding": "ORIGIN", "service_id": "01a0ea18-dbba-7ee3-bcd9-c906d60afcea" }
+  ]
+}

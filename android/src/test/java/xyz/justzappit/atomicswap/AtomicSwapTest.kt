@@ -24,6 +24,46 @@ class AtomicSwapTest {
         ).bytes()
 
     @Test
+    fun reverseAuthorizations() {
+        val reverseId = "0xf222c5c748f566811318f3e2851848301cf248bb706b32a98278936350465ed7".bytes()
+        val terms =
+            ReverseEscrowTerms(
+                maker = "0x09eD1F966745Be18C711C346242c0974DAd7c3e5".bytes(),
+                token = ByteArray(20) { 0x33 },
+                amount = BigInteger.valueOf(50_000_000),
+                makerShare = makerShare,
+                readyDeadline = 1_790_003_600,
+                refundAfter = 1_790_007_200,
+                fundingDeadline = 1_790_000_000,
+            )
+        assertEquals(
+            "0x10a82e61f8b598a82b826c7135c139df3dd9967323eb9d932a39bdbc79161fbf4" +
+                "cf02891f0cf6490c2b28ece250698c272688873eabef70caa633ae3307f144a1c",
+            ReverseAtomicSwap.signOpen(key, deployment, terms).hex(),
+        )
+        assertEquals(
+            "0xa3a6ec8ca4c6d397fcf15147c9e9528f7ab4bfa2877eee97def81fdd709511215" +
+                "07ac59404a64fc24a6eda542b605e1ec4bed293c9b8067ceb89c961b5d07e531b",
+            ReverseAtomicSwap.signReady(key, deployment, reverseId, 1_790_000_000).hex(),
+        )
+        assertEquals(
+            "0x6b4a5bc4cca2c1605411766f85a88984dc5b66db7bf1a917e8c5e09953a186c56" +
+                "0885ffa95afa0b0dc5aef9e0bf415b5c9647ba2c2a91bf1345492e2c555e8f11c",
+            ReverseAtomicSwap.signLockRefund(key, deployment, reverseId, 1_790_000_000).hex(),
+        )
+        assertEquals(
+            "0x0d7a799d9add7ed32cd707b2782528ee0888679f22aba464d3370e36d829abff4e" +
+                "83135f06906b22458f7627327b8805305164d00974520bb99a401f1cc536921b",
+            ReverseAtomicSwap.signRefundPayout(
+                key, deployment, reverseId, ByteArray(20) { 0x22 }, BigInteger.valueOf(20_000)
+            ).hex(),
+        )
+        assertThrows(AtomicSwapException::class.java) {
+            ReverseAtomicSwap.signReady(key, deployment, reverseId, -1)
+        }
+    }
+
+    @Test
     fun keys() {
         assertEquals(
             "0x0b42629d5b3f787aba7ccde87574c13f6db6b8fccb7c5cfeb3f4e4081c756461" +

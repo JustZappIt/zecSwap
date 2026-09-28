@@ -36,6 +36,74 @@ fn maker_share() -> [u8; 64] {
 }
 
 #[test]
+fn reverse_authorizations_bind_terms_and_separate_actions() {
+    use zecswap::ops::{ReverseAction, ReverseTerms};
+    use zecswap_core::{NetworkType, ReverseOpen, derive_user_keys, signer};
+    let domain = Domain {
+        chain_id: SEPOLIA,
+        contract: CONTRACT,
+    };
+    let keys = derive_user_keys(&SEED, NetworkType::Test, 0, 0).unwrap();
+    let note = zecswap_railgun::Keys::from_seed(&SEED, 0)
+        .note(&keys.note_entropy)
+        .unwrap();
+    let terms = ReverseTerms {
+        maker: [3; 20],
+        token: [4; 20],
+        amount: 50_000_000,
+        maker_share: maker_share(),
+        ready_deadline: 2_000,
+        refund_after: 3_000,
+        funding_deadline: 1_000,
+    };
+    let mut open = ReverseOpen {
+        maker: terms.maker,
+        user: keys.auth.address(),
+        token: terms.token,
+        amount: terms.amount,
+        maker_share: PublicShare::from_affine_bytes(&terms.maker_share).unwrap(),
+        user_share: keys.share.public(),
+        t0: terms.ready_deadline,
+        t1: terms.refund_after,
+        refund_note: note.commitment(),
+        deadline: terms.funding_deadline,
+    };
+    let signature = swap().sign_reverse_open(domain, &terms).unwrap();
+    assert_eq!(
+        signer(&domain.open_reverse(&open), &signature),
+        Some(keys.auth.address())
+    );
+    open.amount += 1;
+    assert_ne!(
+        signer(&domain.open_reverse(&open), &signature),
+        Some(keys.auth.address())
+    );
+    let id = [8; 32];
+    let ready = swap()
+        .sign_reverse_action(domain, &id, 1_100, ReverseAction::Ready)
+        .unwrap();
+    assert_eq!(
+        signer(&domain.ready(&id, 1_100), &ready),
+        Some(keys.auth.address())
+    );
+    assert_ne!(
+        signer(&domain.lock_refund(&id, 1_100), &ready),
+        Some(keys.auth.address())
+    );
+    let refund = swap()
+        .sign_refund_payout(domain, &id, &RELAYER, 20_000)
+        .unwrap();
+    assert_eq!(
+        signer(&domain.refund_payout(&id, &RELAYER, 20_000), &refund),
+        Some(keys.auth.address())
+    );
+    assert_ne!(
+        signer(&domain.payout(&id, &RELAYER, 20_000), &refund),
+        Some(keys.auth.address())
+    );
+}
+
+#[test]
 fn keys() {
     assert_eq!(hex(&swap().user_share().unwrap()), USER_SHARE);
     assert_eq!(

@@ -21,6 +21,8 @@ struct Cli {
 enum Command {
     /// Serves quotes and runs the watchtower.
     Serve,
+    /// Shows the seed-derived ZEC inventory address and synced balance for reverse swaps.
+    ZecInventory,
     /// Moves `amount` base units of the payout token into the contract inventory.
     AddInventory {
         amount: u128,
@@ -44,6 +46,13 @@ async fn main() -> Result<()> {
     let maker = Arc::new(Maker::new(config, Secrets::from_env()?).await?);
 
     match cli.command {
+        Command::ZecInventory => {
+            let (address, funds) = maker.reverse_inventory().await?;
+            println!(
+                "{address}\ntotal: {} zat\nspendable: {} zat",
+                funds.total, funds.spendable
+            );
+        }
         Command::Serve => {
             let listener = tokio::net::TcpListener::bind(maker.listen()).await?;
             info!("serving quotes on {}", listener.local_addr()?);

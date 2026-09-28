@@ -19,6 +19,31 @@ impl MakerApi {
         Endpoint::new("maker", url).map(Self)
     }
 
+    pub async fn info(&self) -> Result<zecswap_api::service::MakerInfo> {
+        self.0.get("/v1/info").await
+    }
+
+    pub async fn reverse_quote(
+        &self,
+        request: &zecswap_api::reverse::QuoteRequest,
+    ) -> Result<zecswap_api::reverse::Quote> {
+        self.0.post("/v1/reverse/quote", request).await
+    }
+
+    pub async fn accept_reverse(
+        &self,
+        quote_id: B256,
+        acceptance: &Acceptance,
+    ) -> Result<Accepted> {
+        self.0
+            .post(&format!("/v1/reverse/quote/{quote_id}/accept"), acceptance)
+            .await
+    }
+
+    pub async fn reverse_status(&self, swap_id: B256) -> Result<zecswap_api::reverse::Status> {
+        self.0.get(&format!("/v1/reverse/swaps/{swap_id}")).await
+    }
+
     pub(crate) async fn quote(
         &self,
         units: u32,
@@ -48,6 +73,28 @@ pub struct RelayerApi(Endpoint);
 impl RelayerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("relayer", url).map(Self)
+    }
+
+    pub async fn ready_reverse(
+        &self,
+        request: &zecswap_api::reverse::Authorization,
+    ) -> Result<Sent> {
+        self.0.post("/v1/reverse/ready", request).await
+    }
+
+    pub async fn lock_reverse_refund(
+        &self,
+        request: &zecswap_api::reverse::Authorization,
+    ) -> Result<Sent> {
+        self.0.post("/v1/reverse/lock-refund", request).await
+    }
+
+    pub async fn refund_reverse(&self, request: &zecswap_api::reverse::Refund) -> Result<Sent> {
+        self.0.post("/v1/reverse/refund", request).await
+    }
+
+    pub async fn reverse_refund_payout(&self, request: &Payout) -> Result<Sent> {
+        self.0.post("/v1/reverse/refund-payout", request).await
     }
 
     pub(crate) async fn terms(&self) -> Result<Terms> {

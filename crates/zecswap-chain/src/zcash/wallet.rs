@@ -118,6 +118,11 @@ impl Wallet {
         joint: &JointAccount,
         name: &str,
     ) -> Result<AccountUuid, Error> {
+        for account in self.db.get_account_ids()? {
+            if self.tracks_joint(account, joint)? {
+                return Ok(account);
+            }
+        }
         let encoded = joint.ufvk(self.network.network_type());
         let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
         let birthday = Self::birthday_at_tip(client).await?;
@@ -203,6 +208,40 @@ impl Wallet {
         Ok(None)
     }
 
+    pub async fn inventory_account(
+        &mut self,
+        client: &mut Lightwalletd,
+        seed: &[u8],
+    ) -> Result<(AccountUuid, UnifiedSpendingKey), Error> {
+        let key = UnifiedSpendingKey::from_seed(&self.network, seed, zip32::AccountId::ZERO)
+            .map_err(Error::wallet)?;
+        if let Some(id) = self.derived_account()? {
+            let account = self
+                .db
+                .get_account(id)?
+                .ok_or_else(|| Error::Wallet("inventory account is missing".into()))?;
+            if account.ufvk().map(|ufvk| ufvk.encode(&self.network))
+                != Some(key.to_unified_full_viewing_key().encode(&self.network))
+            {
+                return Err(Error::Wallet(
+                    "inventory seed does not match the wallet".into(),
+                ));
+            }
+            Ok((id, key))
+        } else {
+            self.create_account(client, seed, "reverse swap inventory")
+                .await
+        }
+    }
+
+    pub fn tracks_joint(&self, account: AccountUuid, joint: &JointAccount) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .get_account(account)?
+            .and_then(|account| account.ufvk().map(|ufvk| ufvk.encode(&self.network)))
+            == Some(joint.ufvk(self.network.network_type())))
+    }
+
     /// Stores a transaction sending everything in a joint account to `to`, authorized by the
     /// combined key; `broadcast` sends it.
     pub fn sweep(
@@ -286,6 +325,21 @@ impl Wallet {
 
     pub fn is_mined(&self, txid: TxId) -> Result<bool, Error> {
         Ok(self.db.get_tx_height(txid)?.is_some())
+    }
+
+    pub fn is_expired(&self, txid: TxId) -> Result<bool, Error> {
+        if self.is_mined(txid)? {
+            return Ok(false);
+        }
+        let tx = self
+            .db
+            .get_transaction(txid)?
+            .ok_or_else(|| Error::Wallet(format!("transaction {txid} is not stored")))?;
+        Ok(u32::from(tx.expiry_height()) != 0
+            && self
+                .db
+                .block_fully_scanned()?
+                .is_some_and(|block| block.block_height() > tx.expiry_height()))
     }
 
     /// Stops tracking an account whose swap has settled.

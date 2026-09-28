@@ -1,3 +1,5 @@
+mod reverse;
+
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -11,7 +13,9 @@ use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
 use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, swap_id};
-use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Prover, TxId, Wallet, connect};
+use zecswap_chain::zcash::{
+    AccountUuid, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect,
+};
 use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, derive_maker_share};
 use zeroize::Zeroizing;
 
@@ -32,6 +36,7 @@ pub struct Maker {
     zcash: Mutex<Zcash>,
     prover: Prover,
     health: Health,
+    inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
 }
 
 struct Zcash {
@@ -99,6 +104,8 @@ pub enum MakerError {
     Rejected(String),
     #[error("quote is unknown, expired or already accepted")]
     UnknownQuote,
+    #[error("swap is unknown")]
+    UnknownSwap,
     #[error("cannot fill that amount right now")]
     Unavailable,
     #[error("watchtower has not completed a recent pass; try again later")]
@@ -116,6 +123,11 @@ impl From<zecswap_chain::Error> for MakerError {
 impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir)?;
+        let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
+        anyhow::ensure!(
+            config.reverse.is_some() || store.pending_reverse_swaps()?.is_empty(),
+            "reverse swaps are pending; keep reverse configuration enabled until they settle"
+        );
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
         let account = secrets.evm_key.address();
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
@@ -125,14 +137,37 @@ impl Maker {
             .context("reaching the settlement chain")?;
         let lock_duration = settlement.lock_duration().await?;
         config.timing.check(lock_duration)?;
-        let zcash = Zcash {
+        let mut zcash = Zcash {
             wallet: Some(Zcash::open_wallet(&config)?),
             client: connect(&config.lightwalletd)
                 .await
                 .context("reaching lightwalletd")?,
         };
+        let inventory = if let Some(reverse) = &config.reverse {
+            reverse.check()?;
+            settlement
+                .reverse_funding(B256::ZERO)
+                .await
+                .context("configured contract does not support reverse swaps")?;
+            anyhow::ensure!(
+                !settlement.railgun().await?.is_zero(),
+                "reverse swaps require a Railgun deployment"
+            );
+            let seed = secrets
+                .zcash_seed
+                .as_ref()
+                .context("reverse swaps require MAKER_ZCASH_SEED")?;
+            let wallet = zcash
+                .wallet
+                .as_mut()
+                .context("Zcash wallet needs reopening")?;
+            Some(wallet.inventory_account(&mut zcash.client, seed).await?)
+        } else {
+            None
+        };
         Ok(Self {
-            store: Store::open(&config.data_dir.join("maker.sqlite"))?,
+            inventory,
+            store,
             root: secrets.root,
             chain_id,
             sweep_to,
@@ -157,6 +192,24 @@ impl Maker {
 
     pub fn listen(&self) -> std::net::SocketAddr {
         self.config.listen
+    }
+
+    pub fn info(&self) -> zecswap_api::service::MakerInfo {
+        use crate::config::Chain;
+        use zecswap_api::service::{MakerInfo, ZcashNetwork};
+
+        MakerInfo {
+            api_version: 1,
+            maker: self.account,
+            chain_id: self.chain_id,
+            contract: self.config.contract,
+            token: self.config.token,
+            zcash_network: match self.config.network {
+                Chain::Mainnet => ZcashNetwork::Mainnet,
+                Chain::Testnet => ZcashNetwork::Testnet,
+            },
+            reverse_enabled: self.inventory.is_some(),
+        }
     }
 
     /// New swaps require a completed watchtower pass within the last three tick intervals.
@@ -336,6 +389,11 @@ impl Maker {
         for swap in self.store.unsettled_swaps()? {
             if let Err(e) = self.advance(&swap, now, synced).await {
                 warn!(id = %swap.id, "{e:#}");
+            }
+        }
+        for mut swap in self.store.pending_reverse_swaps()? {
+            if let Err(e) = self.advance_reverse(&mut swap, synced).await {
+                warn!(id = %swap.id, "reverse swap: {e:#}");
             }
         }
         Ok(())

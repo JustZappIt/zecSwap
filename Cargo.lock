@@ -6730,6 +6730,7 @@ name = "zecswap-api"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "axum",
  "serde",
  "zecswap-core",
  "zecswap-railgun",
@@ -6764,6 +6765,7 @@ dependencies = [
  "zcash_protocol",
  "zecswap-core",
  "zecswap-railgun",
+ "zip32",
 ]
 
 [[package]]
@@ -6838,6 +6840,7 @@ dependencies = [
  "axum",
  "hex",
  "rand_core 0.6.4",
+ "serde",
  "serde_json",
  "tokio",
  "tracing-subscriber",

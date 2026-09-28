@@ -9,10 +9,10 @@ use alloy::primitives::keccak256;
 use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
-use alloy::sol_types::SolEvent;
+use alloy::sol_types::{SolCall, SolEvent};
 use tokio::sync::Mutex;
 use tracing::warn;
-use zecswap_core::{PublicShare, SecretShare};
+use zecswap_core::{PublicShare, ReverseOpen, SecretShare};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
 use crate::Error;
@@ -26,6 +26,19 @@ const SEND_ATTEMPTS: u32 = 4;
 const SEND_RETRY_DELAY: Duration = Duration::from_secs(3);
 
 sol! {
+    struct ReverseOpenWords {
+        address maker;
+        address user;
+        address token;
+        uint128 amount;
+        uint256[2] makerKey;
+        uint256[2] userKey;
+        uint64 t0;
+        uint64 t1;
+        bytes32 refundNote;
+        uint64 deadline;
+    }
+
     struct ShieldCiphertextWords {
         bytes32[3] encryptedBundle;
         bytes32 shieldKey;
@@ -54,6 +67,11 @@ sol! {
             bytes32 payoutNote;
         }
 
+        function openReverse(ReverseOpenWords terms, bytes signature) external returns (bytes32);
+        function reverseFunding(bytes32 id) external view returns (bytes32 refundNote, uint64 blockNumber);
+        function readyWithSig(bytes32 id, uint64 deadline, bytes signature) external;
+        function lockRefundWithSig(bytes32 id, uint64 deadline, bytes signature) external;
+        function refundPayout(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
         function deposit(address token, uint256 amount) external;
         function withdraw(address token, uint256 amount, address to) external;
         function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1, bytes32 payoutNote) external returns (bytes32 id);
@@ -167,6 +185,42 @@ pub fn swap_id(maker: Address, user_share: &PublicShare) -> B256 {
     keccak256(preimage)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReverseFunding {
+    pub refund_note: B256,
+    pub block_number: u64,
+}
+
+/// Relay Adapt calls these in order, with requireSuccess set, after unshielding `amount`.
+pub fn reverse_funding_calls(
+    contract: Address,
+    terms: &ReverseOpen,
+    signature: &[u8; 65],
+) -> [(Address, Vec<u8>); 2] {
+    let approve = IErc20::approveCall {
+        spender: contract,
+        amount: U256::from(terms.amount),
+    }
+    .abi_encode();
+    let open = IZecSwap::openReverseCall {
+        terms: ReverseOpenWords {
+            maker: terms.maker.into(),
+            user: terms.user.into(),
+            token: terms.token.into(),
+            amount: terms.amount,
+            makerKey: share_words(&terms.maker_share),
+            userKey: share_words(&terms.user_share),
+            t0: terms.t0,
+            t1: terms.t1,
+            refundNote: terms.refund_note.into(),
+            deadline: terms.deadline,
+        },
+        signature: signature.to_vec().into(),
+    }
+    .abi_encode();
+    [(terms.token.into(), approve), (contract, open)]
+}
+
 /// A connection to the settlement contract, sending transactions as one account, or reading
 /// only. Sends are serialized, and each reads its nonce from the chain once the previous one
 /// has its receipt, so a send that fails leaves no gap behind it.
@@ -229,6 +283,25 @@ impl Settlement {
         Ok(block.header.timestamp)
     }
 
+    pub async fn confirmed_now(&self, confirmations: u64) -> Result<u64, Error> {
+        if confirmations == 0 {
+            return Err(Error::Contract("confirmations must be positive".into()));
+        }
+        let latest = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(Error::contract)?;
+        let height = latest.saturating_sub(confirmations - 1);
+        let block = self
+            .provider
+            .get_block_by_number(height.into())
+            .await
+            .map_err(Error::contract)?
+            .ok_or_else(|| Error::Contract("confirmed block unavailable".into()))?;
+        Ok(block.header.timestamp)
+    }
+
     pub async fn lock_duration(&self) -> Result<u64, Error> {
         let duration = self
             .contract
@@ -246,30 +319,33 @@ impl Settlement {
             .call()
             .await
             .map_err(Error::contract)?;
-        let stage = match swap.stage {
-            0 => return Ok(None),
-            1 => Stage::Open,
-            2 => Stage::Ready,
-            3 => Stage::Claimed,
-            4 => Stage::Refunded,
-            other => return Err(Error::Contract(format!("unknown stage {other}"))),
+        decode_swap(swap)
+    }
+
+    pub async fn confirmed_swap(
+        &self,
+        id: B256,
+        confirmations: u64,
+    ) -> Result<Option<OnChainSwap>, Error> {
+        if confirmations == 0 {
+            return Err(Error::Contract("confirmations must be positive".into()));
+        }
+        let latest = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(Error::contract)?;
+        let Some(height) = latest.checked_sub(confirmations - 1) else {
+            return Ok(None);
         };
-        Ok(Some(OnChainSwap {
-            stage,
-            maker: swap.maker,
-            user: swap.user,
-            token: swap.token,
-            amount: swap.amount,
-            t0: swap.t0,
-            t1: swap.t1,
-            claim_lock_until: swap.claimLockUntil,
-            refund_lock_until: swap.refundLockUntil,
-            maker_share: share_from_words(swap.makerX, swap.makerY)?,
-            user_share: share_from_words(swap.userX, swap.userY)?,
-            secret: swap.secret.to_be_bytes(),
-            payout_note: (!swap.payoutNote.is_zero()).then_some(swap.payoutNote),
-            paid_out: swap.paidOut,
-        }))
+        let swap = self
+            .contract
+            .getSwap(id)
+            .block(height.into())
+            .call()
+            .await
+            .map_err(Error::contract)?;
+        decode_swap(swap)
     }
 
     /// Where a swap's Railgun payout leaves from, and where Railgun sends it back.
@@ -377,6 +453,98 @@ impl Settlement {
             request.payout_note.unwrap_or_default(),
         );
         Ok(self.submit(call).await?.transaction_hash)
+    }
+
+    pub async fn reverse_funding(&self, id: B256) -> Result<Option<ReverseFunding>, Error> {
+        let funding = self
+            .contract
+            .reverseFunding(id)
+            .call()
+            .await
+            .map_err(Error::contract)?;
+        Ok((!funding.refundNote.is_zero()).then_some(ReverseFunding {
+            refund_note: funding.refundNote,
+            block_number: funding.blockNumber,
+        }))
+    }
+
+    /// Reads the escrow at a confirmed block, so an API notification never proves funding.
+    pub async fn confirmed_reverse_funding(
+        &self,
+        id: B256,
+        confirmations: u64,
+    ) -> Result<Option<ReverseFunding>, Error> {
+        if confirmations == 0 {
+            return Err(Error::Contract("confirmations must be positive".into()));
+        }
+        let latest = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(Error::contract)?;
+        let Some(height) = latest.checked_sub(confirmations - 1) else {
+            return Ok(None);
+        };
+        let funding = self
+            .contract
+            .reverseFunding(id)
+            .block(height.into())
+            .call()
+            .await
+            .map_err(Error::contract)?;
+        Ok((!funding.refundNote.is_zero()).then_some(ReverseFunding {
+            refund_note: funding.refundNote,
+            block_number: funding.blockNumber,
+        }))
+    }
+
+    pub async fn ready_with_sig(
+        &self,
+        id: B256,
+        deadline: u64,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        Ok(self
+            .submit(
+                self.contract
+                    .readyWithSig(id, deadline, signature.to_vec().into()),
+            )
+            .await?
+            .transaction_hash)
+    }
+
+    pub async fn lock_refund_with_sig(
+        &self,
+        id: B256,
+        deadline: u64,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        Ok(self
+            .submit(
+                self.contract
+                    .lockRefundWithSig(id, deadline, signature.to_vec().into()),
+            )
+            .await?
+            .transaction_hash)
+    }
+
+    pub async fn refund_payout(
+        &self,
+        id: B256,
+        note: &ShieldNote,
+        fee: u128,
+        signature: &[u8; 65],
+    ) -> Result<B256, Error> {
+        Ok(self
+            .submit(self.contract.refundPayout(
+                id,
+                note.npk.into(),
+                ciphertext_words(&note.ciphertext),
+                fee,
+                signature.to_vec().into(),
+            ))
+            .await?
+            .transaction_hash)
     }
 
     pub async fn ready(&self, id: B256) -> Result<B256, Error> {
@@ -632,4 +800,31 @@ fn share_from_words(x: U256, y: U256) -> Result<PublicShare, Error> {
     bytes[..32].copy_from_slice(&x.to_be_bytes::<32>());
     bytes[32..].copy_from_slice(&y.to_be_bytes::<32>());
     Ok(PublicShare::from_affine_bytes(&bytes)?)
+}
+
+fn decode_swap(swap: IZecSwap::Swap) -> Result<Option<OnChainSwap>, Error> {
+    let stage = match swap.stage {
+        0 => return Ok(None),
+        1 => Stage::Open,
+        2 => Stage::Ready,
+        3 => Stage::Claimed,
+        4 => Stage::Refunded,
+        other => return Err(Error::Contract(format!("unknown stage {other}"))),
+    };
+    Ok(Some(OnChainSwap {
+        stage,
+        maker: swap.maker,
+        user: swap.user,
+        token: swap.token,
+        amount: swap.amount,
+        t0: swap.t0,
+        t1: swap.t1,
+        claim_lock_until: swap.claimLockUntil,
+        refund_lock_until: swap.refundLockUntil,
+        maker_share: share_from_words(swap.makerX, swap.makerY)?,
+        user_share: share_from_words(swap.userX, swap.userY)?,
+        secret: swap.secret.to_be_bytes(),
+        payout_note: (!swap.payoutNote.is_zero()).then_some(swap.payoutNote),
+        paid_out: swap.paidOut,
+    }))
 }

@@ -63,4 +63,40 @@ internal object AtomicSwapNative {
     ): ByteArray
 
     @JvmStatic external fun railgunAddress(seed: ByteArray): String
+    @JvmStatic external fun signReverseOpen(
+        seed: ByteArray,
+        mainnet: Boolean,
+        index: Int,
+        chainId: Long,
+        contract: ByteArray,
+        maker: ByteArray,
+        token: ByteArray,
+        amount: String,
+        makerShare: ByteArray,
+        readyDeadline: Long,
+        refundAfter: Long,
+        fundingDeadline: Long,
+    ): ByteArray
+
+    @JvmStatic external fun signReverseAction(
+        seed: ByteArray,
+        mainnet: Boolean,
+        index: Int,
+        chainId: Long,
+        contract: ByteArray,
+        swapId: ByteArray,
+        deadline: Long,
+        action: Int,
+    ): ByteArray
+
+    @JvmStatic external fun signRefundPayout(
+        seed: ByteArray,
+        mainnet: Boolean,
+        index: Int,
+        chainId: Long,
+        contract: ByteArray,
+        swapId: ByteArray,
+        relayer: ByteArray,
+        fee: String,
+    ): ByteArray
 }
