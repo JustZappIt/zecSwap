@@ -3,8 +3,8 @@
 
 use rand_core::OsRng;
 use zecswap_core::{
-    Domain, JointAccount, NetworkType, Payout, PublicShare, SecretShare, ShareProof, SwapContext,
-    UserSwapKeys, derive_user_keys, sign_pczt_bytes,
+    Domain, JointAccount, NetworkType, Payout, PublicShare, ReverseOpen, SecretShare, ShareProof,
+    SwapContext, UserSwapKeys, derive_user_keys, sign_pczt_bytes,
 };
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 
@@ -15,6 +15,21 @@ const RAILGUN_WALLET: u32 = 0;
 
 pub type Result<T> = core::result::Result<T, String>;
 
+pub struct ReverseTerms {
+    pub maker: [u8; 20],
+    pub token: [u8; 20],
+    pub amount: u128,
+    pub maker_share: [u8; 64],
+    pub ready_deadline: u64,
+    pub refund_after: u64,
+    pub funding_deadline: u64,
+}
+
+pub enum ReverseAction {
+    Ready,
+    LockRefund,
+}
+
 /// Swap number `index` of the wallet whose seed is `seed`.
 pub struct Swap<'a> {
     seed: &'a [u8],
@@ -23,6 +38,58 @@ pub struct Swap<'a> {
 }
 
 impl<'a> Swap<'a> {
+    pub fn sign_reverse_open(&self, domain: Domain, terms: &ReverseTerms) -> Result<[u8; 65]> {
+        if terms.amount == 0
+            || terms.maker == [0; 20]
+            || terms.token == [0; 20]
+            || terms.funding_deadline >= terms.ready_deadline
+            || terms.ready_deadline >= terms.refund_after
+        {
+            return Err("invalid reverse escrow terms".into());
+        }
+        let keys = self.keys()?;
+        let open = ReverseOpen {
+            maker: terms.maker,
+            user: keys.auth.address(),
+            token: terms.token,
+            amount: terms.amount,
+            maker_share: PublicShare::from_affine_bytes(&terms.maker_share).map_err(error)?,
+            user_share: keys.share.public(),
+            t0: terms.ready_deadline,
+            t1: terms.refund_after,
+            refund_note: self.note(&keys)?.commitment(),
+            deadline: terms.funding_deadline,
+        };
+        Ok(keys.auth.sign(&domain.open_reverse(&open)))
+    }
+
+    pub fn sign_reverse_action(
+        &self,
+        domain: Domain,
+        swap_id: &[u8; 32],
+        deadline: u64,
+        action: ReverseAction,
+    ) -> Result<[u8; 65]> {
+        let digest = match action {
+            ReverseAction::Ready => domain.ready(swap_id, deadline),
+            ReverseAction::LockRefund => domain.lock_refund(swap_id, deadline),
+        };
+        Ok(self.keys()?.auth.sign(&digest))
+    }
+
+    pub fn sign_refund_payout(
+        &self,
+        domain: Domain,
+        swap_id: &[u8; 32],
+        relayer: &[u8; 20],
+        fee: u128,
+    ) -> Result<[u8; 65]> {
+        Ok(self
+            .keys()?
+            .auth
+            .sign(&domain.refund_payout(swap_id, relayer, fee)))
+    }
+
     pub fn new(seed: &'a [u8], mainnet: bool, index: i32) -> Result<Self> {
         check_seed(seed)?;
         let index = u32::try_from(index).map_err(|_| format!("a swap index can't be {index}"))?;

@@ -1,6 +1,7 @@
 # Secrets are read from the environment, never from this file:
 #   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
+#   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
@@ -30,3 +31,13 @@ t0_margin = 300
 reveal_margin = 600
 tick = 15
 # Quote and accept return 503 until a pass completes, and if none completes for 3 * tick seconds.
+
+# Enable only on a deployment containing openReverse and Railgun.
+# Fund the address printed by `zecswap-maker --config maker.toml zec-inventory`.
+# [reverse]
+# evm_confirmations = 12
+# funding_window = 900
+# ready_after = 7200
+# refund_after = 10800
+# deposit_margin = 1800
+# fee_reserve_zat = 20000

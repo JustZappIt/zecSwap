@@ -283,3 +283,106 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_railgunAd
     })
     .unwrap_or(std::ptr::null_mut())
 }
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefundPayout<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    seed: JByteArray<'local>,
+    mainnet: jboolean,
+    index: jint,
+    chain_id: jlong,
+    contract: JByteArray<'local>,
+    swap_id: JByteArray<'local>,
+    relayer: JByteArray<'local>,
+    fee: JString<'local>,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let seed = self::seed(env, &seed)?;
+        let domain = domain(env, chain_id, &contract)?;
+        let swap_id = fixed(env, &swap_id, "a swap id")?;
+        let relayer = fixed(env, &relayer, "a relayer address")?;
+        let fee: String = env.get_string(&fee).map_err(jni_error)?.into();
+        let fee = fee
+            .parse::<u128>()
+            .map_err(|_| format!("a relayer fee can't be {fee}"))?;
+        let signature =
+            swap(&seed, mainnet, index)?.sign_refund_payout(domain, &swap_id, &relayer, fee)?;
+        byte_array(env, &signature)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signReverseAction<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    seed: JByteArray<'local>,
+    mainnet: jboolean,
+    index: jint,
+    chain_id: jlong,
+    contract: JByteArray<'local>,
+    swap_id: JByteArray<'local>,
+    deadline: jlong,
+    action: jint,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let seed = self::seed(env, &seed)?;
+        let domain = domain(env, chain_id, &contract)?;
+        let swap_id = fixed(env, &swap_id, "a swap id")?;
+        let action = match action {
+            0 => ops::ReverseAction::Ready,
+            1 => ops::ReverseAction::LockRefund,
+            _ => return Err("unknown reverse authorization".into()),
+        };
+        let signature = swap(&seed, mainnet, index)?.sign_reverse_action(
+            domain,
+            &swap_id,
+            unsigned(deadline, "a deadline")?,
+            action,
+        )?;
+        byte_array(env, &signature)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signReverseOpen<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    seed: JByteArray<'local>,
+    mainnet: jboolean,
+    index: jint,
+    chain_id: jlong,
+    contract: JByteArray<'local>,
+    maker: JByteArray<'local>,
+    token: JByteArray<'local>,
+    amount: JString<'local>,
+    maker_share: JByteArray<'local>,
+    ready_deadline: jlong,
+    refund_after: jlong,
+    funding_deadline: jlong,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let seed = self::seed(env, &seed)?;
+        let domain = domain(env, chain_id, &contract)?;
+        let amount: String = env.get_string(&amount).map_err(jni_error)?.into();
+        let terms = ops::ReverseTerms {
+            maker: fixed(env, &maker, "a maker address")?,
+            token: fixed(env, &token, "a token address")?,
+            amount: amount
+                .parse()
+                .map_err(|_| "amount must fit uint128".to_owned())?,
+            maker_share: fixed(env, &maker_share, "a maker share")?,
+            ready_deadline: unsigned(ready_deadline, "ready deadline")?,
+            refund_after: unsigned(refund_after, "refund time")?,
+            funding_deadline: unsigned(funding_deadline, "funding deadline")?,
+        };
+        let signature = swap(&seed, mainnet, index)?.sign_reverse_open(domain, &terms)?;
+        byte_array(env, &signature)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}

@@ -34,6 +34,43 @@ pub struct Config {
     pub listen: SocketAddr,
     pub pricing: Pricing,
     pub timing: Timing,
+    #[serde(default)]
+    pub reverse: Option<ReverseConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReverseConfig {
+    pub evm_confirmations: NonZeroU32,
+    pub funding_window: u64,
+    pub ready_after: u64,
+    pub refund_after: u64,
+    pub deposit_margin: u64,
+    pub fee_reserve_zat: u64,
+}
+
+impl ReverseConfig {
+    pub fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.refund_after <= 24 * 60 * 60 && self.fee_reserve_zat > 0,
+            "reverse swaps require a fee reserve and must finish within 24 hours"
+        );
+        anyhow::ensure!(
+            self.funding_window > 0 && self.deposit_margin > 0,
+            "reverse funding window and deposit margin must be positive"
+        );
+        anyhow::ensure!(
+            self.funding_window
+                .checked_add(self.deposit_margin)
+                .is_some_and(|min| min < self.ready_after),
+            "reverse ready deadline must leave time to confirm the deposit"
+        );
+        anyhow::ensure!(
+            self.ready_after < self.refund_after,
+            "reverse refund deadline must follow ready"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -65,6 +102,7 @@ pub struct Secrets {
     pub evm_key: PrivateKeySigner,
     /// Every maker share derives from this and a quote nonce (`MAKER_ROOT_SECRET`, 32 bytes hex).
     pub root: Zeroizing<[u8; 32]>,
+    pub zcash_seed: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl Secrets {
@@ -80,6 +118,21 @@ impl Secrets {
         Ok(Self {
             evm_key,
             root: Zeroizing::new(root),
+            zcash_seed: match std::env::var("MAKER_ZCASH_SEED") {
+                Ok(value) => {
+                    let value = Zeroizing::new(value);
+                    let seed = Zeroizing::new(
+                        hex::decode(value.trim()).context("MAKER_ZCASH_SEED must be hex")?,
+                    );
+                    anyhow::ensure!(
+                        (32..=252).contains(&seed.len()),
+                        "MAKER_ZCASH_SEED must contain 32 to 252 bytes"
+                    );
+                    Some(seed)
+                }
+                Err(std::env::VarError::NotPresent) => None,
+                Err(e) => return Err(e).context("MAKER_ZCASH_SEED"),
+            },
         })
     }
 }

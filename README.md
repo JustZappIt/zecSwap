@@ -16,6 +16,9 @@ transparent address and nothing is custodied: every failure ends in a refund.
 | `crates/zecswap-e2e` | Live end-to-end suite on Base Sepolia and the Zcash testnet |
 | `contracts` | `ZecSwap.sol` (two-phase lock-then-reveal state machine) and `Pallas.sol` (Foundry) |
 
+The reverse Railgun-USDC-to-ZEC service, authorization flow, and Android integration boundary
+are described in [the reverse flow guide](docs/reverse-flow.md).
+
 ## Tests
 
 ```sh

@@ -1,0 +1,21 @@
+[Unit]
+Description=ZecSwap private Cloudflare tunnel
+Wants=network-online.target
+After=network-online.target nginx.service
+
+[Service]
+DynamicUser=true
+LoadCredential=token:/etc/zecswap-tunnel/token
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run --token-file %d/token
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

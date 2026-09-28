@@ -14,7 +14,7 @@ mod share;
 mod signer;
 mod transcript;
 
-pub use auth::{AuthKey, Domain, signer};
+pub use auth::{AuthKey, Domain, ReverseOpen, signer};
 pub use error::Error;
 pub use joint::{JointAccount, SpendKey, ViewingKeys};
 pub use seed::{UserSwapKeys, derive_maker_share, derive_user_keys};

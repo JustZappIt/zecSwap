@@ -22,6 +22,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
+        inventory: None,
         account: key.address(),
         lock_duration: 7200,
         root: Zeroizing::new([7; 32]),
@@ -56,6 +57,125 @@ fn request(path: &str, body: impl serde::Serialize) -> Request<Body> {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn readiness_tracks_watchtower_and_info_reports_the_configured_deployment() {
+    let (_dir, maker) = maker();
+    let app = crate::api::router(maker.clone());
+    for expected in [
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::NO_CONTENT,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        if expected == StatusCode::NO_CONTENT {
+            tokio::time::advance(Duration::from_secs(45)).await;
+        } else {
+            maker.health.completed();
+        }
+    }
+    let response = app
+        .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let info: zecswap_api::service::MakerInfo = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info.contract, maker.config.contract);
+    assert_eq!(info.chain_id, maker.chain_id);
+    assert_eq!(info.token, maker.config.token);
+    assert!(!info.reverse_enabled);
+}
+
+#[tokio::test]
+async fn invalid_requests_and_unknown_routes_have_machine_readable_errors() {
+    use zecswap_api::service::{ErrorCode, ErrorResponse};
+
+    let (_dir, maker) = maker();
+    maker.health.completed();
+    let app = crate::api::router(maker);
+    let cases = [
+        (
+            request("/v1/reverse/quote", serde_json::json!({"units": "1"})),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            Request::get("/v1/reverse/swaps/not-a-hash")
+                .body(Body::empty())
+                .unwrap(),
+            StatusCode::BAD_REQUEST,
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            Request::get(format!("/v1/reverse/swaps/{}", B256::ZERO))
+                .body(Body::empty())
+                .unwrap(),
+            StatusCode::NOT_FOUND,
+            ErrorCode::UnknownSwap,
+        ),
+        (
+            Request::get("/missing").body(Body::empty()).unwrap(),
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+        ),
+        (
+            Request::post("/v1/info").body(Body::empty()).unwrap(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            ErrorCode::MethodNotAllowed,
+        ),
+    ];
+    for (request, status, code) in cases {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let error: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, code);
+    }
+}
+
+#[tokio::test]
+async fn reverse_routes_are_disabled_until_configured_and_unknown_status_is_404() {
+    let (_dir, maker) = maker();
+    maker.health.completed();
+    let app = crate::api::router(maker);
+    let quote = request(
+        "/v1/reverse/quote",
+        zecswap_api::reverse::QuoteRequest {
+            units: 1,
+            user: Address::repeat_byte(1),
+            refund_note: B256::repeat_byte(2),
+        },
+    );
+    let accept = request(
+        &format!("/v1/reverse/quote/{}/accept", B256::ZERO),
+        acceptance(),
+    );
+    for request in [quote, accept] {
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    let status = Request::get(format!("/v1/reverse/swaps/{}", B256::ZERO))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(status).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test(start_paused = true)]

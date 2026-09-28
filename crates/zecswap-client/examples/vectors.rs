@@ -60,4 +60,30 @@ fn main() {
     println!("  Payout(swapId, relayer {RELAYER}, fee {fee})");
     println!("    digest     {}", hex(&payout));
     println!("    signature  {}", hex(&keys.auth.sign(&payout)));
+
+    let reverse_id = swap_id(keys.auth.address().into(), &maker_share.public());
+    let reverse = zecswap_core::ReverseOpen {
+        maker: MAKER.into(),
+        user: keys.auth.address(),
+        token: [0x33; 20],
+        amount: 50_000_000,
+        maker_share: maker_share.public(),
+        user_share: keys.share.public(),
+        t0: 1_790_003_600,
+        t1: 1_790_007_200,
+        refund_note: note.commitment(),
+        deadline,
+    };
+    println!("reverse swapId {reverse_id}");
+    for (name, digest) in [
+        ("OpenReverse", domain.open_reverse(&reverse)),
+        ("Ready", domain.ready(&reverse_id.0, deadline)),
+        ("LockRefund", domain.lock_refund(&reverse_id.0, deadline)),
+        (
+            "RefundPayout",
+            domain.refund_payout(&reverse_id.0, &RELAYER.into(), fee),
+        ),
+    ] {
+        println!("  {name} {}", hex(&keys.auth.sign(&digest)));
+    }
 }

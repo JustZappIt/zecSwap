@@ -257,6 +257,7 @@ impl Env {
         let sweep_to = wallet.fresh_address(treasury)?;
 
         let maker_config = |name: &str| Config {
+            reverse: None,
             network: Chain::Testnet,
             lightwalletd: settings.lightwalletd.clone(),
             evm_rpc: settings.evm_rpc.clone(),
@@ -271,12 +272,14 @@ impl Env {
         };
         let attentive_config = maker_config("attentive-maker");
         let attentive_secrets = Secrets {
+            zcash_seed: None,
             evm_key: settings.funder.clone(),
             root: maker_root(&attentive_config.data_dir)?,
         };
         let attentive = MakerNode::start(attentive_config, attentive_secrets, true).await?;
         let silent_config = maker_config("silent-maker");
         let silent_secrets = Secrets {
+            zcash_seed: None,
             evm_key: silent_key,
             root: maker_root(&silent_config.data_dir)?,
         };

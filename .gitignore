@@ -2,10 +2,12 @@
 .DS_Store
 /contracts/out
 /contracts/cache
-/contracts/broadcast/*/31337
+/contracts/broadcast
 .env*
 !.env.example
 .testnet/
 docs/local/
 node_modules/
+/deploy/worker/.wrangler/
+/deploy/worker/dist/
 /android/build
