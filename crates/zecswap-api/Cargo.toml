@@ -6,7 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+server = ["dep:axum"]
+
 [dependencies]
+axum = { version = "0.8", optional = true }
 alloy-primitives = { version = "~1.5", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 zecswap-core = { path = "../zecswap-core" }

@@ -1,3 +1,6 @@
+mod reverse;
+pub(crate) use reverse::ReverseSwap;
+
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -71,6 +74,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(reverse::SCHEMA)?;
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -107,6 +111,7 @@ impl Store {
             .query_row(
                 "UPDATE quotes SET accepted = 1
                  WHERE quote_id = ?1 AND accepted = 0 AND expires_at > ?2
+                   AND NOT EXISTS (SELECT 1 FROM reverse_quotes r WHERE r.quote_id = quotes.quote_id)
                  RETURNING quote_id, nonce, payout, payout_note, amount, deposit_zat",
                 params![id, now],
                 |row| quote_at(row, 0),

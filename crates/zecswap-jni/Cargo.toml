@@ -1,0 +1,21 @@
+[package]
+name = "zecswap-jni"
+description = "The Android wallet's bindings to zecswap-core and zecswap-railgun, built as libzecswap.so"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "zecswap"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = { version = "0.21", default-features = false }
+rand_core.workspace = true
+zecswap-core = { path = "../zecswap-core" }
+zecswap-railgun = { path = "../zecswap-railgun" }
+zeroize.workspace = true
+
+[dev-dependencies]
+hex = "0.4"

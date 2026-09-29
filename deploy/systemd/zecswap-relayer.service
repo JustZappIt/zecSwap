@@ -1,0 +1,36 @@
+[Unit]
+Description=ZecSwap testnet relayer
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=zecswap-relayer
+Group=zecswap-relayer
+WorkingDirectory=/var/lib/zecswap-relayer
+StateDirectory=zecswap-relayer
+StateDirectoryMode=0700
+EnvironmentFile=/etc/zecswap-relayer/secrets.env
+Environment=TOKIO_WORKER_THREADS=1
+Environment=RUST_LOG=info
+ExecStart=/opt/zecswap/current/zecswap-relayer --config /etc/zecswap-relayer/config.toml
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

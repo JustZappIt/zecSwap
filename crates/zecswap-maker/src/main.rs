@@ -1,7 +1,8 @@
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tracing::info;
 
@@ -20,6 +21,8 @@ struct Cli {
 enum Command {
     /// Serves quotes and runs the watchtower.
     Serve,
+    /// Shows the seed-derived ZEC inventory address and synced balance for reverse swaps.
+    ZecInventory,
     /// Moves `amount` base units of the payout token into the contract inventory.
     AddInventory {
         amount: u128,
@@ -43,15 +46,25 @@ async fn main() -> Result<()> {
     let maker = Arc::new(Maker::new(config, Secrets::from_env()?).await?);
 
     match cli.command {
+        Command::ZecInventory => {
+            let (address, funds) = maker.reverse_inventory().await?;
+            println!(
+                "{address}\ntotal: {} zat\nspendable: {} zat",
+                funds.total, funds.spendable
+            );
+        }
         Command::Serve => {
             let listener = tokio::net::TcpListener::bind(maker.listen()).await?;
             info!("serving quotes on {}", listener.local_addr()?);
-            tokio::spawn(maker.clone().run());
-            axum::serve(listener, api::router(maker))
-                .with_graceful_shutdown(async {
-                    tokio::signal::ctrl_c().await.ok();
-                })
-                .await?;
+            let watchtower = tokio::spawn(maker.clone().run());
+            let server = async move {
+                axum::serve(listener, api::router(maker))
+                    .with_graceful_shutdown(async {
+                        tokio::signal::ctrl_c().await.ok();
+                    })
+                    .await
+            };
+            supervise(watchtower, server).await?;
         }
         Command::AddInventory { amount, mint } => {
             let settlement = maker.settlement();
@@ -66,4 +79,54 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn supervise(
+    mut watchtower: tokio::task::JoinHandle<()>,
+    server: impl Future<Output = std::io::Result<()>>,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        result = &mut watchtower => {
+            match result {
+                Ok(()) => bail!("watchtower task ended unexpectedly"),
+                Err(e) if e.is_panic() => bail!("watchtower task panicked"),
+                Err(_) => bail!("watchtower task was cancelled"),
+            }
+        }
+        result = server => {
+            watchtower.abort();
+            result.context("quote API stopped")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn watchtower_exit_stops_serving_with_an_error() {
+        for panics in [false, true] {
+            let watchtower = tokio::spawn(async move {
+                assert!(!panics, "injected watchtower panic");
+            });
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                supervise(watchtower, std::future::pending()),
+            )
+            .await
+            .expect("API kept running after watchtower exited");
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn stopping_server_aborts_watchtower() {
+        let watchtower = tokio::spawn(std::future::pending());
+        let abort = watchtower.abort_handle();
+        supervise(watchtower, async { Ok(()) }).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
+    }
 }

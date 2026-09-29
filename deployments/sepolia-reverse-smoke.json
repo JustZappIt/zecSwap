@@ -1,0 +1,57 @@
+{
+  "chainId": 11155111,
+  "contract": "0xbd9a37f47a988aefc4d80395727f41feb698e225",
+  "funding": "Public test ERC20; Railgun unshield was not exercised",
+  "tests": [
+    {
+      "kind": "receive",
+      "swapId": "0x8622d2676d8499e0492b7d04d7d595641525e4ebd518127cad45572745f25569",
+      "fundingTransaction": "0x2bbb6af8838da19b82a781c450a64cbcd2f7d06d9adc94d9a16a19c6bc9ab30c",
+      "events": [
+        {
+          "name": "MarkedReady",
+          "transaction": "0x4c63ae1b67f6bbfb41030271da08678b92d6dc37589130e77f9a37087280ad39",
+          "block": 11803546
+        },
+        {
+          "name": "ClaimLocked",
+          "transaction": "0xcebbca3e6b8b703e1f5381960c45d1a86d8e7b566935241247c869e1af2cda44",
+          "block": 11803547
+        },
+        {
+          "name": "Claimed",
+          "transaction": "0x3a3cb419e147a06f012b99cbf400d7b88857211d481b8585f80b3c1d8e106edc",
+          "block": 11803548
+        }
+      ],
+      "zecDepositTransaction": "e083b72bb094da583c581f1fab37d7ca09cb059d7907ed4c73bb4de837b5cac9",
+      "zecReceiveTransaction": "93f47a4c8a8901234c6e119a2be03f9804d185baac83942235dcacf549c32e42",
+      "zecReceiveBlock": 4411097,
+      "makerRestartedAfterFunding": true,
+      "makerRestartedAfterDeposit": true
+    },
+    {
+      "kind": "refund",
+      "swapId": "0x0bc106aa989c6af183ade169b99145d7bb7f2e4889a30b601941cbb2a630e5fe",
+      "fundingTransaction": "0x41bb58b41b0d91fb784375c7fc0ba5cd44f95aef52793a46584417b99f821250",
+      "events": [
+        {
+          "name": "RefundLocked",
+          "transaction": "0x78b07486ad1f791069491637837ec3373fbb7c7d5a532fb084fe77a8923a2a0d",
+          "block": 11803551
+        },
+        {
+          "name": "Refunded",
+          "transaction": "0xaceb0a66e1dc72c2e212da823f293f3abd2faeb2ab2f46b1f6dcbffb26339f47",
+          "block": 11803554
+        },
+        {
+          "name": "PaidOut",
+          "transaction": "0x2c895f924fc69e2c3198ec8caab0999b3e48c35e21d2f33ab2f55e94fe64b13d",
+          "block": 11803555
+        }
+      ]
+    }
+  ],
+  "verifiedDate": "2026-09-28"
+}
