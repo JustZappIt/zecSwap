@@ -316,6 +316,36 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
 
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefundRescue<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    seed: JByteArray<'local>,
+    mainnet: jboolean,
+    index: jint,
+    chain_id: jlong,
+    contract: JByteArray<'local>,
+    swap_id: JByteArray<'local>,
+    relayer: JByteArray<'local>,
+    fee: JString<'local>,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let seed = self::seed(env, &seed)?;
+        let domain = domain(env, chain_id, &contract)?;
+        let swap_id = fixed(env, &swap_id, "a swap id")?;
+        let relayer = fixed(env, &relayer, "a relayer address")?;
+        let fee: String = env.get_string(&fee).map_err(jni_error)?.into();
+        let fee = fee
+            .parse::<u128>()
+            .map_err(|_| format!("a relayer fee can't be {fee}"))?;
+        let signature =
+            swap(&seed, mainnet, index)?.sign_refund_rescue(domain, &swap_id, &relayer, fee)?;
+        byte_array(env, &signature)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signReverseAction<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,

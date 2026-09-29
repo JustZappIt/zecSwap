@@ -90,6 +90,20 @@ impl<'a> Swap<'a> {
             .sign(&domain.refund_payout(swap_id, relayer, fee)))
     }
 
+    pub fn sign_refund_rescue(
+        &self,
+        domain: Domain,
+        swap_id: &[u8; 32],
+        relayer: &[u8; 20],
+        fee: u128,
+    ) -> Result<[u8; 65]> {
+        let keys = self.keys()?;
+        let note = self.note(&keys)?;
+        Ok(keys
+            .auth
+            .sign(&domain.rescue(swap_id, &note.commitment(), relayer, fee)))
+    }
+
     pub fn new(seed: &'a [u8], mainnet: bool, index: i32) -> Result<Self> {
         check_seed(seed)?;
         let index = u32::try_from(index).map_err(|_| format!("a swap index can't be {index}"))?;
