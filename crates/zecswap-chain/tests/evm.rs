@@ -141,3 +141,161 @@ fn creation_code(artifacts: &Path, name: &str) -> Vec<u8> {
     let code = artifact["bytecode"]["object"].as_str().unwrap();
     hex::decode(code.trim_start_matches("0x")).unwrap()
 }
+
+#[tokio::test]
+async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
+    use alloy::network::EthereumWallet;
+    use alloy::providers::{Provider, ProviderBuilder};
+    use alloy::rpc::types::TransactionRequest;
+    use zecswap_chain::evm::reverse_funding_calls;
+    use zecswap_core::ReverseOpen;
+
+    let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("MockRailgun.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let maker_key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let relay_key = PrivateKeySigner::from(anvil.keys()[1].clone());
+    let maker_address = maker_key.address();
+    let relay_address = relay_key.address();
+    let railgun = deploy(
+        &url,
+        maker_key.clone(),
+        creation_code(&artifacts, "MockRailgun"),
+    )
+    .await
+    .unwrap();
+    let token = deploy(
+        &url,
+        maker_key.clone(),
+        creation_code(&artifacts, "TestToken"),
+    )
+    .await
+    .unwrap();
+    let mut code = creation_code(&artifacts, "ZecSwap");
+    code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&railgun.into_word().0);
+    let contract = deploy(&url, maker_key.clone(), code).await.unwrap();
+    let maker = Settlement::connect(&url, contract, maker_key).unwrap();
+    let relay = Settlement::connect(&url, contract, relay_key.clone()).unwrap();
+    let provider = ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .with_gas_estimation()
+        .with_simple_nonce_management()
+        .fetch_chain_id()
+        .wallet(EthereumWallet::from(relay_key))
+        .connect_http(url.parse().unwrap());
+    let domain = Domain {
+        chain_id: maker.chain_id().await.unwrap(),
+        contract: contract.into(),
+    };
+    let seed = [7; 64];
+    let wallet = zecswap_railgun::Keys::from_seed(&seed, 0);
+    maker
+        .mint_test_token(token, relay_address, 2_000_000)
+        .await
+        .unwrap();
+
+    for index in 0..2 {
+        let keys = derive_user_keys(&seed, NetworkType::Test, 0, index).unwrap();
+        let e = derive_maker_share(&[9; 32], index.into()).unwrap();
+        let note = wallet.note(&keys.note_entropy).unwrap();
+        let now = maker.now().await.unwrap();
+        let terms = ReverseOpen {
+            maker: maker_address.into(),
+            user: keys.auth.address(),
+            token: token.into(),
+            amount: 1_000_000,
+            maker_share: e.public(),
+            user_share: keys.share.public(),
+            t0: now + 3600,
+            t1: now + 7200,
+            refund_note: note.commitment(),
+            deadline: now + 300,
+        };
+        let signature = keys.auth.sign(&domain.open_reverse(&terms));
+        for (to, data) in reverse_funding_calls(contract, &terms, &signature) {
+            let receipt = provider
+                .send_transaction(TransactionRequest::default().to(to).input(data.into()))
+                .await
+                .unwrap()
+                .get_receipt()
+                .await
+                .unwrap();
+            assert!(receipt.status());
+        }
+        let id = swap_id(keys.auth.address().into(), &e.public());
+        let chain = maker.swap(id).await.unwrap().unwrap();
+        assert_eq!(chain.maker_share, keys.share.public());
+        assert_eq!(chain.user_share, e.public());
+        assert_eq!(
+            maker
+                .confirmed_reverse_funding(id, 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .refund_note,
+            zecswap_chain::evm::B256::from(note.commitment())
+        );
+        assert!(
+            maker
+                .confirmed_reverse_funding(id, 100)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(maker.confirmed_swap(id, 1).await.unwrap(), Some(chain));
+        let deadline = maker.now().await.unwrap() + 60;
+        if index == 0 {
+            let signature = keys.auth.sign(&domain.ready(&id.0, deadline));
+            relay
+                .ready_with_sig(id, deadline, &signature)
+                .await
+                .unwrap();
+            maker.lock_claim(id).await.unwrap();
+            maker.claim(id, &e).await.unwrap();
+            assert_eq!(
+                maker.balance_of(maker_address, token).await.unwrap(),
+                terms.amount
+            );
+            assert_eq!(
+                maker
+                    .swap(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revealed()
+                    .unwrap()
+                    .unwrap()
+                    .public(),
+                e.public()
+            );
+        } else {
+            let signature = keys.auth.sign(&domain.lock_refund(&id.0, deadline));
+            relay
+                .lock_refund_with_sig(id, deadline, &signature)
+                .await
+                .unwrap();
+            relay.refund(id, &keys.share).await.unwrap();
+            let fee = 20_000;
+            let signature =
+                keys.auth
+                    .sign(&domain.refund_payout(&id.0, &relay_address.into(), fee));
+            let tx = relay
+                .refund_payout(id, &note, fee, &signature)
+                .await
+                .unwrap();
+            let notes = maker.shielded(tx).await.unwrap();
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].value + notes[0].fee, terms.amount - fee);
+            assert!(wallet.open(&notes[0].note).is_some());
+            assert!(maker.swap(id).await.unwrap().unwrap().paid_out);
+        }
+    }
+}

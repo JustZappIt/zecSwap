@@ -11,6 +11,7 @@ alloy-primitives = { version = "~1.5", features = ["serde"] }
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
 hex = "0.4"
 rand_core.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -23,7 +24,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = "1"
 zcash_address.workspace = true
-zecswap-api = { path = "../zecswap-api" }
+zecswap-api = { path = "../zecswap-api", features = ["server"] }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-core = { path = "../zecswap-core" }
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
+tonic = { version = "0.14", default-features = false, features = ["channel"] }
+tower = { version = "0.5", features = ["util"] }

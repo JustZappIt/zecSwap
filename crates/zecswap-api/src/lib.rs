@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use zecswap_core::{PublicShare, ShareProof, ViewingKeys};
 
 pub mod relayer;
+pub mod reverse;
+#[cfg(feature = "server")]
+pub mod server;
+pub mod service;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

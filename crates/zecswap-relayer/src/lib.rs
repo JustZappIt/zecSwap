@@ -4,6 +4,7 @@
 //! claim back until the lock lapses, then refund and race the user for the ZEC.
 
 pub mod api;
+mod reverse;
 
 use std::net::SocketAddr;
 use std::path::Path;

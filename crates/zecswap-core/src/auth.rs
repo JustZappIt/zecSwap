@@ -5,13 +5,28 @@ use k256::elliptic_curve::ops::Reduce;
 use k256::{NonZeroScalar, Scalar};
 use sha3::{Digest, Keccak256};
 
-use crate::Error;
+use crate::{Error, PublicShare};
 
 const DOMAIN_TYPE: &[u8] =
     b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
 const LOCK_CLAIM_TYPE: &[u8] = b"LockClaim(bytes32 id,uint64 deadline)";
 const PAYOUT_TYPE: &[u8] = b"Payout(bytes32 id,address relayer,uint128 fee)";
 const RESCUE_TYPE: &[u8] = b"Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)";
+const OPEN_REVERSE_TYPE: &[u8] = b"OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReverseOpen {
+    pub maker: [u8; 20],
+    pub user: [u8; 20],
+    pub token: [u8; 20],
+    pub amount: u128,
+    pub maker_share: PublicShare,
+    pub user_share: PublicShare,
+    pub t0: u64,
+    pub t1: u64,
+    pub refund_note: [u8; 32],
+    pub deadline: u64,
+}
 
 /// The EIP-712 domain of one ZecSwap deployment, and the digests of what a swap's `user` signs
 /// there. A signature under one domain never moves another.
@@ -22,6 +37,47 @@ pub struct Domain {
 }
 
 impl Domain {
+    pub fn open_reverse(&self, terms: &ReverseOpen) -> [u8; 32] {
+        self.digest(&[
+            &keccak(&[OPEN_REVERSE_TYPE]),
+            &address(&terms.maker),
+            &address(&terms.user),
+            &address(&terms.token),
+            &uint(terms.amount),
+            &keccak(&[&terms.maker_share.to_affine_bytes()]),
+            &keccak(&[&terms.user_share.to_affine_bytes()]),
+            &uint(terms.t0.into()),
+            &uint(terms.t1.into()),
+            &terms.refund_note,
+            &uint(terms.deadline.into()),
+        ])
+    }
+
+    pub fn ready(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
+        self.digest(&[
+            &keccak(&[b"Ready(bytes32 id,uint64 deadline)"]),
+            id,
+            &uint(deadline.into()),
+        ])
+    }
+
+    pub fn lock_refund(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
+        self.digest(&[
+            &keccak(&[b"LockRefund(bytes32 id,uint64 deadline)"]),
+            id,
+            &uint(deadline.into()),
+        ])
+    }
+
+    pub fn refund_payout(&self, id: &[u8; 32], relayer: &[u8; 20], fee: u128) -> [u8; 32] {
+        self.digest(&[
+            &keccak(&[b"RefundPayout(bytes32 id,address relayer,uint128 fee)"]),
+            id,
+            &address(relayer),
+            &uint(fee),
+        ])
+    }
+
     /// One claim lock, sent by `deadline`, which must fall within the contract's lock duration
     /// of the time it lands.
     pub fn lock_claim(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
