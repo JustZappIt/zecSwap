@@ -57,6 +57,24 @@ object ReverseAtomicSwap {
             fee.toString(),
         )
 
+    fun signRefundRescue(
+        key: SwapKey,
+        deployment: Deployment,
+        swapId: ByteArray,
+        relayer: ByteArray,
+        fee: BigInteger,
+    ): ByteArray =
+        AtomicSwapNative.signRefundRescue(
+            key.seed,
+            key.mainnet,
+            key.index,
+            deployment.chainId,
+            deployment.contract,
+            swapId,
+            relayer,
+            fee.toString(),
+        )
+
     /** Use the maker's share from a verified Claimed escrow to sweep the received ZEC home. */
     fun signReceive(
         key: SwapKey,

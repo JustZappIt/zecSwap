@@ -89,6 +89,17 @@ internal object AtomicSwapNative {
         action: Int,
     ): ByteArray
 
+    @JvmStatic external fun signRefundRescue(
+        seed: ByteArray,
+        mainnet: Boolean,
+        index: Int,
+        chainId: Long,
+        contract: ByteArray,
+        swapId: ByteArray,
+        relayer: ByteArray,
+        fee: String,
+    ): ByteArray
+
     @JvmStatic external fun signRefundPayout(
         seed: ByteArray,
         mainnet: Boolean,

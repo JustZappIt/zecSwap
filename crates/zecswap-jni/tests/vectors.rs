@@ -90,6 +90,20 @@ fn reverse_authorizations_bind_terms_and_separate_actions() {
         signer(&domain.lock_refund(&id, 1_100), &ready),
         Some(keys.auth.address())
     );
+    let rescue = swap()
+        .sign_refund_rescue(domain, &id, &RELAYER, 20_000)
+        .unwrap();
+    assert_eq!(
+        signer(
+            &domain.rescue(&id, &note.commitment(), &RELAYER, 20_000),
+            &rescue
+        ),
+        Some(keys.auth.address())
+    );
+    assert_ne!(
+        signer(&domain.refund_payout(&id, &RELAYER, 20_000), &rescue),
+        Some(keys.auth.address())
+    );
     let refund = swap()
         .sign_refund_payout(domain, &id, &RELAYER, 20_000)
         .unwrap();
