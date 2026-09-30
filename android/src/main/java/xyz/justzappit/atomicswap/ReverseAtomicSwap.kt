@@ -4,8 +4,10 @@ import java.math.BigInteger
 
 /** Reverse swaps reuse AtomicSwap's acceptance, joint account, and Railgun note derivation. */
 object ReverseAtomicSwap {
+    /** Commits the refund to its note in [railgun]'s wallet. */
     fun signOpen(
         key: SwapKey,
+        railgun: RailgunSeed,
         deployment: Deployment,
         terms: ReverseEscrowTerms,
     ): ByteArray =
@@ -13,6 +15,7 @@ object ReverseAtomicSwap {
             key.seed,
             key.mainnet,
             key.index,
+            railgun.bytes,
             deployment.chainId,
             deployment.contract,
             terms.maker,
@@ -59,6 +62,7 @@ object ReverseAtomicSwap {
 
     fun signRefundRescue(
         key: SwapKey,
+        railgun: RailgunSeed,
         deployment: Deployment,
         swapId: ByteArray,
         relayer: ByteArray,
@@ -68,6 +72,7 @@ object ReverseAtomicSwap {
             key.seed,
             key.mainnet,
             key.index,
+            railgun.bytes,
             deployment.chainId,
             deployment.contract,
             swapId,
