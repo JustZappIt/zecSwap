@@ -228,8 +228,10 @@ impl Player {
             (settlement, Route::Account)
         };
         let network = env.network.network_type();
-        let user = User::new(&env.seed, network, settlement, maker, env.token, route)
-            .with_min_time_to_t0(env.min_time_to_t0);
+        let user = User::new(
+            &env.seed, &env.seed, network, settlement, maker, env.token, route,
+        )
+        .with_min_time_to_t0(env.min_time_to_t0);
         Ok(Self {
             env,
             name,

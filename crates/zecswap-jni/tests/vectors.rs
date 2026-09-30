@@ -4,8 +4,10 @@
 use rand_core::OsRng;
 use zecswap::ops::{Swap, railgun_address};
 use zecswap_core::{Domain, Payout, PublicShare, ShareProof, SwapContext, derive_maker_share};
+use zecswap_railgun::{Keys as RailgunKeys, ShieldCiphertext, ShieldNote};
 
 const SEED: [u8; 64] = [7; 64];
+const RAILGUN_SEED: [u8; 64] = [8; 64];
 const SEPOLIA: u64 = 11_155_111;
 const CONTRACT: [u8; 20] = [0x11; 20];
 const RELAYER: [u8; 20] = [0x22; 20];
@@ -35,6 +37,20 @@ fn maker_share() -> [u8; 64] {
         .to_affine_bytes()
 }
 
+fn shield_note(bytes: &[u8]) -> ShieldNote {
+    let words: Vec<[u8; 32]> = bytes
+        .chunks(32)
+        .map(|word| word.try_into().unwrap())
+        .collect();
+    ShieldNote {
+        npk: words[0],
+        ciphertext: ShieldCiphertext {
+            encrypted_bundle: [words[1], words[2], words[3]],
+            shield_key: words[4],
+        },
+    }
+}
+
 #[test]
 fn reverse_authorizations_bind_terms_and_separate_actions() {
     use zecswap::ops::{ReverseAction, ReverseTerms};
@@ -44,7 +60,7 @@ fn reverse_authorizations_bind_terms_and_separate_actions() {
         contract: CONTRACT,
     };
     let keys = derive_user_keys(&SEED, NetworkType::Test, 0, 0).unwrap();
-    let note = zecswap_railgun::Keys::from_seed(&SEED, 0)
+    let note = RailgunKeys::from_seed(&RAILGUN_SEED, 0)
         .note(&keys.note_entropy)
         .unwrap();
     let terms = ReverseTerms {
@@ -68,10 +84,18 @@ fn reverse_authorizations_bind_terms_and_separate_actions() {
         refund_note: note.commitment(),
         deadline: terms.funding_deadline,
     };
-    let signature = swap().sign_reverse_open(domain, &terms).unwrap();
+    let signature = swap()
+        .sign_reverse_open(&RAILGUN_SEED, domain, &terms)
+        .unwrap();
     assert_eq!(
         signer(&domain.open_reverse(&open), &signature),
         Some(keys.auth.address())
+    );
+    let legacy = swap().sign_reverse_open(&SEED, domain, &terms).unwrap();
+    assert_ne!(
+        signer(&domain.open_reverse(&open), &legacy),
+        Some(keys.auth.address()),
+        "the refund note is the Railgun seed's"
     );
     open.amount += 1;
     assert_ne!(
@@ -91,7 +115,7 @@ fn reverse_authorizations_bind_terms_and_separate_actions() {
         Some(keys.auth.address())
     );
     let rescue = swap()
-        .sign_refund_rescue(domain, &id, &RELAYER, 20_000)
+        .sign_refund_rescue(&RAILGUN_SEED, domain, &id, &RELAYER, 20_000)
         .unwrap();
     assert_eq!(
         signer(
@@ -132,11 +156,40 @@ fn keys() {
         railgun_address(&SEED).unwrap(),
         "0zk1qyt5x0c632363rrmd8psxws6n9tscm8gps277gzc0w3s5cg4mdpe9rv7j6fe3z53luahk4ksjwagt68fl2vguye054rxjyqzvhs9usq4rwrk09al6n0677pdrgn"
     );
+    assert_eq!(
+        railgun_address(&RAILGUN_SEED).unwrap(),
+        "0zk1qyrs4qyrd08p6uep0fc2y8njktgcpezts3rpaq6q0ln948ecjkw8prv7j6fe3z53llz8ursderja0juwv5pgnv8x5klmmwkv8q38h9n704h4d4qjyw7n5qk68nx"
+    );
 }
 
 #[test]
-fn payout_note() {
-    let note = swap().payout_note().unwrap();
+fn payout_note_pays_the_railgun_seeds_wallet_only() {
+    let note = swap().payout_note(&RAILGUN_SEED).unwrap();
+    let words: Vec<_> = note.chunks(32).map(hex).collect();
+    assert_eq!(
+        words,
+        [
+            "0x1f80223263733ae7cb3047ae61b64ee8179674dbbd708cac8a7a8b15a222ba35",
+            "0xe9f4508256863b2559259a39333a65684a26d33e9ac0081841cc96ed3d26c2b2",
+            "0xc47d927ba9163144d7c83e28031820134fb3f943d073895b3e2521517419ee97",
+            "0x7d9d444c12bec55e6b3892ca92fd50c9ba2d7d0783f95545a2f15923f8474c0f",
+            "0x02356776cb176876b31960b8ccbf0c0850a76e9a2ef49caa6631bca732d064b2",
+            "0x5af6901ba7cb01f49785a29c4a2e57e31af3e53382ce3dd2e35678897515ffc1",
+        ]
+    );
+    let note = shield_note(&note[..160]);
+    assert!(
+        RailgunKeys::from_seed(&RAILGUN_SEED, 0)
+            .open(&note)
+            .is_some()
+    );
+    assert!(RailgunKeys::from_seed(&SEED, 0).open(&note).is_none());
+}
+
+/// Swaps accepted before the Railgun seed was separate committed to this note: it never changes.
+#[test]
+fn payout_note_into_the_swap_seeds_own_wallet_is_unchanged() {
+    let note = swap().payout_note(&SEED).unwrap();
     let words: Vec<_> = note.chunks(32).map(hex).collect();
     assert_eq!(
         words,
@@ -191,22 +244,32 @@ fn accept_proves_against_the_payout_it_quotes() {
     };
     let maker_proof = context.prove_maker(&maker, OsRng).to_bytes();
     let accepted = swap()
-        .accept(context, &maker.public().to_affine_bytes(), &maker_proof)
+        .accept(
+            &RAILGUN_SEED,
+            context,
+            &maker.public().to_affine_bytes(),
+            &maker_proof,
+        )
         .unwrap();
 
     let (share, rest) = accepted.split_at(64);
     let (proof, viewing) = rest.split_at(64);
     assert_eq!(hex(share), USER_SHARE);
     assert_eq!(hex(viewing), VIEWING_KEYS);
-    let payout = Payout {
+    let payout = |seed: &[u8]| Payout {
         user: swap().auth_address().unwrap(),
-        note: Some(swap().payout_note().unwrap()[160..].try_into().unwrap()),
+        note: Some(swap().payout_note(seed).unwrap()[160..].try_into().unwrap()),
     };
     let user = PublicShare::from_affine_bytes(share.try_into().unwrap()).unwrap();
     let proof = ShareProof::from_bytes(proof.try_into().unwrap());
     assert_eq!(
-        context.verify_user(&maker.public(), &user, &payout, &proof),
+        context.verify_user(&maker.public(), &user, &payout(&RAILGUN_SEED), &proof),
         Ok(())
+    );
+    assert!(
+        context
+            .verify_user(&maker.public(), &user, &payout(&SEED), &proof)
+            .is_err()
     );
 }
 
@@ -223,7 +286,12 @@ fn accept_refuses_a_maker_proof_for_another_quote() {
         quote_id: [0x44; 32],
         ..context
     };
-    let refused = swap().accept(other, &maker.public().to_affine_bytes(), &proof);
+    let refused = swap().accept(
+        &RAILGUN_SEED,
+        other,
+        &maker.public().to_affine_bytes(),
+        &proof,
+    );
     assert!(refused.unwrap_err().starts_with("the maker's share proof"));
 }
 
@@ -238,5 +306,6 @@ fn refund_refuses_a_maker_secret_the_share_does_not_match() {
 fn seeds_are_64_bytes() {
     assert!(Swap::new(&[7; 32], false, 0).is_err());
     assert!(railgun_address(&[7; 32]).is_err());
+    assert!(swap().payout_note(&[8; 32]).is_err());
     assert!(Swap::new(&SEED, false, -1).is_err());
 }

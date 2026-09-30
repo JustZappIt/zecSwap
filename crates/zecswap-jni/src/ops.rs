@@ -1,5 +1,6 @@
 //! What each binding computes, over plain bytes, so it runs and is tested without a JVM. Every
-//! call derives the swap's keys from the seed again: nothing secret outlives it.
+//! call derives the swap's keys from the seed again: nothing secret outlives it. Railgun notes
+//! pay the wallet of a seed of their own, which no swap key derives from.
 
 use rand_core::OsRng;
 use zecswap_core::{
@@ -38,7 +39,12 @@ pub struct Swap<'a> {
 }
 
 impl<'a> Swap<'a> {
-    pub fn sign_reverse_open(&self, domain: Domain, terms: &ReverseTerms) -> Result<[u8; 65]> {
+    pub fn sign_reverse_open(
+        &self,
+        railgun_seed: &[u8],
+        domain: Domain,
+        terms: &ReverseTerms,
+    ) -> Result<[u8; 65]> {
         if terms.amount == 0
             || terms.maker == [0; 20]
             || terms.token == [0; 20]
@@ -57,7 +63,7 @@ impl<'a> Swap<'a> {
             user_share: keys.share.public(),
             t0: terms.ready_deadline,
             t1: terms.refund_after,
-            refund_note: self.note(&keys)?.commitment(),
+            refund_note: self.note(&keys, railgun_seed)?.commitment(),
             deadline: terms.funding_deadline,
         };
         Ok(keys.auth.sign(&domain.open_reverse(&open)))
@@ -92,13 +98,14 @@ impl<'a> Swap<'a> {
 
     pub fn sign_refund_rescue(
         &self,
+        railgun_seed: &[u8],
         domain: Domain,
         swap_id: &[u8; 32],
         relayer: &[u8; 20],
         fee: u128,
     ) -> Result<[u8; 65]> {
         let keys = self.keys()?;
-        let note = self.note(&keys)?;
+        let note = self.note(&keys, railgun_seed)?;
         Ok(keys
             .auth
             .sign(&domain.rescue(swap_id, &note.commitment(), relayer, fee)))
@@ -134,10 +141,11 @@ impl<'a> Swap<'a> {
         Ok(self.keys()?.share.to_be_bytes())
     }
 
-    /// The Railgun note the payout is shielded to, as `npk ‖ encryptedBundle ‖ shieldKey ‖
-    /// commitment`: the quote names the commitment and the relayer sends the rest.
-    pub fn payout_note(&self) -> Result<Vec<u8>> {
-        let note = self.note(&self.keys()?)?;
+    /// The Railgun note the payout is shielded to, in the wallet of `railgun_seed`, as `npk ‖
+    /// encryptedBundle ‖ shieldKey ‖ commitment`: the quote names the commitment and the relayer
+    /// sends the rest.
+    pub fn payout_note(&self, railgun_seed: &[u8]) -> Result<Vec<u8>> {
+        let note = self.note(&self.keys()?, railgun_seed)?;
         let mut bytes = Vec::with_capacity(6 * 32);
         bytes.extend_from_slice(&note.npk);
         note.ciphertext
@@ -149,10 +157,12 @@ impl<'a> Swap<'a> {
         Ok(bytes)
     }
 
-    /// Checks the maker's proof of `E`, then proves `Z` bound to both shares and the payout.
-    /// Returns `userShare ‖ userProof ‖ viewingKeys`, what the quote's accept call takes.
+    /// Checks the maker's proof of `E`, then proves `Z` bound to both shares and the payout into
+    /// the wallet of `railgun_seed`. Returns `userShare ‖ userProof ‖ viewingKeys`, what the
+    /// quote's accept call takes.
     pub fn accept(
         &self,
+        railgun_seed: &[u8],
         context: SwapContext,
         maker_share: &[u8; 64],
         maker_proof: &[u8; 64],
@@ -164,7 +174,7 @@ impl<'a> Swap<'a> {
             .map_err(|e| format!("the maker's share proof: {e}"))?;
         let payout = Payout {
             user: keys.auth.address(),
-            note: Some(self.note(&keys)?.commitment()),
+            note: Some(self.note(&keys, railgun_seed)?.commitment()),
         };
         let proof = context.prove_user(&maker, &keys.share, &payout, OsRng);
         let mut bytes = Vec::with_capacity(3 * 64);
@@ -231,8 +241,10 @@ impl<'a> Swap<'a> {
         derive_user_keys(self.seed, self.network, 0, self.index).map_err(error)
     }
 
-    fn note(&self, keys: &UserSwapKeys) -> Result<ShieldNote> {
-        railgun(self.seed).note(&keys.note_entropy).map_err(error)
+    fn note(&self, keys: &UserSwapKeys, railgun_seed: &[u8]) -> Result<ShieldNote> {
+        railgun(railgun_seed)?
+            .note(&keys.note_entropy)
+            .map_err(error)
     }
 
     fn joint(&self, keys: &UserSwapKeys, maker_share: &[u8; 64]) -> Result<JointAccount> {
@@ -241,15 +253,14 @@ impl<'a> Swap<'a> {
     }
 }
 
-/// The `0zk` address payouts go to: the Railgun wallet the same mnemonic opens in Railgun's own
-/// wallets.
+/// The `0zk` address of the Railgun wallet the mnemonic of `seed` opens in Railgun's own wallets.
 pub fn railgun_address(seed: &[u8]) -> Result<String> {
-    check_seed(seed)?;
-    Ok(railgun(seed).address())
+    Ok(railgun(seed)?.address())
 }
 
-fn railgun(seed: &[u8]) -> RailgunKeys {
-    RailgunKeys::from_seed(seed, RAILGUN_WALLET)
+fn railgun(seed: &[u8]) -> Result<RailgunKeys> {
+    check_seed(seed)?;
+    Ok(RailgunKeys::from_seed(seed, RAILGUN_WALLET))
 }
 
 fn check_seed(seed: &[u8]) -> Result<()> {

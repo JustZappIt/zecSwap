@@ -4,9 +4,10 @@
 use alloy_primitives::{Address, address};
 use zecswap_chain::evm::swap_id;
 use zecswap_core::{Domain, NetworkType, derive_maker_share, derive_user_keys};
-use zecswap_railgun::Keys;
+use zecswap_railgun::{Keys, ShieldNote};
 
 const SEED: [u8; 64] = [7; 64];
+const RAILGUN_SEED: [u8; 64] = [8; 64];
 const MAKER: Address = address!("09eD1F966745Be18C711C346242c0974DAd7c3e5");
 const CONTRACT: Address = address!("1111111111111111111111111111111111111111");
 const RELAYER: Address = address!("2222222222222222222222222222222222222222");
@@ -34,16 +35,12 @@ fn main() {
         hex(&maker_share.public().to_affine_bytes())
     );
 
-    let wallet = Keys::from_seed(&SEED, 0);
-    let note = wallet.note(&keys.note_entropy).expect("note");
-    println!("Railgun wallet 0 of the seed, and the note swap 0 pays");
-    println!("  0zk          {}", wallet.address());
-    println!("  npk          {}", hex(&note.npk));
-    for (i, word) in note.ciphertext.encrypted_bundle.iter().enumerate() {
-        println!("  bundle[{i}]    {}", hex(word));
-    }
-    println!("  shieldKey    {}", hex(&note.ciphertext.shield_key));
-    println!("  payoutNote   {}", hex(&note.commitment()));
+    let note = print_note("the seed itself", &SEED, &keys.note_entropy);
+    let railgun_note = print_note(
+        "a Railgun seed of 64 bytes of 0x08",
+        &RAILGUN_SEED,
+        &keys.note_entropy,
+    );
 
     let domain = Domain {
         chain_id: SEPOLIA,
@@ -86,4 +83,35 @@ fn main() {
     ] {
         println!("  {name} {}", hex(&keys.auth.sign(&digest)));
     }
+    let separate = zecswap_core::ReverseOpen {
+        refund_note: railgun_note.commitment(),
+        ..reverse
+    };
+    let rescue = domain.rescue(
+        &reverse_id.0,
+        &railgun_note.commitment(),
+        &RELAYER.into(),
+        fee,
+    );
+    println!("refunded into the Railgun seed's wallet instead");
+    println!(
+        "  OpenReverse {}",
+        hex(&keys.auth.sign(&domain.open_reverse(&separate)))
+    );
+    println!("  Rescue {}", hex(&keys.auth.sign(&rescue)));
+}
+
+/// Prints Railgun wallet 0 of `seed` and the note built from `entropy` that pays it.
+fn print_note(seed_name: &str, seed: &[u8], entropy: &[u8; 32]) -> ShieldNote {
+    let wallet = Keys::from_seed(seed, 0);
+    let note = wallet.note(entropy).expect("note");
+    println!("Railgun wallet 0 of {seed_name}, and the note swap 0 pays into it");
+    println!("  0zk          {}", wallet.address());
+    println!("  npk          {}", hex(&note.npk));
+    for (i, word) in note.ciphertext.encrypted_bundle.iter().enumerate() {
+        println!("  bundle[{i}]    {}", hex(word));
+    }
+    println!("  shieldKey    {}", hex(&note.ciphertext.shield_key));
+    println!("  payoutNote   {}", hex(&note.commitment()));
+    note
 }
