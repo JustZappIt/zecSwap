@@ -17,17 +17,22 @@ object AtomicSwap {
     /** `z`, the secret a claim reveals. */
     fun claimSecret(key: SwapKey): ByteArray = AtomicSwapNative.claimSecret(key.seed, key.mainnet, key.index)
 
-    fun payoutNote(key: SwapKey): PayoutNote {
-        val words = AtomicSwapNative.payoutNote(key.seed, key.mainnet, key.index).asWords()
+    /** The note the payout is shielded to, in [railgun]'s wallet. */
+    fun payoutNote(
+        key: SwapKey,
+        railgun: RailgunSeed,
+    ): PayoutNote {
+        val words = AtomicSwapNative.payoutNote(key.seed, key.mainnet, key.index, railgun.bytes).asWords()
         return PayoutNote(npk = words[0], encryptedBundle = words.subList(1, 4), shieldKey = words[4], commitment = words[5])
     }
 
     /**
      * Checks the maker's proof of its share for this quote, then proves ours, bound to both shares
-     * and the payout.
+     * and the payout into [railgun]'s wallet.
      */
     fun accept(
         key: SwapKey,
+        railgun: RailgunSeed,
         deployment: Deployment,
         quoteId: ByteArray,
         makerShare: ByteArray,
@@ -38,6 +43,7 @@ object AtomicSwap {
                 key.seed,
                 key.mainnet,
                 key.index,
+                railgun.bytes,
                 deployment.chainId,
                 deployment.contract,
                 quoteId,
@@ -107,8 +113,8 @@ object AtomicSwap {
         pczt: ByteArray,
     ): ByteArray = AtomicSwapNative.signRefund(key.seed, key.mainnet, key.index, makerShare, makerSecret, pczt)
 
-    /** The `0zk` address payouts go to, the Railgun wallet Railgun's own apps open from the same words. */
-    fun railgunAddress(seed: ByteArray): String = AtomicSwapNative.railgunAddress(seed)
+    /** The `0zk` address of [railgun]'s wallet, the one Railgun's own apps open from its words. */
+    fun railgunAddress(railgun: RailgunSeed): String = AtomicSwapNative.railgunAddress(railgun.bytes)
 
     private const val SHARE_BYTES = 64
     private const val WORD_BYTES = 32
@@ -121,6 +127,11 @@ class SwapKey(
     val seed: ByteArray,
     val mainnet: Boolean,
     val index: Int,
+)
+
+/** The 64-byte BIP-39 seed of the Railgun wallet's mnemonic: the wallet payouts and refunds go to. */
+class RailgunSeed(
+    val bytes: ByteArray,
 )
 
 /** A ZecSwap contract: the EIP-712 domain the swap's signatures are bound to. */

@@ -14,7 +14,7 @@ use zecswap_railgun::Keys as RailgunKeys;
 use zeroize::Zeroizing;
 
 use crate::api::{MakerApi, RelayerApi};
-use crate::user::CLAIM_MARGIN;
+use crate::user::{CLAIM_MARGIN, RAILGUN_WALLET};
 
 const SIGNATURE_TTL: u64 = 120;
 const MAX_READY_WAIT: u64 = 24 * 60 * 60;
@@ -26,8 +26,11 @@ pub struct ReverseSwap {
     pub swap_id: B256,
 }
 
+/// A user with a wallet seed, which its swaps' keys derive from, refunded into the Railgun wallet
+/// of its Railgun seed.
 pub struct ReverseUser {
     seed: Zeroizing<Vec<u8>>,
+    railgun: RailgunKeys,
     network: NetworkType,
     settlement: Settlement,
     maker: MakerApi,
@@ -37,8 +40,10 @@ pub struct ReverseUser {
 }
 
 impl ReverseUser {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         seed: &[u8],
+        railgun_seed: &[u8],
         network: NetworkType,
         settlement: Settlement,
         maker: MakerApi,
@@ -48,6 +53,7 @@ impl ReverseUser {
     ) -> Self {
         Self {
             seed: Zeroizing::new(seed.to_vec()),
+            railgun: RailgunKeys::from_seed(railgun_seed, RAILGUN_WALLET),
             network,
             settlement,
             maker,
@@ -60,7 +66,7 @@ impl ReverseUser {
     /// Persist this result and the spent index before accepting or funding it.
     pub async fn quote(&self, index: u32, units: u32) -> Result<ReverseSwap> {
         let keys = self.keys(index)?;
-        let note = RailgunKeys::from_seed(&self.seed, 0).note(&keys.note_entropy)?;
+        let note = self.railgun.note(&keys.note_entropy)?;
         let quote = self
             .maker
             .reverse_quote(&QuoteRequest {
@@ -257,7 +263,7 @@ impl ReverseUser {
             "refund fee exceeds the limit"
         );
         let keys = self.keys(swap.index)?;
-        let note = RailgunKeys::from_seed(&self.seed, 0).note(&keys.note_entropy)?;
+        let note = self.railgun.note(&keys.note_entropy)?;
         let payout = relayer::Payout {
             swap_id: swap.swap_id,
             note: (&note).into(),
@@ -307,7 +313,7 @@ impl ReverseUser {
     async fn verify_quote(&self, swap: &ReverseSwap) -> Result<()> {
         let quote = &swap.quote;
         let keys = self.keys(swap.index)?;
-        let note = RailgunKeys::from_seed(&self.seed, 0).note(&keys.note_entropy)?;
+        let note = self.railgun.note(&keys.note_entropy)?;
         ensure!(
             quote.terms.chain_id == self.settlement.chain_id().await?
                 && quote.terms.contract == self.settlement.contract()

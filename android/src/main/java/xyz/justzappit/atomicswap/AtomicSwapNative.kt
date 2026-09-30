@@ -12,12 +12,18 @@ internal object AtomicSwapNative {
 
     @JvmStatic external fun claimSecret(seed: ByteArray, mainnet: Boolean, index: Int): ByteArray
 
-    @JvmStatic external fun payoutNote(seed: ByteArray, mainnet: Boolean, index: Int): ByteArray
+    @JvmStatic external fun payoutNote(
+        seed: ByteArray,
+        mainnet: Boolean,
+        index: Int,
+        railgunSeed: ByteArray,
+    ): ByteArray
 
     @JvmStatic external fun accept(
         seed: ByteArray,
         mainnet: Boolean,
         index: Int,
+        railgunSeed: ByteArray,
         chainId: Long,
         contract: ByteArray,
         quoteId: ByteArray,
@@ -62,11 +68,13 @@ internal object AtomicSwapNative {
         pczt: ByteArray,
     ): ByteArray
 
-    @JvmStatic external fun railgunAddress(seed: ByteArray): String
+    @JvmStatic external fun railgunAddress(railgunSeed: ByteArray): String
+
     @JvmStatic external fun signReverseOpen(
         seed: ByteArray,
         mainnet: Boolean,
         index: Int,
+        railgunSeed: ByteArray,
         chainId: Long,
         contract: ByteArray,
         maker: ByteArray,
@@ -93,6 +101,7 @@ internal object AtomicSwapNative {
         seed: ByteArray,
         mainnet: Boolean,
         index: Int,
+        railgunSeed: ByteArray,
         chainId: Long,
         contract: ByteArray,
         swapId: ByteArray,

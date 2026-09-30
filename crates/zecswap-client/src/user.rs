@@ -28,7 +28,7 @@ pub const CLAIM_MARGIN: u64 = 5 * 60;
 const LOCK_SIGNATURE_TTL: u64 = 2 * 60;
 const CATCH_UP: Duration = Duration::from_secs(60);
 /// Railgun's wallets open the first wallet of a seed.
-const RAILGUN_WALLET: u32 = 0;
+pub(crate) const RAILGUN_WALLET: u32 = 0;
 
 /// What a user keeps about a swap it accepted; its keys re-derive from the seed and index.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,8 +43,8 @@ pub enum Route {
     /// To the account the settlement connection sends as, which takes the claim lock, claims
     /// and withdraws itself.
     Account,
-    /// Into the user's Railgun wallet, derived from the same seed. Each swap's own key signs,
-    /// the relayer sends, and the user needs no account on the chain.
+    /// Into the user's Railgun wallet, the one its Railgun seed opens. Each swap's own key
+    /// signs, the relayer sends, and the user needs no account on the chain.
     Railgun {
         relayer: RelayerApi,
         /// The most the relayer may keep from a payout, in token base units.
@@ -62,7 +62,8 @@ pub struct Paid {
     pub tx: Option<B256>,
 }
 
-/// A user with a wallet seed, paid to an account or into Railgun.
+/// A user with a wallet seed, which its swaps' keys derive from, paid to an account or into the
+/// Railgun wallet of its Railgun seed.
 pub struct User {
     seed: Zeroizing<Vec<u8>>,
     network: NetworkType,
@@ -77,6 +78,7 @@ pub struct User {
 impl User {
     pub fn new(
         seed: &[u8],
+        railgun_seed: &[u8],
         network: NetworkType,
         settlement: Settlement,
         maker: MakerApi,
@@ -85,7 +87,7 @@ impl User {
     ) -> Self {
         Self {
             seed: Zeroizing::new(seed.to_vec()),
-            railgun: RailgunKeys::from_seed(seed, RAILGUN_WALLET),
+            railgun: RailgunKeys::from_seed(railgun_seed, RAILGUN_WALLET),
             network,
             settlement,
             maker,

@@ -80,6 +80,7 @@ async fn main() -> Result<()> {
     );
     let user = ReverseUser::new(
         &seed,
+        &seed,
         NetworkType::Test,
         settlement,
         maker.clone(),
