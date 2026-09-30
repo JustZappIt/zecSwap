@@ -15,6 +15,7 @@ import java.math.BigInteger
  */
 class AtomicSwapTest {
     private val key = SwapKey(ByteArray(64) { 7 }, mainnet = false, index = 0)
+    private val railgun = RailgunSeed(ByteArray(64) { 8 })
     private val deployment = Deployment(11_155_111, ByteArray(20) { 0x11 })
     private val swapId = "0x297f1ca9d44ff7136dbddb0720ecadc040229e22c03ad0f9e4c648212bfc7b66".bytes()
     private val makerShare =
@@ -37,9 +38,14 @@ class AtomicSwapTest {
                 fundingDeadline = 1_790_000_000,
             )
         assertEquals(
+            "0x546a50d199fc62080dd679e061f87b0eca23231ab5efeefce3f83a2e6479726f4" +
+                "434cc9c3dbf3cc286cc63dcb0062444b1f8f2f0d937ad1b5d11b4d0fd39d3041c",
+            ReverseAtomicSwap.signOpen(key, railgun, deployment, terms).hex(),
+        )
+        assertEquals(
             "0x10a82e61f8b598a82b826c7135c139df3dd9967323eb9d932a39bdbc79161fbf4" +
                 "cf02891f0cf6490c2b28ece250698c272688873eabef70caa633ae3307f144a1c",
-            ReverseAtomicSwap.signOpen(key, deployment, terms).hex(),
+            ReverseAtomicSwap.signOpen(key, RailgunSeed(key.seed), deployment, terms).hex(),
         )
         assertEquals(
             "0xa3a6ec8ca4c6d397fcf15147c9e9528f7ab4bfa2877eee97def81fdd709511215" +
@@ -56,6 +62,13 @@ class AtomicSwapTest {
                 "83135f06906b22458f7627327b8805305164d00974520bb99a401f1cc536921b",
             ReverseAtomicSwap.signRefundPayout(
                 key, deployment, reverseId, ByteArray(20) { 0x22 }, BigInteger.valueOf(20_000)
+            ).hex(),
+        )
+        assertEquals(
+            "0x5609bc4846174871a2b29044f4eda0d0faf213396e2e75513b9d0d6b4b0e466b1" +
+                "11afb4b4045a815071b6c6bf8d4c77246015874928218d6b777145727f02e771b",
+            ReverseAtomicSwap.signRefundRescue(
+                key, railgun, deployment, reverseId, ByteArray(20) { 0x22 }, BigInteger.valueOf(20_000)
             ).hex(),
         )
         assertThrows(AtomicSwapException::class.java) {
@@ -76,15 +89,36 @@ class AtomicSwapTest {
         )
         assertEquals("0x757de38c2d9880e44ab59827d1622403fbf88ff5", AtomicSwap.authAddress(key).hex())
         assertEquals(
+            "0zk1qyrs4qyrd08p6uep0fc2y8njktgcpezts3rpaq6q0ln948ecjkw8prv7j6fe3z53llz8ursderja0juwv5pgnv8x5" +
+                "klmmwkv8q38h9n704h4d4qjyw7n5qk68nx",
+            AtomicSwap.railgunAddress(railgun),
+        )
+        assertEquals(
             "0zk1qyt5x0c632363rrmd8psxws6n9tscm8gps277gzc0w3s5cg4mdpe9rv7j6fe3z53luahk4ksjwagt68fl2" +
                 "vguye054rxjyqzvhs9usq4rwrk09al6n0677pdrgn",
-            AtomicSwap.railgunAddress(key.seed),
+            AtomicSwap.railgunAddress(RailgunSeed(key.seed)),
         )
     }
 
     @Test
     fun payoutNote() {
-        val note = AtomicSwap.payoutNote(key)
+        val note = AtomicSwap.payoutNote(key, railgun)
+        assertEquals("0x1f80223263733ae7cb3047ae61b64ee8179674dbbd708cac8a7a8b15a222ba35", note.npk.hex())
+        assertEquals(
+            listOf(
+                "0xe9f4508256863b2559259a39333a65684a26d33e9ac0081841cc96ed3d26c2b2",
+                "0xc47d927ba9163144d7c83e28031820134fb3f943d073895b3e2521517419ee97",
+                "0x7d9d444c12bec55e6b3892ca92fd50c9ba2d7d0783f95545a2f15923f8474c0f",
+            ),
+            note.encryptedBundle.map { it.hex() },
+        )
+        assertEquals("0x02356776cb176876b31960b8ccbf0c0850a76e9a2ef49caa6631bca732d064b2", note.shieldKey.hex())
+        assertEquals("0x5af6901ba7cb01f49785a29c4a2e57e31af3e53382ce3dd2e35678897515ffc1", note.commitment.hex())
+    }
+
+    @Test
+    fun payoutNoteIntoTheSwapSeedsOwnWalletIsUnchanged() {
+        val note = AtomicSwap.payoutNote(key, RailgunSeed(key.seed))
         assertEquals("0x11eb0b931cc092fe6876f395a4f8d29cf5c97c43903605253386e008ab4881e3", note.npk.hex())
         assertEquals(
             listOf(
@@ -128,9 +162,10 @@ class AtomicSwapTest {
         assertThrows(AtomicSwapException::class.java) { AtomicSwap.userShare(SwapKey(ByteArray(32), false, 0)) }
         val refused =
             assertThrows(AtomicSwapException::class.java) {
-                AtomicSwap.accept(key, deployment, ByteArray(32), makerShare, ByteArray(64))
+                AtomicSwap.accept(key, railgun, deployment, ByteArray(32), makerShare, ByteArray(64))
             }
         assertTrue(refused.message.orEmpty().startsWith("the maker's share proof"))
+        assertThrows(AtomicSwapException::class.java) { AtomicSwap.payoutNote(key, RailgunSeed(ByteArray(32))) }
         assertThrows(AtomicSwapException::class.java) {
             AtomicSwap.signRefund(key, makerShare, ByteArray(32) { 1 }, ByteArray(0))
         }

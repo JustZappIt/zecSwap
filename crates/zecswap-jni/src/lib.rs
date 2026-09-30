@@ -1,6 +1,7 @@
 //! JNI bindings for `xyz.justzappit.atomicswap.AtomicSwapNative`, in the `android` module. Each
-//! takes the wallet's 64-byte BIP-39 seed, the network and the swap's index, and computes what
-//! `ops` does; errors and panics surface as `AtomicSwapException` instead of crossing into the JVM.
+//! takes the wallet's 64-byte BIP-39 seed, the network and the swap's index, plus the 64-byte seed
+//! of the Railgun wallet a note pays where it builds one, and computes what `ops` does; errors and
+//! panics surface as `AtomicSwapException` instead of crossing into the JVM.
 
 pub mod ops;
 
@@ -127,10 +128,12 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_payoutNot
     seed: JByteArray<'local>,
     mainnet: jboolean,
     index: jint,
+    railgun_seed: JByteArray<'local>,
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
-        let note = swap(&seed, mainnet, index)?.payout_note()?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
+        let note = swap(&seed, mainnet, index)?.payout_note(&railgun_seed)?;
         byte_array(env, &note)
     })
     .unwrap_or(std::ptr::null_mut())
@@ -144,6 +147,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_accept<'l
     seed: JByteArray<'local>,
     mainnet: jboolean,
     index: jint,
+    railgun_seed: JByteArray<'local>,
     chain_id: jlong,
     contract: JByteArray<'local>,
     quote_id: JByteArray<'local>,
@@ -152,6 +156,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_accept<'l
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
         let context = SwapContext {
             chain_id: unsigned(chain_id, "a chain id")?,
             contract: fixed(env, &contract, "a contract address")?,
@@ -159,7 +164,12 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_accept<'l
         };
         let maker_share = fixed(env, &maker_share, "a maker share")?;
         let maker_proof = fixed(env, &maker_proof, "a maker proof")?;
-        let accepted = swap(&seed, mainnet, index)?.accept(context, &maker_share, &maker_proof)?;
+        let accepted = swap(&seed, mainnet, index)?.accept(
+            &railgun_seed,
+            context,
+            &maker_share,
+            &maker_proof,
+        )?;
         byte_array(env, &accepted)
     })
     .unwrap_or(std::ptr::null_mut())
@@ -272,11 +282,11 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
 pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_railgunAddress<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
-    seed: JByteArray<'local>,
+    railgun_seed: JByteArray<'local>,
 ) -> jstring {
     run(&mut env, |env| {
-        let seed = self::seed(env, &seed)?;
-        let address = ops::railgun_address(&seed)?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
+        let address = ops::railgun_address(&railgun_seed)?;
         env.new_string(address)
             .map(JString::into_raw)
             .map_err(jni_error)
@@ -322,6 +332,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
     seed: JByteArray<'local>,
     mainnet: jboolean,
     index: jint,
+    railgun_seed: JByteArray<'local>,
     chain_id: jlong,
     contract: JByteArray<'local>,
     swap_id: JByteArray<'local>,
@@ -330,6 +341,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
         let domain = domain(env, chain_id, &contract)?;
         let swap_id = fixed(env, &swap_id, "a swap id")?;
         let relayer = fixed(env, &relayer, "a relayer address")?;
@@ -337,8 +349,13 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
         let fee = fee
             .parse::<u128>()
             .map_err(|_| format!("a relayer fee can't be {fee}"))?;
-        let signature =
-            swap(&seed, mainnet, index)?.sign_refund_rescue(domain, &swap_id, &relayer, fee)?;
+        let signature = swap(&seed, mainnet, index)?.sign_refund_rescue(
+            &railgun_seed,
+            domain,
+            &swap_id,
+            &relayer,
+            fee,
+        )?;
         byte_array(env, &signature)
     })
     .unwrap_or(std::ptr::null_mut())
@@ -386,6 +403,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRever
     seed: JByteArray<'local>,
     mainnet: jboolean,
     index: jint,
+    railgun_seed: JByteArray<'local>,
     chain_id: jlong,
     contract: JByteArray<'local>,
     maker: JByteArray<'local>,
@@ -398,6 +416,7 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRever
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
         let domain = domain(env, chain_id, &contract)?;
         let amount: String = env.get_string(&amount).map_err(jni_error)?.into();
         let terms = ops::ReverseTerms {
@@ -411,7 +430,8 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRever
             refund_after: unsigned(refund_after, "refund time")?,
             funding_deadline: unsigned(funding_deadline, "funding deadline")?,
         };
-        let signature = swap(&seed, mainnet, index)?.sign_reverse_open(domain, &terms)?;
+        let signature =
+            swap(&seed, mainnet, index)?.sign_reverse_open(&railgun_seed, domain, &terms)?;
         byte_array(env, &signature)
     })
     .unwrap_or(std::ptr::null_mut())
