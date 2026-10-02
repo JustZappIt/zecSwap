@@ -101,3 +101,28 @@ This change does not wire the sibling Android app's screens, foreground worker, 
 Relay Adapt proof/broadcast bridge. Those integrations must follow the ordering above. Local
 tests cover signatures, escrow settlement, private refunds, persistence, and forward-flow
 regressions; a real Railgun-to-Zcash reverse swap remains a live integration check.
+
+## Authorization hardening (2026-10-02)
+
+Rescue uses `Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)`.
+Read `rescueNonces(id)` before approval. The contract checks the deadline and consumes the nonce
+before calling the vault; a failed shield rolls consumption back. Both relayer rescue endpoints
+require `nonce` and `deadline` in their JSON payloads. This changes the rescue ABI and typed data:
+ship the contract, relayer, native library and wallet together for a new deployment. Existing
+contracts cannot acquire this protection through an app update, and old signatures remain valid
+there. Updated Android clients refuse new rescue approvals for contracts without the nonce getter.
+Ordinary settlement and refunds for existing swaps remain supported. Do not move an existing
+swap record to a different contract or represent old approvals as revoked.
+
+Joint sweeps now require `SweepIntent` at the Rust and Kotlin signing boundaries. The caller
+selects the destination independently of the PCZT builder and supplies a minimum receipt and
+maximum fee. The signer verifies note/value commitments and encrypted outputs, rejects change
+to another receiver, rejects transparent/Sapling components and preauthorized nonzero spends,
+and signs only the matching joint inputs. Preserve note values and randomness until this check;
+Android signs the unredacted local PCZT before proving. Ship the rebuilt JNI libraries with the
+matching Kotlin wrapper. Android reverse receives retain the reviewed sweep fee; forward recovery
+and the maker use a fixed 320,000-zatoshi ceiling.
+
+Android rereads the matching confirmed escrow and current clock immediately before a reverse
+refund reveal. This closes preparation delays, but timely inclusion after sending the secret
+still depends on the relayer, chain availability, and the lock window.

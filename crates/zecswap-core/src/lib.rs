@@ -12,13 +12,15 @@ mod joint;
 mod seed;
 mod share;
 mod signer;
+mod sweep;
 mod transcript;
 
-pub use auth::{AuthKey, Domain, ReverseOpen, signer};
+pub use auth::{AuthKey, Domain, RescueAuthorization, ReverseOpen, signer};
 pub use error::Error;
 pub use joint::{JointAccount, SpendKey, ViewingKeys};
 pub use seed::{UserSwapKeys, derive_maker_share, derive_user_keys};
 pub use share::{PublicShare, SecretShare, ShareProof};
 pub use signer::{sign_pczt, sign_pczt_bytes};
+pub use sweep::SweepIntent;
 pub use transcript::{Payout, SwapContext};
 pub use zcash_protocol::consensus::NetworkType;

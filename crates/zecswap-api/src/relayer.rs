@@ -40,7 +40,7 @@ pub struct Claim {
     pub payout: Payout,
 }
 
-/// `POST /v1/payout` retries a payout on its own; `rescue` shields what came back to a vault.
+/// `POST /v1/payout` retries a payout on its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Payout {
@@ -48,6 +48,19 @@ pub struct Payout {
     pub note: Note,
     #[serde(with = "decimal")]
     pub fee: u128,
+    pub signature: FixedBytes<65>,
+}
+
+/// A single, expiring approval to re-shield returned funds. Legacy payloads lack required fields.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Rescue {
+    pub swap_id: B256,
+    pub note: Note,
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    pub nonce: u64,
+    pub deadline: u64,
     pub signature: FixedBytes<65>,
 }
 

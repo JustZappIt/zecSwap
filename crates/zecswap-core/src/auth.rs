@@ -11,7 +11,8 @@ const DOMAIN_TYPE: &[u8] =
     b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
 const LOCK_CLAIM_TYPE: &[u8] = b"LockClaim(bytes32 id,uint64 deadline)";
 const PAYOUT_TYPE: &[u8] = b"Payout(bytes32 id,address relayer,uint128 fee)";
-const RESCUE_TYPE: &[u8] = b"Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)";
+const RESCUE_TYPE: &[u8] =
+    b"Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)";
 const OPEN_REVERSE_TYPE: &[u8] = b"OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +26,13 @@ pub struct ReverseOpen {
     pub t0: u64,
     pub t1: u64,
     pub refund_note: [u8; 32],
+    pub deadline: u64,
+}
+
+/// A single rescue of returned funds, executable only before its deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RescueAuthorization {
+    pub nonce: u64,
     pub deadline: u64,
 }
 
@@ -97,6 +105,7 @@ impl Domain {
         note: &[u8; 32],
         relayer: &[u8; 20],
         fee: u128,
+        authorization: RescueAuthorization,
     ) -> [u8; 32] {
         self.digest(&[
             &keccak(&[RESCUE_TYPE]),
@@ -104,6 +113,8 @@ impl Domain {
             note,
             &address(relayer),
             &uint(fee),
+            &uint(authorization.nonce.into()),
+            &uint(authorization.deadline.into()),
         ])
     }
 
@@ -154,6 +165,9 @@ impl AuthKey {
 
 /// Who signed `digest`, if `signature` is one the contract accepts.
 pub fn signer(digest: &[u8; 32], signature: &[u8; 65]) -> Option<[u8; 20]> {
+    if !matches!(signature[64], 27 | 28) {
+        return None;
+    }
     let parsed = Signature::from_slice(&signature[..64]).ok()?;
     if parsed.normalize_s().is_some() {
         return None;
@@ -251,5 +265,23 @@ mod tests {
         }
         signature[64] ^= 1;
         assert_eq!(signer(&digest, &signature), None);
+    }
+
+    #[test]
+    fn only_ethereums_recovery_ids_are_accepted() {
+        // This synthetic signature has a recoverable x-overflow key for IDs 2/3.
+        let mut signature = [0; 65];
+        signature[31] = 2;
+        signature[63] = 1;
+        for v in 0..=u8::MAX {
+            signature[64] = v;
+            if !matches!(v, 27 | 28) {
+                assert_eq!(signer(&[0; 32], &signature), None, "v={v}");
+            }
+        }
+        for v in [27, 28] {
+            signature[64] = v;
+            assert!(signer(&[0; 32], &signature).is_some());
+        }
     }
 }

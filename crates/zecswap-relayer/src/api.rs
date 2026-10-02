@@ -57,7 +57,7 @@ async fn payout(
 
 async fn rescue(
     State(relayer): State<Arc<Relayer>>,
-    Json(request): Json<Payout>,
+    Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
     Ok(Json(relayer.rescue(request).await?))
 }
@@ -92,7 +92,7 @@ async fn reverse_refund_payout(
 
 async fn rescue_reverse(
     State(relayer): State<Arc<Relayer>>,
-    Json(request): Json<Payout>,
+    Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
     Ok(Json(relayer.rescue_reverse(request).await?))
 }

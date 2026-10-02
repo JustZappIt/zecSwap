@@ -5,7 +5,7 @@
 use rand_core::OsRng;
 use zecswap_core::{
     Domain, JointAccount, NetworkType, Payout, PublicShare, ReverseOpen, SecretShare, ShareProof,
-    SwapContext, UserSwapKeys, derive_user_keys, sign_pczt_bytes,
+    SwapContext, SweepIntent, UserSwapKeys, derive_user_keys, sign_pczt_bytes,
 };
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 
@@ -103,12 +103,13 @@ impl<'a> Swap<'a> {
         swap_id: &[u8; 32],
         relayer: &[u8; 20],
         fee: u128,
+        authorization: zecswap_core::RescueAuthorization,
     ) -> Result<[u8; 65]> {
         let keys = self.keys()?;
         let note = self.note(&keys, railgun_seed)?;
         Ok(keys
             .auth
-            .sign(&domain.rescue(swap_id, &note.commitment(), relayer, fee)))
+            .sign(&domain.rescue(swap_id, &note.commitment(), relayer, fee, authorization)))
     }
 
     pub fn new(seed: &'a [u8], mainnet: bool, index: i32) -> Result<Self> {
@@ -222,19 +223,19 @@ impl<'a> Swap<'a> {
     }
 
     /// Signs the refund sweep in `pczt` with `e + z`, once the contract has revealed the maker's
-    /// `e`. Fails unless `e` matches the recorded maker share and the PCZT spends nothing but the
-    /// deposit account.
+    /// `e`. Requires the matching maker share and independently authorized sweep intent.
     pub fn sign_refund(
         &self,
         maker_share: &[u8; 64],
         maker_secret: &[u8; 32],
         pczt: &[u8],
+        intent: &SweepIntent,
     ) -> Result<Vec<u8>> {
         let keys = self.keys()?;
         let joint = self.joint(&keys, maker_share)?;
         let e = SecretShare::from_be_bytes(maker_secret).map_err(error)?;
         let key = joint.spend_key(&e, &keys.share).map_err(error)?;
-        sign_pczt_bytes(pczt, &[key]).map_err(error)
+        sign_pczt_bytes(pczt, &[key], intent).map_err(error)
     }
 
     fn keys(&self) -> Result<UserSwapKeys> {

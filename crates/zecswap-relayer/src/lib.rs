@@ -151,10 +151,21 @@ impl Relayer {
     }
 
     /// Shields what Railgun sent back to a swap's vault to the note the user signed for.
-    pub async fn rescue(&self, request: Payout) -> Result<Sent> {
+    pub async fn rescue(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
         let swap = self.railgun_swap(request.swap_id).await?;
         if !swap.paid_out {
             return Err(RelayerError::Rejected("the swap has not paid out".into()));
+        }
+        let authorization = zecswap_core::RescueAuthorization {
+            nonce: request.nonce,
+            deadline: request.deadline,
+        };
+        if self.settlement.now().await? > request.deadline
+            || self.settlement.rescue_nonce(request.swap_id).await? != request.nonce
+        {
+            return Err(RelayerError::Rejected(
+                "rescue approval is expired or already consumed".into(),
+            ));
         }
         self.check_fee(request.fee)?;
         let note = ShieldNote::from(&request.note);
@@ -163,11 +174,18 @@ impl Relayer {
             &note.commitment(),
             &self.account.into(),
             request.fee,
+            authorization,
         );
         self.check_signed(&swap, &digest, &request.signature.0)?;
         let tx = self
             .settlement
-            .rescue(request.swap_id, &note, request.fee, &request.signature.0)
+            .rescue(
+                request.swap_id,
+                &note,
+                request.fee,
+                &request.signature.0,
+                authorization,
+            )
             .await?;
         info!(id = %request.swap_id, %tx, "shielded a returned payout again");
         Ok(Sent {

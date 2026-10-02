@@ -115,11 +115,30 @@ fn reverse_authorizations_bind_terms_and_separate_actions() {
         Some(keys.auth.address())
     );
     let rescue = swap()
-        .sign_refund_rescue(&RAILGUN_SEED, domain, &id, &RELAYER, 20_000)
+        .sign_refund_rescue(
+            &RAILGUN_SEED,
+            domain,
+            &id,
+            &RELAYER,
+            20_000,
+            zecswap_core::RescueAuthorization {
+                nonce: 0,
+                deadline: 1_790_000_000,
+            },
+        )
         .unwrap();
     assert_eq!(
         signer(
-            &domain.rescue(&id, &note.commitment(), &RELAYER, 20_000),
+            &domain.rescue(
+                &id,
+                &note.commitment(),
+                &RELAYER,
+                20_000,
+                zecswap_core::RescueAuthorization {
+                    nonce: 0,
+                    deadline: 1_790_000_000
+                }
+            ),
             &rescue
         ),
         Some(keys.auth.address())
@@ -298,7 +317,14 @@ fn accept_refuses_a_maker_proof_for_another_quote() {
 #[test]
 fn refund_refuses_a_maker_secret_the_share_does_not_match() {
     let wrong = derive_maker_share(&[9; 32], 1).unwrap().to_be_bytes();
-    let refused = swap().sign_refund(&maker_share(), &wrong, &[]);
+    let recipient = zecswap_core::SweepIntent::from_address(
+        &swap().deposit_account(&maker_share()).unwrap()[0],
+        zecswap_core::NetworkType::Test,
+        1,
+        10_000,
+    )
+    .unwrap();
+    let refused = swap().sign_refund(&maker_share(), &wrong, &[], &recipient);
     assert!(refused.unwrap_err().contains("do not match"));
 }
 

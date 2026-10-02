@@ -65,10 +65,10 @@ class AtomicSwapTest {
             ).hex(),
         )
         assertEquals(
-            "0x5609bc4846174871a2b29044f4eda0d0faf213396e2e75513b9d0d6b4b0e466b1" +
-                "11afb4b4045a815071b6c6bf8d4c77246015874928218d6b777145727f02e771b",
+            "0x91eab39afaafa2c37bfd18b4b64436386a8e2d19bb04e866f5178cc8f18788944" +
+                "999e9a2c9fabac3cda546d0fd22ad9faa53ca75759637ab6a42975f33278bea1b",
             ReverseAtomicSwap.signRefundRescue(
-                key, railgun, deployment, reverseId, ByteArray(20) { 0x22 }, BigInteger.valueOf(20_000)
+                key, railgun, deployment, reverseId, ByteArray(20) { 0x22 }, BigInteger.valueOf(20_000), 0, 1_790_000_000
             ).hex(),
         )
         assertThrows(AtomicSwapException::class.java) {
@@ -167,7 +167,7 @@ class AtomicSwapTest {
         assertTrue(refused.message.orEmpty().startsWith("the maker's share proof"))
         assertThrows(AtomicSwapException::class.java) { AtomicSwap.payoutNote(key, RailgunSeed(ByteArray(32))) }
         assertThrows(AtomicSwapException::class.java) {
-            AtomicSwap.signRefund(key, makerShare, ByteArray(32) { 1 }, ByteArray(0))
+            AtomicSwap.signRefund(key, makerShare, ByteArray(32) { 1 }, ByteArray(0), SweepIntent("invalid", 1, 10_000))
         }
     }
 

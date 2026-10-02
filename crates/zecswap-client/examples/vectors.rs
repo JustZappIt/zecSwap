@@ -92,6 +92,10 @@ fn main() {
         &railgun_note.commitment(),
         &RELAYER.into(),
         fee,
+        zecswap_core::RescueAuthorization {
+            nonce: 0,
+            deadline: 1_790_000_000,
+        },
     );
     println!("refunded into the Railgun seed's wallet instead");
     println!(

@@ -13,20 +13,27 @@ use pczt::roles::signer::{Signer, SpendAuthSignature};
 use pczt::roles::verifier::{OrchardError, Verifier};
 use rand_core::OsRng;
 
-use crate::{Error, SpendKey};
+use crate::{Error, SpendKey, SweepIntent};
 
 type Pending = Vec<(ValuePool, usize, redpallas::SigningKey<SpendAuth>)>;
 
-pub fn sign_pczt_bytes(pczt: &[u8], keys: &[SpendKey]) -> Result<Vec<u8>, Error> {
+pub fn sign_pczt_bytes(
+    pczt: &[u8],
+    keys: &[SpendKey],
+    intent: &SweepIntent,
+) -> Result<Vec<u8>, Error> {
     let pczt = Pczt::parse(pczt).map_err(pczt_error)?;
-    sign_pczt(pczt, keys)?.serialize().map_err(pczt_error)
+    sign_pczt(pczt, keys, intent)?
+        .serialize()
+        .map_err(pczt_error)
 }
 
 /// Signs every Orchard and Ironwood spend in `pczt` with the matching key in `keys`.
 ///
-/// Fails if any unsigned spend is left over, so a PCZT that spends anything other than
-/// the given joint accounts is rejected rather than half-signed.
-pub fn sign_pczt(pczt: Pczt, keys: &[SpendKey]) -> Result<Pczt, Error> {
+/// Requires the authorized receiver, minimum receipt and maximum fee, no change to
+/// other receivers, and no foreign pools or preauthorized real inputs.
+pub fn sign_pczt(pczt: Pczt, keys: &[SpendKey], intent: &SweepIntent) -> Result<Pczt, Error> {
+    let pczt = intent.verify(pczt)?;
     let keys: Vec<_> = keys.iter().map(SpendKey::signing_key).collect();
     let has_orchard = !pczt.orchard().actions().is_empty();
     let has_ironwood = !pczt.ironwood().actions().is_empty();
@@ -86,7 +93,7 @@ fn match_spends(
     Ok(())
 }
 
-fn verifier_error(e: OrchardError<Error>) -> Error {
+pub(crate) fn verifier_error(e: OrchardError<Error>) -> Error {
     match e {
         OrchardError::Custom(e) => e,
         e => pczt_error(e),

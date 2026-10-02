@@ -121,10 +121,21 @@ impl Relayer {
         })
     }
 
-    pub async fn rescue_reverse(&self, request: Payout) -> Result<Sent> {
+    pub async fn rescue_reverse(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
         let (swap, _) = self.reverse_swap(request.swap_id).await?;
         if !swap.paid_out {
             return Err(RelayerError::Rejected("refund has not paid out".into()));
+        }
+        let authorization = zecswap_core::RescueAuthorization {
+            nonce: request.nonce,
+            deadline: request.deadline,
+        };
+        if self.settlement.now().await? > request.deadline
+            || self.settlement.rescue_nonce(request.swap_id).await? != request.nonce
+        {
+            return Err(RelayerError::Rejected(
+                "rescue approval is expired or already consumed".into(),
+            ));
         }
         self.check_fee(request.fee)?;
         let note = ShieldNote::from(&request.note);
@@ -135,13 +146,20 @@ impl Relayer {
                 &note.commitment(),
                 &self.account.into(),
                 request.fee,
+                authorization,
             ),
             &request.signature.0,
         )?;
         Ok(Sent {
             transactions: vec![
                 self.settlement
-                    .rescue(request.swap_id, &note, request.fee, &request.signature.0)
+                    .rescue(
+                        request.swap_id,
+                        &note,
+                        request.fee,
+                        &request.signature.0,
+                        authorization,
+                    )
                     .await?,
             ],
         })
