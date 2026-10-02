@@ -27,6 +27,7 @@ pub(crate) struct EvmTransaction {
     pub block_number: u64,
     pub block_hash: B256,
     pub log_index: u64,
+    pub uses_railgun: Option<bool>,
 }
 
 pub(crate) struct TransactionCursor {
@@ -71,11 +72,13 @@ impl Store {
     pub(crate) fn evm_transactions(&self, scope: &str, id: B256) -> Result<Vec<EvmTransaction>> {
         let conn = self.conn();
         Ok(conn.prepare(
-            "SELECT kind, transaction_hash, block_number, block_hash, log_index FROM evm_transactions
+            "SELECT kind, transaction_hash, block_number, block_hash, log_index,
+                (SELECT uses_railgun FROM evm_transaction_info i WHERE i.scope = evm_transactions.scope AND i.transaction_hash = evm_transactions.transaction_hash)
+             FROM evm_transactions
              WHERE scope = ?1 AND swap_id = ?2 ORDER BY block_number, log_index",
         )?.query_map(params![scope, id.as_slice()], |row| Ok(EvmTransaction {
             kind: row.get(0)?, transaction_hash: B256::from(row.get::<_, [u8; 32]>(1)?),
-            block_number: row.get(2)?, block_hash: B256::from(row.get::<_, [u8; 32]>(3)?), log_index: row.get(4)?,
+            block_number: row.get(2)?, block_hash: B256::from(row.get::<_, [u8; 32]>(3)?), log_index: row.get(4)?, uses_railgun: row.get(5)?,
         }))?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

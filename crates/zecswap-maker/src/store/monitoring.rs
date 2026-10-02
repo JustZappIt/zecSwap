@@ -72,6 +72,7 @@ pub(crate) struct MonitorSwap {
     pub zec_total_zat: Option<String>,
     pub zec_spendable_zat: Option<String>,
     pub evm_transactions: Vec<super::EvmTransaction>,
+    pub zcash_flow: Option<super::FlowObservation>,
     #[serde(skip)]
     pub account: String,
 }
@@ -152,6 +153,7 @@ impl Store {
                     zec_total_zat: None,
                     zec_spendable_zat: None,
                     evm_transactions: Vec::new(),
+                    zcash_flow: None,
                     account: {
                         let account: String = row.get(11)?;
                         if row.get::<_, String>(1)? == "reverse" {

@@ -160,6 +160,12 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
             .store
             .record_evm_window(&scope, 100, 109, &events, false)
             .unwrap();
+        for (event, _) in &events {
+            maker
+                .store
+                .save_evm_info(&scope, event.transaction_hash, true)
+                .unwrap();
+        }
         for (event, direction) in [
             (
                 maker

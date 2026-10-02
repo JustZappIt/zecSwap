@@ -1,3 +1,4 @@
+mod flow;
 mod monitoring;
 mod notifications;
 mod reverse;
@@ -422,7 +423,8 @@ impl Maker {
             watchtower,
             self.run_zcash(),
             self.run_notifications(),
-            self.run_transaction_observer()
+            self.run_transaction_observer(),
+            self.run_flow_observer()
         );
     }
 

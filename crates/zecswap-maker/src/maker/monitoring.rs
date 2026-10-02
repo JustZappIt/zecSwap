@@ -80,6 +80,7 @@ pub(crate) struct MonitorSnapshot {
     pricing: crate::market::PriceSnapshot,
     notifications: crate::store::NotificationStatus,
     transactions: crate::store::TransactionStatus,
+    zcash_flow: crate::store::FlowStatus,
     policy: Policy,
     swaps: Vec<MonitorSwap>,
     swap_limit: usize,
@@ -253,9 +254,13 @@ impl Maker {
             swap.evm_transactions = self
                 .store
                 .evm_transactions(&self.transaction_scope(), swap.id)?;
+            swap.zcash_flow = self
+                .store
+                .flow_observation(&self.transaction_scope(), swap.id)?;
         }
         Ok(MonitorSnapshot {
             transactions: self.store.transaction_status(&self.transaction_scope())?,
+            zcash_flow: self.store.flow_status(&self.transaction_scope())?,
             notifications: self.store.notification_status(self.telegram.enabled())?,
             schema_version: 1,
             generated_at: unix_now(),

@@ -56,7 +56,7 @@ pub(super) fn outcome(chain: Option<&OnChainSwap>, reverse: bool) -> &'static st
                 "Bridge settled: USDC paid to maker; ZEC available for the user to recover."
             }
             (true, false) => {
-                "Bridge claimed: maker payout pending; ZEC available for the user to recover."
+                "Bridge claimed: USDC credited to maker contract balance; ZEC available for the user to recover. Recovery confirmation is tracked separately."
             }
         },
         Some(chain) if chain.stage == Stage::Refunded => {
@@ -152,7 +152,10 @@ impl Maker {
                 ),
                 timestamp(swap.t1),
                 swap.sweep
-                    .map(|id| format!("\nMaker ZEC sweep: {id}"))
+                    .map(|id| format!(
+                        "\nMaker ZEC sweep: {id}\n{}",
+                        self.zec_link(&id.to_string())
+                    ))
                     .unwrap_or_default()
             ),
         )
@@ -167,8 +170,8 @@ impl Maker {
         self.alert("reverse", swap.id, phase, &format!("{detail}\nDirection: USDC → ZEC\n{}\nFund by: {}\nReady by: {}\nRefund after: {}{}{}",
             self.alert_amounts(swap.quote.terms.amount, swap.quote.terms.deposit_zat), timestamp(swap.quote.funding_deadline),
             timestamp(swap.quote.ready_deadline), timestamp(swap.quote.refund_after),
-            swap.deposit.map(|id| format!("\nMaker ZEC deposit: {id}")).unwrap_or_default(),
-            swap.sweep.map(|id| format!("\nMaker ZEC recovery: {id}")).unwrap_or_default()))
+            swap.deposit.map(|id| format!("\nMaker ZEC deposit: {id}\n{}", self.zec_link(&id.to_string()))).unwrap_or_default(),
+            swap.sweep.map(|id| format!("\nMaker ZEC recovery: {id}\n{}", self.zec_link(&id.to_string()))).unwrap_or_default()))
     }
 
     pub(super) fn record_alert_failure(

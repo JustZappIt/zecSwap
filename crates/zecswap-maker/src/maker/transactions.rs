@@ -7,7 +7,7 @@ use zecswap_chain::evm::{B256, SwapEvent};
 use super::{Maker, unix_now};
 use crate::store::Notification;
 
-pub(super) fn transaction_links(chain_id: u64, hash: B256) -> String {
+pub(super) fn transaction_links(chain_id: u64, hash: B256, uses_railgun: Option<bool>) -> String {
     let (explorer, railgun) = match chain_id {
         1 => ("https://etherscan.io", Some("ethereum")),
         11155111 => ("https://sepolia.etherscan.io", Some("sepolia")),
@@ -16,7 +16,7 @@ pub(super) fn transaction_links(chain_id: u64, hash: B256) -> String {
         _ => return format!("Ethereum transaction: {hash}"),
     };
     let mut links = format!("{explorer}/tx/{hash}");
-    if let Some(chain) = railgun {
+    if let Some(chain) = railgun.filter(|_| uses_railgun == Some(true)) {
         links.push_str(&format!("\nhttps://railscan.io/{chain}/tx/{hash}"));
     }
     links
@@ -48,10 +48,20 @@ impl Maker {
                 "\n{} · block {}\n{}",
                 tx.kind.replace('_', " "),
                 tx.block_number,
-                transaction_links(self.chain_id, tx.transaction_hash)
+                transaction_links(self.chain_id, tx.transaction_hash, tx.uses_railgun)
             ));
         }
         links
+    }
+
+    async fn classify_transaction(&self, scope: &str, event: &SwapEvent) {
+        if matches!(self.store.evm_info(scope, event.transaction_hash), Ok(None))
+            && let Ok(uses_railgun) = self.settlement.uses_railgun(event.transaction_hash).await
+        {
+            let _ = self
+                .store
+                .save_evm_info(scope, event.transaction_hash, uses_railgun);
+        }
     }
 
     fn transaction_alert(&self, event: &SwapEvent) -> Result<Option<Notification>> {
@@ -62,7 +72,12 @@ impl Maker {
             "Ethereum transaction confirmed: {}.\nBlock: {}\n{}",
             event.kind.label(),
             event.block_number,
-            transaction_links(self.chain_id, event.transaction_hash)
+            transaction_links(
+                self.chain_id,
+                event.transaction_hash,
+                self.store
+                    .evm_info(&self.transaction_scope(), event.transaction_hash)?
+            )
         );
         let key = format!(
             "{}:evm:{}:{}",
@@ -91,6 +106,7 @@ impl Maker {
         let mut events = Vec::new();
         for event in self.settlement.swap_events(from, to).await? {
             let alert = if event.block_number >= cursor.notify_from_block {
+                self.classify_transaction(scope, &event).await;
                 self.transaction_alert(&event)?
             } else {
                 None
@@ -153,6 +169,7 @@ impl Maker {
             let mut events = Vec::new();
             for event in result? {
                 let alert = if event.block_number >= cursor.notify_from_block {
+                    self.classify_transaction(&scope, &event).await;
                     self.transaction_alert(&event)?
                 } else {
                     None
@@ -182,8 +199,36 @@ impl Maker {
                     true,
                 );
             }
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(20), self.enrich_evm_history()).await,
+                Ok(Ok(()))
+            ) {
+                tracing::warn!("Ethereum explorer metadata lookup delayed; retrying");
+            }
             tokio::time::sleep(Duration::from_secs(15)).await;
         }
+    }
+
+    async fn enrich_evm_history(&self) -> Result<()> {
+        let scope = self.transaction_scope();
+        let mut remaining = 25;
+        for swap in self.store.monitor_swaps(self.config.timing.t0_after, 500)? {
+            for transaction in self.store.evm_transactions(&scope, swap.id)? {
+                if transaction.uses_railgun.is_none() {
+                    let uses_railgun = self
+                        .settlement
+                        .uses_railgun(transaction.transaction_hash)
+                        .await?;
+                    self.store
+                        .save_evm_info(&scope, transaction.transaction_hash, uses_railgun)?;
+                    remaining -= 1;
+                    if remaining == 0 {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -194,13 +239,14 @@ mod tests {
     #[test]
     fn explorer_links_follow_the_chain_and_only_use_the_transaction_hash() {
         let hash = B256::repeat_byte(3);
-        let sepolia = transaction_links(11155111, hash);
+        let sepolia = transaction_links(11155111, hash, Some(true));
         assert!(sepolia.contains(&format!("https://sepolia.etherscan.io/tx/{hash}")));
         assert!(sepolia.contains(&format!("https://railscan.io/sepolia/tx/{hash}")));
-        let mainnet = transaction_links(1, hash);
+        let mainnet = transaction_links(1, hash, Some(true));
         assert!(mainnet.contains("https://etherscan.io/tx/"));
         assert!(mainnet.contains("https://railscan.io/ethereum/tx/"));
         assert!(!mainnet.contains("sepolia"));
-        assert!(!transaction_links(999, hash).contains("https://"));
+        assert!(!transaction_links(999, hash, None).contains("https://"));
+        assert!(!transaction_links(1, hash, Some(false)).contains("railscan"));
     }
 }
