@@ -75,6 +75,12 @@ impl RelayerApi {
         Endpoint::new("relayer", url).map(Self)
     }
 
+    /// Submit a persisted, locally proved funding transaction. Returned hashes are pending;
+    /// reconcile the escrow independently, including after any transport failure.
+    pub async fn fund_reverse(&self, request: &zecswap_api::reverse::Funding) -> Result<Sent> {
+        self.0.post("/v1/reverse/fund", request).await
+    }
+
     pub async fn ready_reverse(
         &self,
         request: &zecswap_api::reverse::Authorization,
@@ -97,7 +103,7 @@ impl RelayerApi {
         self.0.post("/v1/reverse/refund-payout", request).await
     }
 
-    pub(crate) async fn terms(&self) -> Result<Terms> {
+    pub async fn terms(&self) -> Result<Terms> {
         self.0.get("/v1/terms").await
     }
 

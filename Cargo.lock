@@ -6959,6 +6959,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "zecswap-api",
