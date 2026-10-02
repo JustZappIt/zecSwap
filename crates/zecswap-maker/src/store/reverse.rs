@@ -237,6 +237,18 @@ mod tests {
             swap.acceptance.viewing_keys.to_bytes()
         );
         assert_eq!(store.pending_reverse_swaps().unwrap().len(), 1);
+        let rows = store.monitor_swaps(2700, 50).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].direction, "reverse");
+        assert_eq!(rows[0].funding_deadline, Some(300));
+        assert_eq!(rows[0].ready_deadline, 500);
+        assert_eq!(rows[0].refund_after, 700);
+        assert_eq!(rows[0].deposit_txid, swap.deposit.map(|id| id.to_string()));
+        assert_eq!(rows[0].account, swap.account.expose_uuid().to_string());
+        let exported = serde_json::to_string(&rows).unwrap();
+        assert!(!exported.contains("viewingKeys"));
+        assert!(!exported.contains("acceptance"));
+        assert!(!exported.contains(&swap.account.expose_uuid().to_string()));
         swap.settled = true;
         store.save_reverse_swap(&swap).unwrap();
         assert!(store.pending_reverse_swaps().unwrap().is_empty());

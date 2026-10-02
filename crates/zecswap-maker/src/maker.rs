@@ -1,3 +1,4 @@
+mod monitoring;
 mod reverse;
 
 use std::future::Future;
@@ -37,6 +38,7 @@ pub struct Maker {
     prover: Prover,
     health: Health,
     inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
+    monitoring: monitoring::Monitoring,
 }
 
 struct Zcash {
@@ -166,6 +168,7 @@ impl Maker {
             None
         };
         Ok(Self {
+            monitoring: monitoring::Monitoring::from_env()?,
             inventory,
             store,
             root: secrets.root,
@@ -385,17 +388,22 @@ impl Maker {
                 })
                 .await?
         };
+        self.record_monitor_sync(synced);
         let now = self.settlement.now().await?;
+        let mut failed = Vec::new();
         for swap in self.store.unsettled_swaps()? {
             if let Err(e) = self.advance(&swap, now, synced).await {
+                failed.push(swap.id);
                 warn!(id = %swap.id, "{e:#}");
             }
         }
         for mut swap in self.store.pending_reverse_swaps()? {
             if let Err(e) = self.advance_reverse(&mut swap, synced).await {
+                failed.push(swap.id);
                 warn!(id = %swap.id, "reverse swap: {e:#}");
             }
         }
+        self.record_monitor_errors(failed);
         Ok(())
     }
 

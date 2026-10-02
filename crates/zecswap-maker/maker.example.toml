@@ -2,6 +2,7 @@
 #   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
 #   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
+#   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"

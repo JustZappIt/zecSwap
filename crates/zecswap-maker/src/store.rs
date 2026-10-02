@@ -1,4 +1,6 @@
+mod monitoring;
 mod reverse;
+pub(crate) use monitoring::{MonitorCounts, MonitorSwap};
 pub(crate) use reverse::ReverseSwap;
 
 use std::path::Path;

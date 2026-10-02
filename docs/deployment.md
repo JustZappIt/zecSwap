@@ -85,6 +85,29 @@ would remove its contract-backed recovery path.
 
 ## Public verification
 
+### Dashboard monitoring
+
+`GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`. It is
+disabled unless `MAKER_MONITOR_TOKEN` is set (at least 32 characters), and requires
+`Authorization: Bearer <token>`. Use the same value as `BRIDGE_TESTNET_MONITOR_TOKEN`
+in the dashboard's server environment. No seed, spending share, viewing key, user
+authorization, or wallet account identifier is returned.
+
+The export reports contract and wallet USDC, maker ETH, shielded ZEC total/spendable/
+reserved/available inventory, quote and swap counts, watchtower readiness, sync recency,
+errors since restart, pricing/timing policy, and up to 50 swaps with active records first.
+Swap details include observed contract states, deposit/sweep transaction IDs, wallet funds,
+and claim/refund deadlines. Settled counts include expired and refunded swaps; they are
+not successful-trade counts. Per-swap errors are from the last completed watchtower pass;
+the counter resets when the maker restarts. Detailed errors remain in the maker logs.
+
+The endpoint never syncs the wallet, generates proofs, sends transactions, or writes
+inventory. RPC observations have bounded concurrency and a six-second total time budget;
+failed observations return unknown fields. A busy wallet uses the last captured inventory
+reading and sets `walletBusy`; individual wallet readings remain unknown while busy.
+The dashboard validates the deployment and reads ERC-20 decimals before formatting USDC.
+Mainnet uses its own dashboard environment variables and monitoring token.
+
 - Maker `GET /v1/info`: exact expected chain ID, contract, token, Zcash network and
   `reverseEnabled: true`.
 - Maker `GET /healthz`: 204 after the watchtower completes its first pass. Stale or stalled

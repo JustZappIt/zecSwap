@@ -40,6 +40,13 @@ impl Health {
         *self.last_completed.lock().unwrap() = Some(Instant::now());
     }
 
+    pub(crate) fn completed_age_seconds(&self) -> Option<u64> {
+        self.last_completed
+            .lock()
+            .unwrap()
+            .map(|last| last.elapsed().as_secs())
+    }
+
     fn failed(&self) {
         *self.last_completed.lock().unwrap() = None;
     }

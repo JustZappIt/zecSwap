@@ -22,6 +22,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
+        monitoring: monitoring::Monitoring::new(None),
         inventory: None,
         account: key.address(),
         lock_duration: 7200,
@@ -57,6 +58,55 @@ fn request(path: &str, body: impl serde::Serialize) -> Request<Body> {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap()
+}
+
+#[tokio::test]
+async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages() {
+    let (_dir, maker) = maker();
+    let app = crate::api::router(maker.clone());
+    let response = app
+        .oneshot(Request::get("/v1/monitor").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.monitoring = monitoring::Monitoring::new(Some("monitor-test-token"));
+    let maker = Arc::new(maker);
+    let app = crate::api::router(maker.clone());
+    for (token, status) in [
+        ("wrong-token", StatusCode::UNAUTHORIZED),
+        ("monitor-test-token", StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/monitor")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        if status == StatusCode::OK {
+            let body = axum::body::to_bytes(response.into_body(), 100_000)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["counts"]["quotes"], 0);
+            assert!(json["inventory"]["usdcAvailable"].is_null());
+            assert_eq!(json["watchtowerHealthy"], false);
+            assert!(json["swaps"].as_array().unwrap().is_empty());
+            assert!(
+                !String::from_utf8(body.to_vec())
+                    .unwrap()
+                    .contains("monitor-test-token")
+            );
+        }
+    }
+    assert_eq!(maker.store.monitor_counts().unwrap().quotes, 0);
+    assert!(maker.store.unsettled_swaps().unwrap().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
