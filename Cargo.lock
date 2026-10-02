@@ -6763,6 +6763,7 @@ dependencies = [
  "alloy-sol-type-parser",
  "async-trait",
  "hex",
+ "http-body",
  "orchard",
  "pczt",
  "rand_core 0.6.4",
@@ -6774,6 +6775,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tonic",
+ "tower-service",
  "tracing",
  "zcash_address",
  "zcash_client_backend",
@@ -6891,6 +6893,7 @@ dependencies = [
 name = "zecswap-maker"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-primitives",
  "anyhow",
  "axum",

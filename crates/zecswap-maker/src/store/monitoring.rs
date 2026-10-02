@@ -202,7 +202,8 @@ mod tests {
                 )
                 .unwrap();
             store.conn().execute(
-                "INSERT INTO swaps VALUES (?1, ?1, X'1234', X'5678', 'private-account', 100, 700, NULL, ?2)",
+                "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t1, sweep_txid, settled)
+                 VALUES (?1, ?1, X'1234', X'5678', 'private-account', 100, 700, NULL, ?2)",
                 params![[id; 32], settled],
             ).unwrap();
         }

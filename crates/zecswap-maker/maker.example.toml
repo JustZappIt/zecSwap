@@ -13,7 +13,10 @@ token = "0x0000000000000000000000000000000000000000"
 # The maker's own wallet; claimed deposits are swept here.
 sweep_to = "utest1..."
 # Confirmations a deposit needs before `ready`; unset, 10 (3 for the maker's own notes).
+# Sweeps require the external-deposit depth too (10 by default).
 # confirmations = 10
+# EVM confirmations before retiring a forward escrow (default 12).
+evm_confirmations = 12
 data_dir = "maker-data"
 listen = "127.0.0.1:8787"
 
@@ -40,7 +43,8 @@ cancel_after = 900
 t0_margin = 300
 reveal_margin = 600
 tick = 15
-# Quote and accept return 503 until a pass completes, and if none completes for 3 * tick seconds.
+# Quote and accept require both a recent EVM pass and a successful Zcash sync.
+# Either going stale for 3 * tick seconds closes admission; EVM settlement keeps running.
 
 # Enable only on a deployment containing openReverse and Railgun.
 # Fund the address printed by `zecswap-maker --config maker.toml zec-inventory`.

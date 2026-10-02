@@ -187,6 +187,7 @@ mod tests {
                     t1: 300,
                     sweep: None,
                     settled: false,
+                    refund_started: false,
                 },
                 None,
             )

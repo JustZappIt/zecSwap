@@ -22,7 +22,7 @@ impl Maker {
         &self,
         request: reverse::QuoteRequest,
     ) -> Result<reverse::Quote, MakerError> {
-        self.health.check()?;
+        self.check_watchtower()?;
         let config = self
             .config
             .reverse
@@ -60,7 +60,7 @@ impl Maker {
         let now = self.settlement.now().await?;
         let mut id = [0; 32];
         OsRng.fill_bytes(&mut id);
-        self.health.check()?;
+        self.check_watchtower()?;
         if !pricing.fresh(unix_now()) {
             return Err(MakerError::PriceUnavailable);
         }
@@ -93,7 +93,7 @@ impl Maker {
         id: B256,
         acceptance: Acceptance,
     ) -> Result<Accepted, MakerError> {
-        self.health.check()?;
+        self.check_watchtower()?;
         let config = self
             .config
             .reverse
@@ -117,7 +117,7 @@ impl Maker {
             .map_err(|_| MakerError::Rejected("user share proof does not verify".into()))?;
         let swap_id = swap_id(quote.user, &quote.terms.maker_share);
         let mut zcash = self.zcash.lock().await;
-        self.health.check()?;
+        self.check_watchtower()?;
         if let Some(existing) = self.store.reverse_swap(swap_id)? {
             if existing.acceptance.user_share != acceptance.user_share
                 || existing.acceptance.viewing_keys.to_bytes() != acceptance.viewing_keys.to_bytes()
@@ -284,7 +284,8 @@ impl Maker {
             .as_ref()
             .context("reverse swaps disabled")?;
         let Some(chain) = self.settlement.swap(swap.id).await? else {
-            if swap.deposit.is_none()
+            if !swap.settled
+                && swap.deposit.is_none()
                 && self
                     .settlement
                     .confirmed_now(config.evm_confirmations.get().into())
@@ -301,6 +302,30 @@ impl Maker {
             }
             return Ok(());
         };
+        if swap.settled {
+            let confirmed = self
+                .settlement
+                .confirmed_swap(swap.id, config.evm_confirmations.get().into())
+                .await?;
+            if confirmed.as_ref().is_some_and(|confirmed| {
+                confirmed.stage == chain.stage && confirmed.secret == chain.secret
+            }) {
+                match chain.stage {
+                    Stage::Claimed => return Ok(()),
+                    Stage::Refunded if swap.deposit.is_none() => return Ok(()),
+                    Stage::Refunded => {
+                        if let Some(txid) = swap.sweep
+                            && self.zcash.lock().await.wallet()?.is_confirmed(txid)?
+                        {
+                            return Ok(());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            swap.settled = false;
+            self.store.save_reverse_swap(swap)?;
+        }
         if swap.deposit.is_none()
             && self
                 .settlement
@@ -332,33 +357,7 @@ impl Maker {
                     self.recover_reverse(swap, &chain, synced).await?;
                 }
             }
-            Stage::Ready => {
-                // Readiness is the user's attestation, but our deposit must still be confirmed.
-                let funds = self.zcash.lock().await.wallet()?.funds(swap.account)?;
-                if funds.spendable < swap.quote.terms.deposit_zat {
-                    return Ok(());
-                }
-                let chain = self
-                    .settlement
-                    .swap(swap.id)
-                    .await?
-                    .context("reverse escrow disappeared")?;
-                let now = self.settlement.now().await?;
-                if chain.stage != Stage::Ready {
-                    return Ok(());
-                }
-                if now.saturating_add(self.config.timing.reveal_margin) < chain.claim_lock_until {
-                    self.settlement
-                        .claim(swap.id, &self.maker_share(swap.nonce)?)
-                        .await?;
-                } else if now >= chain.claim_lock_until
-                    && now >= chain.refund_lock_until
-                    && !(chain.claim_lock_until > chain.refund_lock_until
-                        && now < chain.claim_lock_until.saturating_add(self.lock_duration))
-                {
-                    self.settlement.lock_claim(swap.id).await?;
-                }
-            }
+            Stage::Ready => {} // The independent EVM loop handles claim deadlines.
             Stage::Open => {
                 let now = self.settlement.now().await?;
                 if !synced
@@ -390,6 +389,35 @@ impl Maker {
                 self.queue_alert(self.reverse_alert(swap, "funded", "User USDC escrow funding confirmed; maker is preparing or confirming the ZEC deposit."));
                 self.fund_reverse(swap).await?;
             }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn advance_reverse_claim(&self, swap: &ReverseSwap) -> Result<()> {
+        let Some(snapshot) = self.wallet_snapshot(swap.account) else {
+            return Ok(());
+        };
+        if snapshot.funds.spendable < swap.quote.terms.deposit_zat {
+            return Ok(());
+        }
+        let Some(chain) = self.settlement.swap(swap.id).await? else {
+            return Ok(());
+        };
+        if chain.stage != Stage::Ready {
+            return Ok(());
+        }
+        self.verify_reverse(swap, &chain).await?;
+        let now = self.settlement.now().await?;
+        if now.saturating_add(self.config.timing.reveal_margin) < chain.claim_lock_until {
+            self.settlement
+                .claim(swap.id, &self.maker_share(swap.nonce)?)
+                .await?;
+        } else if now >= chain.claim_lock_until
+            && now >= chain.refund_lock_until
+            && !(chain.claim_lock_until > chain.refund_lock_until
+                && now < chain.claim_lock_until.saturating_add(self.lock_duration))
+        {
+            self.settlement.lock_claim(swap.id).await?;
         }
         Ok(())
     }
@@ -454,7 +482,7 @@ impl Maker {
         let Zcash { wallet, client } = &mut *zcash;
         let wallet = wallet.as_mut().context("Zcash wallet needs reopening")?;
         if let Some(txid) = swap.sweep {
-            if wallet.is_mined(txid)? {
+            if wallet.is_confirmed(txid)? {
                 drop(zcash);
                 return self
                     .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
@@ -464,7 +492,9 @@ impl Maker {
                 swap.sweep = None;
                 self.store.save_reverse_swap(swap)?;
             } else {
-                wallet.broadcast(client, txid).await?;
+                if !wallet.is_mined(txid)? {
+                    wallet.broadcast(client, txid).await?;
+                }
                 return Ok(());
             }
         }
@@ -500,7 +530,7 @@ impl Maker {
         swap.settled = true;
         self.store
             .save_reverse_swap_with_notification(swap, event.as_ref())?;
-        self.forget(swap.account).await;
+        // Retain the account and transaction history for recovery after a reorg.
         Ok(())
     }
 }

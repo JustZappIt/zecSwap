@@ -215,8 +215,9 @@ Mainnet uses its own dashboard environment variables and monitoring token.
 
 - Maker `GET /v1/info`: exact expected chain ID, contract, token, Zcash network and
   `reverseEnabled: true`.
-- Maker `GET /healthz`: 204 after the watchtower completes its first pass. Stale or stalled
-  watchtower returns 503. Readiness does not establish upstream availability or inventory.
+- Maker `GET /healthz`: 204 after both an EVM pass and a successful Zcash sync. Either
+  becoming older than three tick intervals returns 503 and closes quote/accept admission.
+  EVM deadline processing continues independently while Zcash is stalled or proving.
 - Relayer `GET /v1/terms`: same chain ID and contract, with an independent relayer address.
 - Maker reverse quote: valid typed terms and sufficient funded ZEC inventory. Check all
   deadlines and the maker proof before accepting.
@@ -227,6 +228,19 @@ Mainnet uses its own dashboard environment variables and monitoring token.
 Keep API caching disabled. A returned HTTP transaction hash means submitted, not confirmed;
 after a timeout, reconcile chain state before retrying any financial action. The app must
 independently verify escrow and ZEC receipt as described in [reverse-flow.md](reverse-flow.md).
+
+Forward settlement requires `evm_confirmations` (top-level maker setting, default 12).
+Reverse settlement continues to use `reverse.evm_confirmations`. Zcash sweeps require
+the configured external-deposit depth (`confirmations`, default 10), measured from the
+fully scanned height. Lightwalletd response bodies have a 30-second idle deadline and a
+120-second total deadline, including streaming responses after headers arrive.
+
+Keep both maker and wallet databases when upgrading or restarting. Settlement retains
+accounts, birthdays, viewing keys, transaction history and sweep IDs; completed swaps
+are revisited for reorg recovery. The maker database automatically adds persisted
+cancellation intent, preventing a rolled-back refund lock from making a swap ready again.
+Retained history grows over time and is not automatically pruned. Accounts already deleted
+by an older maker are not reconstructed by this upgrade.
 
 ### Protocol smoke test
 

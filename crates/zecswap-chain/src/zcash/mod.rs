@@ -3,7 +3,7 @@ mod lightwalletd;
 mod prover;
 mod wallet;
 
-pub use lightwalletd::{Lightwalletd, connect};
+pub use lightwalletd::{Lightwalletd, connect, connect_lazy};
 pub use prover::Prover;
 pub use wallet::{Funds, Wallet};
 pub use zcash_client_sqlite::AccountUuid;

@@ -127,11 +127,20 @@ impl Store {
     }
 
     pub(crate) fn pending_reverse_swaps(&self) -> Result<Vec<ReverseSwap>> {
+        self.reverse_swaps(false)
+    }
+
+    pub(crate) fn watched_reverse_swaps(&self) -> Result<Vec<ReverseSwap>> {
+        self.reverse_swaps(true)
+    }
+
+    fn reverse_swaps(&self, include_settled: bool) -> Result<Vec<ReverseSwap>> {
         let conn = self.conn();
-        let mut statement =
-            conn.prepare("SELECT data FROM reverse_swaps WHERE settled = 0 ORDER BY rowid")?;
+        let mut statement = conn.prepare(
+            "SELECT data FROM reverse_swaps WHERE settled = 0 OR ?1 ORDER BY settled, rowid",
+        )?;
         statement
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map([include_settled], |row| row.get::<_, String>(0))?
             .map(|row| Ok(serde_json::from_str(&row?)?))
             .collect()
     }

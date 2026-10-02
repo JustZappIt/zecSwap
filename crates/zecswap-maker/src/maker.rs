@@ -3,6 +3,7 @@ mod notifications;
 mod reverse;
 mod transactions;
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -15,9 +16,9 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
-use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, swap_id};
+use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, Stage, swap_id};
 use zecswap_chain::zcash::{
-    AccountUuid, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect,
+    AccountUuid, Funds, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect_lazy,
 };
 use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, derive_maker_share};
 use zeroize::Zeroizing;
@@ -39,10 +40,18 @@ pub struct Maker {
     zcash: Mutex<Zcash>,
     prover: Prover,
     health: Health,
+    zcash_health: Health,
+    wallet_snapshots: std::sync::Mutex<HashMap<AccountUuid, WalletSnapshot>>,
     inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
     monitoring: monitoring::Monitoring,
     prices: crate::market::PriceBook,
     telegram: crate::telegram::Telegram,
+}
+
+#[derive(Clone, Copy)]
+struct WalletSnapshot {
+    funds: Funds,
+    sweep: Option<(TxId, bool)>,
 }
 
 struct Zcash {
@@ -100,7 +109,7 @@ impl Zcash {
 /// The maker's own record of a swap.
 pub struct Status {
     pub sweep: Option<TxId>,
-    /// Nothing is left to do: the sweep is mined, the swap was refunded, or it never opened.
+    /// Settlement has enough confirmations. Retained state is still checked for reorgs.
     pub settled: bool,
 }
 
@@ -149,9 +158,7 @@ impl Maker {
         config.timing.check(lock_duration)?;
         let mut zcash = Zcash {
             wallet: Some(Zcash::open_wallet(&config)?),
-            client: connect(&config.lightwalletd)
-                .await
-                .context("reaching lightwalletd")?,
+            client: connect_lazy(&config.lightwalletd)?,
         };
         let inventory = if let Some(reverse) = &config.reverse {
             reverse.check()?;
@@ -190,6 +197,8 @@ impl Maker {
             account,
             lock_duration,
             health: Health::new(Duration::from_secs(config.timing.tick)),
+            zcash_health: Health::new(Duration::from_secs(config.timing.tick)),
+            wallet_snapshots: std::sync::Mutex::new(HashMap::new()),
             config,
         })
     }
@@ -228,11 +237,12 @@ impl Maker {
     /// New swaps require a completed watchtower pass within the last three tick intervals.
     /// Unavailable at startup until the first pass completes.
     pub fn check_watchtower(&self) -> Result<(), MakerError> {
-        self.health.check()
+        self.health.check()?;
+        self.zcash_health.check()
     }
 
     pub async fn quote(&self, request: QuoteRequest) -> Result<Quote, MakerError> {
-        self.health.check()?;
+        self.check_watchtower()?;
         self.prices.refresh().await;
         let pricing = self
             .prices
@@ -263,7 +273,7 @@ impl Maker {
         let mut quote_id = [0; 32];
         OsRng.fill_bytes(&mut quote_id);
         let expires_at = unix_now() + self.config.timing.quote_ttl;
-        self.health.check()?;
+        self.check_watchtower()?;
         if !pricing.fresh(unix_now()) {
             return Err(MakerError::PriceUnavailable);
         }
@@ -295,11 +305,11 @@ impl Maker {
         quote_id: B256,
         acceptance: Acceptance,
     ) -> Result<Accepted, MakerError> {
-        self.health.check()?;
+        self.check_watchtower()?;
         let mut zcash = self.zcash.lock().await;
         // A request can wait behind a long sync or proof after its first health check.
         // Check again before consuming its quote or importing an account.
-        self.health.check()?;
+        self.check_watchtower()?;
         let Zcash { wallet, client } = &mut *zcash;
         let wallet = wallet.as_mut().ok_or(MakerError::WatchtowerUnavailable)?;
         let quote = self
@@ -329,7 +339,7 @@ impl Maker {
             .await?;
         drop(zcash);
         let now = self.settlement.now().await?;
-        if let Err(e) = self.health.check() {
+        if let Err(e) = self.check_watchtower() {
             self.forget(zcash_account).await;
             return Err(e);
         }
@@ -344,6 +354,7 @@ impl Maker {
             t1: now + timing.t1_after,
             sweep: None,
             settled: false,
+            refund_started: false,
         };
         // Recorded before `open`, whose outcome can be unknown: the watchtower then settles
         // the swap from what the chain shows.
@@ -383,7 +394,7 @@ impl Maker {
         }))
     }
 
-    /// The watchtower: every tick, sync and take the next step for every unsettled swap.
+    /// EVM deadlines run independently of wallet I/O and CPU-heavy scanning/proving.
     pub async fn run(self: Arc<Self>) {
         let maker = &self;
         let watchtower = watchtower::run(
@@ -391,8 +402,13 @@ impl Maker {
             &self.health,
             |panicked| async move {
                 if panicked {
-                    maker.zcash.lock().await.wallet = None;
-                    maker.record_alert_failure("watchtower-panic", B256::ZERO, maker.service_alert("Watchtower panicked; wallet will reopen and processing will retry. Check maker logs."));
+                    maker.record_alert_failure(
+                        "watchtower-panic",
+                        B256::ZERO,
+                        maker.service_alert(
+                            "EVM watchtower panicked; processing will retry. Check maker logs.",
+                        ),
+                    );
                 }
                 let result = maker.tick().await;
                 maker.record_alert_failure("watchtower-pass", B256::ZERO, result.as_ref().err().and_then(|_| maker.service_alert("Watchtower pass failed; bridge processing will retry. Check maker health and logs.")));
@@ -404,34 +420,17 @@ impl Maker {
         );
         tokio::join!(
             watchtower,
+            self.run_zcash(),
             self.run_notifications(),
             self.run_transaction_observer()
         );
     }
 
     async fn tick(&self) -> Result<()> {
-        // A lightwalletd outage must not stop the Base side: a reveal under a held lock
-        // needs nothing from Zcash and can't wait for it.
-        let synced = {
-            let mut zcash = self.zcash.lock().await;
-            zcash
-                .sync_with(&self.config, |mut wallet, mut client| async move {
-                    let result = wallet.sync(&mut client).await;
-                    (wallet, result)
-                })
-                .await?
-        };
-        self.record_monitor_sync(synced);
-        self.record_alert_failure("zcash-sync", B256::ZERO, (!synced).then(|| self.service_alert("Zcash wallet sync failed; watchtower is using the last synced state and retrying. Check lightwalletd and maker logs.")).flatten());
         let now = self.settlement.now().await?;
         let mut failed = Vec::new();
-        for swap in self.store.unsettled_swaps()? {
-            self.queue_alert(self.forward_alert(
-                &swap,
-                "accepted",
-                "Bridge accepted; maker is monitoring escrow and ZEC deposit.",
-            ));
-            if let Err(e) = self.advance(&swap, now, synced).await {
+        for swap in self.store.watched_swaps()? {
+            if let Err(e) = self.advance(&swap, now).await {
                 failed.push(swap.id);
                 warn!(id = %swap.id, "{e:#}");
                 self.record_alert_failure("forward", swap.id, self.forward_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
@@ -439,39 +438,170 @@ impl Maker {
                 self.record_alert_failure("forward", swap.id, None);
             }
         }
-        for mut swap in self.store.pending_reverse_swaps()? {
-            self.queue_alert(self.reverse_alert(
-                &swap,
-                "accepted",
-                "Bridge accepted; maker is monitoring USDC escrow funding.",
-            ));
-            if let Err(e) = self.advance_reverse(&mut swap, synced).await {
+        for swap in self.store.pending_reverse_swaps()? {
+            if let Err(e) = self.advance_reverse_claim(&swap).await {
                 failed.push(swap.id);
-                warn!(id = %swap.id, "reverse swap: {e:#}");
-                self.record_alert_failure("reverse", swap.id, self.reverse_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
-            } else {
-                self.record_alert_failure("reverse", swap.id, None);
+                warn!(id = %swap.id, "reverse claim: {e:#}");
             }
         }
         self.record_monitor_errors(failed);
         Ok(())
     }
 
-    async fn advance(&self, swap: &Swap, now: u64, synced: bool) -> Result<()> {
+    async fn run_zcash(self: &Arc<Self>) {
+        // Sync freshness is updated when a snapshot is published, not after a long proof.
+        let worker_health = Health::new(Duration::from_secs(self.config.timing.tick));
+        watchtower::run(
+            Duration::from_secs(self.config.timing.tick),
+            &worker_health,
+            |panicked| {
+                let maker = self.clone();
+                async move {
+                    // The backend scans and proves synchronously. A separate blocking worker
+                    // keeps even a long proof off the executor that polls EVM deadlines.
+                    let result = tokio::task::spawn_blocking(move || {
+                        tokio::runtime::Handle::current().block_on(async {
+                            if panicked {
+                                maker.zcash.lock().await.wallet = None;
+                            }
+                            maker.zcash_tick().await
+                        })
+                    })
+                    .await;
+                    match result {
+                        Ok(result) => result,
+                        Err(error) if error.is_panic() => {
+                            std::panic::resume_unwind(error.into_panic())
+                        }
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await;
+    }
+
+    async fn zcash_tick(&self) -> Result<()> {
+        let synced = {
+            let mut zcash = self.zcash.lock().await;
+            let synced = zcash
+                .sync_with(&self.config, |mut wallet, mut client| async move {
+                    let result = wallet.sync(&mut client).await;
+                    (wallet, result)
+                })
+                .await?;
+            if synced {
+                let wallet = zcash.wallet()?;
+                let mut snapshots = HashMap::new();
+                for swap in self.store.watched_swaps()? {
+                    snapshots.insert(
+                        swap.zcash_account,
+                        WalletSnapshot {
+                            funds: wallet.funds(swap.zcash_account)?,
+                            sweep: swap
+                                .sweep
+                                .map(|txid| {
+                                    Ok::<_, zecswap_chain::Error>((
+                                        txid,
+                                        wallet.is_confirmed(txid)?,
+                                    ))
+                                })
+                                .transpose()?,
+                        },
+                    );
+                }
+                for swap in self.store.pending_reverse_swaps()? {
+                    snapshots.insert(
+                        swap.account,
+                        WalletSnapshot {
+                            funds: wallet.funds(swap.account)?,
+                            sweep: None,
+                        },
+                    );
+                }
+                *self.wallet_snapshots.lock().unwrap() = snapshots;
+            }
+            synced
+        };
+        self.record_monitor_sync(synced);
+        if synced {
+            self.zcash_health.completed();
+        } else {
+            self.zcash_health.failed();
+        }
+        self.record_alert_failure("zcash-sync", B256::ZERO, (!synced).then(|| self.service_alert("Zcash wallet sync failed; EVM settlement continues independently. Check lightwalletd and maker logs.")).flatten());
+        anyhow::ensure!(synced, "Zcash sync did not complete");
+        for swap in self.store.unsettled_swaps()? {
+            if let Err(e) = self.advance_sweep(&swap).await {
+                warn!(id = %swap.id, "Zcash sweep: {e:#}");
+            }
+        }
+        for mut swap in self
+            .store
+            .watched_reverse_swaps()?
+            .into_iter()
+            .filter(|_| self.config.reverse.is_some())
+        {
+            self.queue_alert(self.reverse_alert(
+                &swap,
+                "accepted",
+                "Bridge accepted; maker is monitoring USDC escrow funding.",
+            ));
+            if let Err(e) = self.advance_reverse(&mut swap, synced).await {
+                warn!(id = %swap.id, "reverse swap: {e:#}");
+                self.record_alert_failure("reverse", swap.id, self.reverse_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
+            } else {
+                self.record_alert_failure("reverse", swap.id, None);
+            }
+        }
+        Ok(())
+    }
+
+    async fn advance(&self, swap: &Swap, now: u64) -> Result<()> {
+        let confirmations = u64::from(self.config.evm_confirmations.get());
         let Some(chain) = self.settlement.swap(swap.id).await? else {
-            if now >= swap.t1 {
+            if !swap.settled
+                && now >= swap.t1
+                && self.settlement.confirmed_now(confirmations).await? >= swap.t1
+                && self
+                    .settlement
+                    .confirmed_swap(swap.id, confirmations)
+                    .await?
+                    .is_none()
+            {
                 info!(id = %swap.id, "the swap never opened");
-                self.settle(swap, None).await?;
+                self.settle(swap, None)?;
             }
             return Ok(());
         };
-        let (funds, sweep_mined) = {
-            let zcash = self.zcash.lock().await;
-            let wallet = zcash.wallet()?;
-            let funds = wallet.funds(swap.zcash_account)?;
-            let sweep_mined = swap.sweep.map(|txid| wallet.is_mined(txid)).transpose()?;
-            (funds, sweep_mined)
+        if chain.refund_lock_until != 0 || chain.stage == Stage::Refunded {
+            self.store.start_refund(&swap.id)?;
+        }
+        let (funds, sweep_confirmed, synced) = self.wallet_observation(swap);
+        let chain_confirmed = if matches!(chain.stage, Stage::Claimed | Stage::Refunded) {
+            self.settlement
+                .confirmed_swap(swap.id, confirmations)
+                .await?
+                .is_some_and(|confirmed| {
+                    confirmed.stage == chain.stage && confirmed.secret == chain.secret
+                })
+        } else {
+            false
         };
+        if swap.settled {
+            let still_settled = match chain.stage {
+                Stage::Refunded => chain_confirmed,
+                Stage::Claimed => {
+                    chain_confirmed
+                        && (!synced || (sweep_confirmed == Some(true) && funds.spendable == 0))
+                }
+                _ => false,
+            };
+            if still_settled {
+                return Ok(());
+            }
+            self.store.resume(&swap.id)?;
+        }
         let observation = Observation {
             now,
             opened_at: swap.opened_at,
@@ -479,7 +609,9 @@ impl Maker {
             chain,
             funds,
             synced,
-            sweep_mined,
+            chain_confirmed,
+            cancelling: swap.refund_started,
+            sweep_confirmed,
             lock_duration: self.lock_duration,
         };
         if synced && funds.total > 0 {
@@ -497,14 +629,41 @@ impl Maker {
                 self.settlement.ready(swap.id).await?;
             }
             Action::LockRefund => {
+                self.store.start_refund(&swap.id)?;
                 self.settlement.lock_refund(swap.id).await?;
             }
             Action::Refund => {
+                self.store.start_refund(&swap.id)?;
                 let e = self.maker_share(swap.quote.nonce)?;
                 self.settlement.refund(swap.id, &e).await?;
             }
-            Action::Sweep => self.sweep(swap, &observation.chain).await?,
-            Action::Settle => self.settle(swap, Some(&observation.chain)).await?,
+            Action::Sweep => {} // The Zcash worker builds and broadcasts sweeps.
+            Action::Settle => self.settle(swap, Some(&observation.chain))?,
+        }
+        Ok(())
+    }
+
+    fn wallet_observation(&self, swap: &Swap) -> (Funds, Option<bool>, bool) {
+        if let Some(snapshot) = self.wallet_snapshot(swap.zcash_account) {
+            let confirmed = snapshot
+                .sweep
+                .filter(|(txid, _)| Some(*txid) == swap.sweep)
+                .map(|(_, confirmed)| confirmed);
+            return (snapshot.funds, confirmed, true);
+        }
+        (Funds::default(), None, false)
+    }
+
+    fn wallet_snapshot(&self, account: AccountUuid) -> Option<WalletSnapshot> {
+        self.zcash_health.check().ok()?;
+        self.wallet_snapshots.lock().unwrap().get(&account).copied()
+    }
+
+    async fn advance_sweep(&self, swap: &Swap) -> Result<()> {
+        if let Some(chain) = self.settlement.swap(swap.id).await?
+            && chain.stage == Stage::Claimed
+        {
+            self.sweep(swap, &chain).await?;
         }
         Ok(())
     }
@@ -519,6 +678,16 @@ impl Maker {
         let mut zcash = self.zcash.lock().await;
         let Zcash { wallet, client } = &mut *zcash;
         let wallet = wallet.as_mut().context("Zcash wallet needs reopening")?;
+        if let Some(txid) = swap.sweep
+            && !wallet.is_mined(txid)?
+            && !wallet.is_expired(txid)?
+        {
+            wallet.broadcast(client, txid).await?;
+            return Ok(());
+        }
+        if wallet.funds(swap.zcash_account)?.spendable == 0 {
+            return Ok(());
+        }
         let txid = wallet.sweep(&self.prover, swap.zcash_account, &key, &self.sweep_to)?;
         // Recorded first: a sweep that never reaches the network expires, and the policy then
         // sweeps again.
@@ -528,9 +697,9 @@ impl Maker {
         Ok(())
     }
 
-    async fn settle(&self, swap: &Swap, chain: Option<&OnChainSwap>) -> Result<()> {
+    fn settle(&self, swap: &Swap, chain: Option<&OnChainSwap>) -> Result<()> {
         let event = self.forward_alert(swap, "finished", notifications::outcome(chain, false));
-        self.forget(swap.zcash_account).await;
+        // Keep the account, birthday, transaction history and keys for reorg recovery.
         self.store.settle(&swap.id, event.as_ref())
     }
 

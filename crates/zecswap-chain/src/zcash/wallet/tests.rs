@@ -145,3 +145,63 @@ fn a_birthday_above_the_tip_imports_and_syncs_from_the_next_block() {
         .update_chain_tip(BlockHeight::from_u32(4_395_106))
         .unwrap();
 }
+
+#[test]
+fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.sqlite");
+    let mut wallet = Wallet::open(&path, Network::TestNetwork)
+        .unwrap()
+        .with_confirmations(NonZeroU32::new(3).unwrap());
+    let account = import_at(&mut wallet, TIP);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for height in TIP..=TIP + 20 {
+        conn.execute(
+            "INSERT INTO blocks (height, hash, time, sapling_tree,
+             sapling_commitment_tree_size, orchard_commitment_tree_size,
+             ironwood_commitment_tree_size) VALUES (?1, zeroblob(32), 0, x'000000', 0, 0, 0)",
+            [height],
+        )
+        .unwrap();
+    }
+    let txid = TxId::from_bytes([1; 32]);
+    conn.execute(
+        "INSERT INTO transactions (txid, mined_height, min_observed_height) VALUES (?1, ?2, ?2)",
+        rusqlite::params![txid.as_ref(), TIP],
+    )
+    .unwrap();
+    let scanned_to = |height: u32| {
+        conn.execute("DELETE FROM scan_queue", []).unwrap();
+        conn.execute(
+            "INSERT INTO scan_queue VALUES (?1, ?2, 10)",
+            [TIP, height + 1],
+        )
+        .unwrap();
+        // Advertised tip and downloaded blocks alone must not count as scanned depth.
+        conn.execute(
+            "INSERT INTO scan_queue VALUES (?1, ?2, 20)",
+            [height + 1, TIP + 21],
+        )
+        .unwrap();
+    };
+    scanned_to(TIP);
+    assert!(wallet.is_mined(txid).unwrap());
+    assert!(!wallet.is_confirmed(txid).unwrap());
+    scanned_to(TIP + 1);
+    assert!(!wallet.is_confirmed(txid).unwrap());
+    scanned_to(TIP + 2);
+    assert!(wallet.is_confirmed(txid).unwrap());
+    drop(wallet);
+    let wallet = Wallet::open(&path, Network::TestNetwork)
+        .unwrap()
+        .with_confirmations(NonZeroU32::new(3).unwrap());
+    assert!(wallet.is_confirmed(txid).unwrap());
+    assert!(wallet.db.get_account(account).unwrap().is_some());
+    scanned_to(TIP + 1);
+    assert!(!wallet.is_confirmed(txid).unwrap());
+    conn.execute("UPDATE transactions SET mined_height = NULL", [])
+        .unwrap();
+    assert!(!wallet.is_mined(txid).unwrap());
+    assert!(!wallet.is_confirmed(txid).unwrap());
+    assert!(!wallet.is_confirmed(TxId::from_bytes([2; 32])).unwrap());
+}

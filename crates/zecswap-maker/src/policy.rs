@@ -1,7 +1,7 @@
 //! What the maker does next for a swap, decided from what it can observe right now.
 //!
-//! Nothing here is remembered between passes: the contract, the joint account and the
-//! clock are the only inputs, so a restarted maker picks up exactly where it left off.
+//! Decisions use confirmed observations and persisted cancellation intent so a restart
+//! or reorg cannot turn a cancellation back into readiness.
 
 use anyhow::{Result, ensure};
 use serde::Deserialize;
@@ -63,10 +63,14 @@ pub struct Observation {
     pub expected_zat: u64,
     pub chain: OnChainSwap,
     pub funds: Funds,
-    /// Whether `funds` comes from a sync that succeeded this pass.
+    /// Whether the wallet is available and its last successful sync is recent.
     pub synced: bool,
-    /// `None` until a sweep is recorded, then whether it has been mined.
-    pub sweep_mined: Option<bool>,
+    /// Whether the terminal EVM stage is also present at the required confirmation depth.
+    pub chain_confirmed: bool,
+    /// Local cancellation intent survives a reorg of the refund lock or reveal.
+    pub cancelling: bool,
+    /// `None` until a sweep is recorded, then whether it has enough confirmations.
+    pub sweep_confirmed: Option<bool>,
     /// The contract's lock duration, which is also the length of each side's turn.
     pub lock_duration: u64,
 }
@@ -75,10 +79,15 @@ pub fn decide(obs: &Observation, timing: &Timing) -> Action {
     let chain = &obs.chain;
     let now = obs.now;
     match chain.stage {
-        Stage::Claimed if obs.funds.spendable > 0 => Action::Sweep,
-        Stage::Claimed if obs.sweep_mined == Some(true) => Action::Settle,
+        Stage::Claimed if obs.synced && obs.funds.spendable > 0 => Action::Sweep,
+        Stage::Claimed
+            if obs.chain_confirmed && obs.synced && obs.sweep_confirmed == Some(true) =>
+        {
+            Action::Settle
+        }
         Stage::Claimed => Action::Wait,
-        Stage::Refunded => Action::Settle,
+        Stage::Refunded if obs.chain_confirmed => Action::Settle,
+        Stage::Refunded => Action::Wait,
         _ if now < chain.refund_lock_until => {
             if now + timing.reveal_margin < chain.refund_lock_until {
                 Action::Refund
@@ -94,7 +103,7 @@ pub fn decide(obs: &Observation, timing: &Timing) -> Action {
             Action::Wait
         }
         // A cancellation we started can't be undone by `ready`; finish it.
-        Stage::Open if chain.refund_lock_until != 0 => Action::LockRefund,
+        Stage::Open if obs.cancelling || chain.refund_lock_until != 0 => Action::LockRefund,
         Stage::Open => open_action(obs, timing),
         Stage::Ready if now >= chain.t1 => Action::LockRefund,
         Stage::Ready => Action::Wait,
@@ -103,7 +112,7 @@ pub fn decide(obs: &Observation, timing: &Timing) -> Action {
 
 fn open_action(obs: &Observation, timing: &Timing) -> Action {
     let funds = obs.funds;
-    if funds.spendable >= obs.expected_zat {
+    if obs.synced && funds.spendable >= obs.expected_zat {
         return Action::MarkReady;
     }
     // A stale wallet can miss a deposit, so only a fresh one may conclude none came.
@@ -166,7 +175,9 @@ mod tests {
             },
             funds: Funds { total, spendable },
             synced: true,
-            sweep_mined: None,
+            chain_confirmed: true,
+            cancelling: false,
+            sweep_confirmed: None,
             lock_duration: LOCK,
         }
     }
@@ -218,5 +229,52 @@ mod tests {
         assert_eq!(decide(&stale, &timing()), Action::Wait);
         let held = with_refund_lock(stale, now + LOCK);
         assert_eq!(decide(&held, &timing()), Action::Refund);
+    }
+
+    #[test]
+    fn stalled_zcash_still_cancels_before_t0_even_with_a_stale_balance() {
+        for funds in [(0, 0), (DEPOSIT, DEPOSIT)] {
+            let mut obs = observe(Stage::Open, T0 - 300, funds);
+            obs.synced = false;
+            assert_eq!(decide(&obs, &timing()), Action::LockRefund);
+            obs.chain.refund_lock_until = obs.now + LOCK;
+            assert_eq!(decide(&obs, &timing()), Action::Refund);
+        }
+    }
+
+    #[test]
+    fn a_reorg_cannot_undo_local_cancellation_intent() {
+        let mut obs = observe(Stage::Open, OPENED + 10, (DEPOSIT, DEPOSIT));
+        obs.cancelling = true;
+        assert_eq!(decide(&obs, &timing()), Action::LockRefund);
+    }
+
+    #[test]
+    fn terminal_stages_and_sweeps_must_be_confirmed_before_settlement() {
+        let mut refund = observe(Stage::Refunded, T0, (0, 0));
+        refund.chain_confirmed = false;
+        assert_eq!(decide(&refund, &timing()), Action::Wait);
+        refund.chain_confirmed = true;
+        refund.synced = false;
+        assert_eq!(decide(&refund, &timing()), Action::Settle);
+
+        let mut claim = observe(Stage::Claimed, T0, (0, 0));
+        for (evm, synced, sweep, expected) in [
+            (true, true, None, Action::Wait),
+            (true, true, Some(false), Action::Wait),
+            (false, true, Some(true), Action::Wait),
+            (true, false, Some(true), Action::Wait),
+            (true, true, Some(true), Action::Settle),
+        ] {
+            claim.chain_confirmed = evm;
+            claim.synced = synced;
+            claim.sweep_confirmed = sweep;
+            assert_eq!(decide(&claim, &timing()), expected);
+        }
+        claim.funds = Funds {
+            total: DEPOSIT,
+            spendable: DEPOSIT,
+        };
+        assert_eq!(decide(&claim, &timing()), Action::Sweep);
     }
 }
