@@ -84,6 +84,18 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
     );
     maker.telegram =
         crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+    maker
+        .store
+        .insert_quote(
+            swap.quote.id,
+            swap.quote.payout,
+            None,
+            swap.quote.amount,
+            swap.quote.deposit_zat,
+            2000,
+        )
+        .unwrap();
+    maker.store.insert_swap(&swap, None).unwrap();
     let share = maker.maker_share(0).unwrap();
     let reverse = crate::store::ReverseSwap {
         id: B256::repeat_byte(6),
@@ -119,6 +131,28 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         (crate::Chain::Mainnet, "mainnet"),
     ] {
         maker.config.network = network;
+        maker.chain_id = if name == "testnet" { 11155111 } else { 1 };
+        let scope = maker.transaction_scope();
+        maker.store.init_transaction_cursor(&scope, 90, 99).unwrap();
+        let events: Vec<_> = (0..6)
+            .map(|index| {
+                (
+                    zecswap_chain::evm::SwapEvent {
+                        id: swap.id,
+                        kind: zecswap_chain::evm::SwapEventKind::Claimed,
+                        transaction_hash: B256::repeat_byte(20 + index),
+                        block_number: 100,
+                        block_hash: B256::repeat_byte(4),
+                        log_index: u64::from(index),
+                    },
+                    None,
+                )
+            })
+            .collect();
+        maker
+            .store
+            .record_evm_window(&scope, 100, 109, &events, false)
+            .unwrap();
         for (event, direction) in [
             (
                 maker
@@ -142,6 +176,30 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
             assert!(!event.text.contains(&hex::encode(swap.viewing.to_bytes())));
             assert!(!event.text.contains(&hex::encode(*maker.root)));
             assert!(event.text.chars().count() < 4096);
+            assert!(event.text.contains("Swap ID (bridge reference):"));
+            assert!(!event.text.contains(&format!("/tx/{}", swap.id)));
+            if direction == "ZEC → USDC" {
+                assert!(
+                    event
+                        .text
+                        .contains(&format!("/tx/{}", B256::repeat_byte(25)))
+                );
+                assert!(
+                    !event
+                        .text
+                        .contains(&format!("/tx/{}", B256::repeat_byte(20)))
+                );
+                let path = if name == "testnet" {
+                    "sepolia"
+                } else {
+                    "ethereum"
+                };
+                assert!(
+                    event
+                        .text
+                        .contains(&format!("https://railscan.io/{path}/tx/"))
+                );
+            }
             assert!(!keys.contains(&event.key));
             keys.push(event.key);
         }

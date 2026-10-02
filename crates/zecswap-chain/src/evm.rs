@@ -1,5 +1,8 @@
 //! Client for the ZecSwap settlement contract, on whichever EVM chain it is deployed.
 
+mod events;
+pub use events::{SwapEvent, SwapEventKind};
+
 use std::time::Duration;
 
 use alloy::contract::{CallBuilder, CallDecoder};
@@ -48,6 +51,14 @@ sol! {
     #[allow(clippy::too_many_arguments)]
     #[sol(rpc)]
     interface IZecSwap {
+        event Opened(bytes32 indexed id, address indexed maker, address indexed user, address token, uint256 amount, uint256[2] makerKey, uint256[2] userKey, uint64 t0, uint64 t1, bytes32 payoutNote);
+        event MarkedReady(bytes32 indexed id);
+        event ClaimLocked(bytes32 indexed id, uint64 until);
+        event Claimed(bytes32 indexed id, uint256 userSecret);
+        event PaidOut(bytes32 indexed id, address relayer, uint256 fee);
+        event Rescued(bytes32 indexed id, address relayer, uint256 fee);
+        event RefundLocked(bytes32 indexed id, uint64 until);
+        event Refunded(bytes32 indexed id, uint256 makerSecret);
         struct Swap {
             address maker;
             uint64 t0;

@@ -1,6 +1,7 @@
 mod monitoring;
 mod notifications;
 mod reverse;
+mod transactions;
 
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -401,7 +402,11 @@ impl Maker {
                 result
             },
         );
-        tokio::join!(watchtower, self.run_notifications());
+        tokio::join!(
+            watchtower,
+            self.run_notifications(),
+            self.run_transaction_observer()
+        );
     }
 
     async fn tick(&self) -> Result<()> {

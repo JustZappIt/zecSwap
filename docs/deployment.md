@@ -143,6 +143,25 @@ the Telegram alerts health check. Mainnet uses the same code: deploy its own mak
 with separate configuration/data and supply the bot/destination environment pair.
 Messages and deduplication IDs include the deployment and network.
 
+Ethereum transaction references are indexed from the configured settlement contract's
+confirmed events, including transactions sent by the app or relayer. A separate
+read-only task scans ten-block RPC windows without locking the wallet or fetching
+prices. Recent blocks are scanned first; historical swaps are backfilled from their
+earliest accepted quote. SQLite stores the cursor and public event metadata under
+the network/chain/contract/maker scope. Each pass reconciles the latest twelve blocks
+to remove orphaned events after a shallow reorganization; deeper reorgs require an
+operator rescan. Confirmation depth follows `reverse.evm_confirmations`, or two when
+reverse swaps are disabled. Confirmed does not mean finalized.
+
+Telegram messages label the swap ID as a bridge reference, and include actual
+transaction hashes with Etherscan and Railscan links on Ethereum mainnet/Sepolia.
+New funding, claim, payout, rescue and refund events enqueue a link update; readiness
+and lock events are visible in the dashboard without extra Telegram updates.
+Historical backfill never replays old events. Transaction alert deduplication and
+cursor advancement are atomic. `/v1/monitor` exports `transactions` indexing status
+and each swap's `evmTransactions` public hash/block/event list, never log payloads,
+revealed shares, RPC credentials or Telegram configuration.
+
 ### Dashboard monitoring
 
 Live USD pricing is enabled by `[pricing.market]` in the maker configuration:
