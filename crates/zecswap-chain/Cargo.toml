@@ -29,7 +29,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 secrecy = "0.8"
 thiserror = "2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 tonic = { version = "0.14", default-features = false, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
 tracing = "0.1"
 zcash_address.workspace = true
@@ -53,4 +53,4 @@ alloy = { version = "1.8", default-features = false, features = ["node-bindings"
 hex = "0.4"
 serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
