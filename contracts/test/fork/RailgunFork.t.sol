@@ -28,7 +28,7 @@ contract RailgunForkTest is SpendAuthVectors {
     bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
-        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)");
+        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
     uint256 internal constant LOCK = 2 hours;
     uint128 internal constant AMOUNT = 500e6;
     uint128 internal constant FEE = 2e6;
@@ -97,10 +97,10 @@ contract RailgunForkTest is SpendAuthVectors {
         deal(USDC, vault, 400e6);
 
         uint256 leaves = leafCount();
-        bytes memory sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, commitment, relayer, FEE)));
+        bytes memory sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, commitment, relayer, FEE, uint64(0), uint64(block.timestamp + 5 minutes))));
         vm.recordLogs();
         vm.prank(relayer);
-        swaps.rescue(id, npk, ciphertext, FEE, sig);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
         (IRailgun.CommitmentPreimage[] memory notes,,) = shieldEvent();
         assertEq(notes[0].npk, npk);
         assertEq(leafCount(), leaves + 1);

@@ -23,6 +23,7 @@ pub enum Error {
     },
     /// The PCZT contains no spend awaiting a signature.
     NothingToSign,
+    SweepIntent(String),
     Pczt(String),
 }
 
@@ -41,6 +42,7 @@ impl fmt::Display for Error {
                 write!(f, "no key authorizes {pool:?} action {index}")
             }
             Error::NothingToSign => f.write_str("PCZT has no spend awaiting a signature"),
+            Error::SweepIntent(e) => write!(f, "sweep authorization: {e}"),
             Error::Pczt(e) => write!(f, "PCZT error: {e}"),
         }
     }

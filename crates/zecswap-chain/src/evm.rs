@@ -91,7 +91,8 @@ sol! {
         function lockClaimWithSig(bytes32 id, uint64 deadline, bytes signature) external;
         function claim(bytes32 id, uint256 userSecret) external;
         function payout(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
-        function rescue(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
+        function rescue(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint64 nonce, uint64 deadline, bytes signature) external;
+        function rescueNonces(bytes32 id) external view returns (uint64);
         function lockRefund(bytes32 id) external;
         function refund(bytes32 id, uint256 makerSecret) external;
         function getSwap(bytes32 id) external view returns (Swap memory);
@@ -625,15 +626,26 @@ impl Settlement {
         note: &ShieldNote,
         fee: u128,
         signature: &[u8; 65],
+        authorization: zecswap_core::RescueAuthorization,
     ) -> Result<B256, Error> {
         let call = self.contract.rescue(
             id,
             note.npk.into(),
             ciphertext_words(&note.ciphertext),
             fee,
+            authorization.nonce,
+            authorization.deadline,
             signature.to_vec().into(),
         );
         Ok(self.submit(call).await?.transaction_hash)
+    }
+
+    pub async fn rescue_nonce(&self, id: B256) -> Result<u64, Error> {
+        self.contract
+            .rescueNonces(id)
+            .call()
+            .await
+            .map_err(Error::contract)
     }
 
     pub async fn claim(&self, id: B256, user_secret: &SecretShare) -> Result<B256, Error> {

@@ -111,7 +111,11 @@ object AtomicSwap {
         makerShare: ByteArray,
         makerSecret: ByteArray,
         pczt: ByteArray,
-    ): ByteArray = AtomicSwapNative.signRefund(key.seed, key.mainnet, key.index, makerShare, makerSecret, pczt)
+        intent: SweepIntent,
+    ): ByteArray = AtomicSwapNative.signRefund(
+        key.seed, key.mainnet, key.index, makerShare, makerSecret, pczt,
+        intent.recipient, intent.minimumReceivedZat, intent.maximumFeeZat,
+    )
 
     /** The `0zk` address of [railgun]'s wallet, the one Railgun's own apps open from its words. */
     fun railgunAddress(railgun: RailgunSeed): String = AtomicSwapNative.railgunAddress(railgun.bytes)
@@ -120,6 +124,17 @@ object AtomicSwap {
     private const val WORD_BYTES = 32
 
     private fun ByteArray.asWords() = (indices step WORD_BYTES).map { copyOfRange(it, it + WORD_BYTES) }
+}
+
+/** A full sweep to one wallet receiver; other recipients, change and unsupported pools are rejected. */
+data class SweepIntent(
+    val recipient: String,
+    val minimumReceivedZat: Long,
+    val maximumFeeZat: Long,
+) {
+    init {
+        require(minimumReceivedZat > 0 && maximumFeeZat >= 0)
+    }
 }
 
 /** Swap [index] of the wallet whose 64-byte BIP-39 seed is [seed]. */

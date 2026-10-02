@@ -32,7 +32,8 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::memo::MemoBytes;
 use zcash_protocol::value::Zatoshis;
 use zecswap_core::{
-    Error, JointAccount, SecretShare, SpendKey, ViewingKeys, sign_pczt, sign_pczt_bytes,
+    Error, JointAccount, SecretShare, SpendKey, SweepIntent, ViewingKeys, sign_pczt,
+    sign_pczt_bytes,
 };
 
 const DEPOSIT: u64 = 1_000_000;
@@ -59,6 +60,10 @@ impl Swap {
     /// An IO-finalized PCZT sweeping a fresh deposit to a wallet outside the swap, as
     /// `createPcztFromProposal` hands it over.
     fn sweep(&self) -> Pczt {
+        self.sweep_with_outputs(&[(destination(), DEPOSIT - FEE)])
+    }
+
+    fn sweep_with_outputs(&self, outputs: &[(Address, u64)]) -> Pczt {
         let fvk = self.joint.fvk();
         let note = receive_ironwood_note(fvk, self.joint.deposit_address());
         let (anchor, path) = single_leaf_witness(&note);
@@ -77,14 +82,16 @@ impl Swap {
         builder
             .add_ironwood_spend::<zip317::FeeRule>(fvk.clone(), note, path)
             .unwrap();
-        builder
-            .add_ironwood_output::<zip317::FeeRule>(
-                None,
-                destination(),
-                Zatoshis::const_from_u64(DEPOSIT - FEE),
-                MemoBytes::empty(),
-            )
-            .unwrap();
+        for (recipient, amount) in outputs {
+            builder
+                .add_ironwood_output::<zip317::FeeRule>(
+                    None,
+                    *recipient,
+                    Zatoshis::from_u64(*amount).unwrap(),
+                    MemoBytes::empty(),
+                )
+                .unwrap();
+        }
         let PcztResult { pczt_parts, .. } = builder
             .build_for_pczt(OsRng, &zip317::FeeRule::standard())
             .unwrap();
@@ -98,7 +105,7 @@ impl Swap {
 fn the_combined_key_sweeps_the_deposit_and_other_keys_are_ignored() {
     let (swap, stranger) = (Swap::new(), Swap::new());
     let keys = [stranger.spend_key(), swap.spend_key()];
-    extract(sign_pczt(prove(swap.sweep()), &keys).unwrap());
+    extract(sign_pczt(prove(swap.sweep()), &keys, &intent()).unwrap());
 }
 
 #[test]
@@ -107,7 +114,11 @@ fn signs_the_redacted_views_the_wallet_sdks_hand_to_signers() {
     for view in [full_signer_view, compact_signer_view] {
         let pczt = swap.sweep();
         let with_proofs = prove(pczt.clone());
-        let signed = sign_pczt_bytes(&view(pczt).serialize().unwrap(), &[swap.spend_key()]);
+        let signed = sign_pczt_bytes(
+            &view(pczt).serialize().unwrap(),
+            &[swap.spend_key()],
+            &intent(),
+        );
         let with_signatures = Pczt::parse(&signed.unwrap()).unwrap();
         extract(
             Combiner::new(vec![with_proofs, with_signatures])
@@ -120,7 +131,7 @@ fn signs_the_redacted_views_the_wallet_sdks_hand_to_signers() {
 #[test]
 fn another_accounts_key_signs_nothing() {
     let (swap, stranger) = (Swap::new(), Swap::new());
-    let result = sign_pczt(swap.sweep(), &[stranger.spend_key()]);
+    let result = sign_pczt(swap.sweep(), &[stranger.spend_key()], &intent());
     assert!(matches!(
         result,
         Err(Error::UnsignedSpend {
@@ -131,13 +142,13 @@ fn another_accounts_key_signs_nothing() {
 }
 
 #[test]
-fn a_signed_pczt_has_nothing_left_to_sign() {
+fn preauthorized_real_spends_are_rejected() {
     let swap = Swap::new();
-    let signed = sign_pczt(swap.sweep(), &[swap.spend_key()]).unwrap();
-    assert_eq!(
-        sign_pczt(signed, &[swap.spend_key()]).err(),
-        Some(Error::NothingToSign)
-    );
+    let signed = sign_pczt(swap.sweep(), &[swap.spend_key()], &intent()).unwrap();
+    assert!(matches!(
+        sign_pczt(signed, &[swap.spend_key()], &intent()),
+        Err(Error::SweepIntent(_))
+    ));
 }
 
 fn circuit_keys() -> &'static (ProvingKey, VerifyingKey) {
@@ -246,4 +257,88 @@ fn nu6_3_network() -> LocalNetwork {
         nu6_2: Some(BlockHeight::from_u32(9)),
         nu6_3: Some(BlockHeight::from_u32(10)),
     }
+}
+
+fn intent() -> SweepIntent {
+    SweepIntent {
+        recipient: destination(),
+        minimum_received: DEPOSIT - FEE,
+        maximum_fee: FEE,
+    }
+}
+
+#[test]
+fn sweep_intent_rejects_another_recipient_and_excess_fees() {
+    let swap = Swap::new();
+    let other = Swap::new().joint.deposit_address();
+    for intent in [
+        SweepIntent {
+            recipient: other,
+            ..intent()
+        },
+        SweepIntent {
+            maximum_fee: FEE - 1,
+            ..intent()
+        },
+        SweepIntent {
+            minimum_received: DEPOSIT - FEE + 1,
+            ..intent()
+        },
+    ] {
+        assert!(matches!(
+            sign_pczt(swap.sweep(), &[swap.spend_key()], &intent),
+            Err(Error::SweepIntent(_))
+        ));
+    }
+}
+
+#[test]
+fn redacted_authorization_metadata_is_rejected() {
+    let swap = Swap::new();
+    let pczt = Redactor::new(swap.sweep())
+        .redact_ironwood_with(|mut bundle| {
+            bundle.redact_actions(|mut action| action.clear_output_value());
+        })
+        .finish();
+    assert!(sign_pczt(pczt, &[swap.spend_key()], &intent()).is_err());
+}
+
+#[test]
+fn change_to_a_different_receiver_is_rejected() {
+    let swap = Swap::new();
+    let other = Swap::new().joint.deposit_address();
+    let pczt = swap.sweep_with_outputs(&[(destination(), DEPOSIT - FEE - 1), (other, 1)]);
+    let authorized = SweepIntent {
+        minimum_received: DEPOSIT - FEE - 1,
+        ..intent()
+    };
+    assert!(matches!(
+        sign_pczt(pczt, &[swap.spend_key()], &authorized),
+        Err(Error::SweepIntent(_))
+    ));
+}
+
+#[test]
+fn corrupted_encrypted_output_is_rejected_before_signing() {
+    let swap = Swap::new();
+    let pczt = swap.sweep();
+    let mut ciphertext = None;
+    pczt::roles::verifier::Verifier::new(pczt.clone())
+        .with_ironwood::<(), _>(|bundle| {
+            ciphertext = bundle
+                .actions()
+                .iter()
+                .find(|a| a.output().value().unwrap().inner() > 0)
+                .map(|a| a.output().encrypted_note().enc_ciphertext);
+            Ok(())
+        })
+        .unwrap();
+    let ciphertext = ciphertext.unwrap();
+    let mut bytes = pczt.serialize().unwrap();
+    let offset = bytes
+        .windows(ciphertext.len())
+        .position(|w| w == ciphertext)
+        .unwrap();
+    bytes[offset + ciphertext.len() - 1] ^= 1;
+    assert!(sign_pczt_bytes(&bytes, &[swap.spend_key()], &intent()).is_err());
 }

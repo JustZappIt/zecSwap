@@ -10,7 +10,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::sys::{JNI_FALSE, jboolean, jbyteArray, jint, jlong, jobjectArray, jstring};
-use zecswap_core::{Domain, SwapContext};
+use zecswap_core::{Domain, NetworkType, SwapContext, SweepIntent};
 use zeroize::Zeroizing;
 
 use crate::ops::{Result, Swap};
@@ -265,14 +265,33 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
     maker_share: JByteArray<'local>,
     maker_secret: JByteArray<'local>,
     pczt: JByteArray<'local>,
+    recipient: JString<'local>,
+    minimum_received: jlong,
+    maximum_fee: jlong,
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
         let maker_share = fixed(env, &maker_share, "a maker share")?;
         let maker_secret = Zeroizing::new(fixed::<32>(env, &maker_secret, "a maker secret")?);
         let pczt = env.convert_byte_array(&pczt).map_err(jni_error)?;
-        let signed =
-            swap(&seed, mainnet, index)?.sign_refund(&maker_share, &maker_secret, &pczt)?;
+        let recipient: String = env.get_string(&recipient).map_err(jni_error)?.into();
+        let intent = SweepIntent::from_address(
+            &recipient,
+            if mainnet != JNI_FALSE {
+                NetworkType::Main
+            } else {
+                NetworkType::Test
+            },
+            unsigned(minimum_received, "a minimum received amount")?,
+            unsigned(maximum_fee, "a maximum sweep fee")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let signed = swap(&seed, mainnet, index)?.sign_refund(
+            &maker_share,
+            &maker_secret,
+            &pczt,
+            &intent,
+        )?;
         byte_array(env, &signed)
     })
     .unwrap_or(std::ptr::null_mut())
@@ -338,6 +357,8 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
     swap_id: JByteArray<'local>,
     relayer: JByteArray<'local>,
     fee: JString<'local>,
+    nonce: jlong,
+    deadline: jlong,
 ) -> jbyteArray {
     run(&mut env, |env| {
         let seed = self::seed(env, &seed)?;
@@ -355,6 +376,10 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRefun
             &swap_id,
             &relayer,
             fee,
+            zecswap_core::RescueAuthorization {
+                nonce: unsigned(nonce, "a rescue nonce")?,
+                deadline: unsigned(deadline, "a rescue deadline")?,
+            },
         )?;
         byte_array(env, &signature)
     })

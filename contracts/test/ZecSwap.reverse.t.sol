@@ -221,7 +221,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         swaps.refundPayout(id, npk, ciphertext, FEE, refundPayoutSig(id));
         usdc.mint(swaps.vaultOf(id), AMOUNT);
         vm.prank(relayer);
-        swaps.rescue(id, npk, ciphertext, FEE, rescueSig(id, npk, ciphertext, relayer, FEE));
+        swaps.rescue(id, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, npk, ciphertext, relayer, FEE));
         assertEq(railgun.count(), 2);
     }
 }

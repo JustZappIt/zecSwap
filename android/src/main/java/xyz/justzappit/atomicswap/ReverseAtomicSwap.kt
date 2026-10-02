@@ -67,6 +67,8 @@ object ReverseAtomicSwap {
         swapId: ByteArray,
         relayer: ByteArray,
         fee: BigInteger,
+        nonce: Long,
+        deadline: Long,
     ): ByteArray =
         AtomicSwapNative.signRefundRescue(
             key.seed,
@@ -78,6 +80,8 @@ object ReverseAtomicSwap {
             swapId,
             relayer,
             fee.toString(),
+            nonce,
+            deadline,
         )
 
     /** Use the maker's share from a verified Claimed escrow to sweep the received ZEC home. */
@@ -86,7 +90,8 @@ object ReverseAtomicSwap {
         makerShare: ByteArray,
         makerSecret: ByteArray,
         pczt: ByteArray,
-    ): ByteArray = AtomicSwap.signRefund(key, makerShare, makerSecret, pczt)
+        intent: SweepIntent,
+    ): ByteArray = AtomicSwap.signRefund(key, makerShare, makerSecret, pczt, intent)
 
     /** Reveal only under an on-chain refund lock with enough time left for inclusion. */
     fun refundSecret(key: SwapKey): ByteArray = AtomicSwap.claimSecret(key)

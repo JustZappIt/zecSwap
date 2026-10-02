@@ -281,7 +281,7 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.expectEmit(address(swaps));
         emit ZecSwap.Rescued(id, relayer, FEE);
         vm.prank(relayer);
-        swaps.rescue(id, freshNpk, fresh, FEE, rescueSig(id, freshNpk, fresh, relayer, FEE));
+        swaps.rescue(id, freshNpk, fresh, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, freshNpk, fresh, relayer, FEE));
 
         MockRailgun.Shielded memory note = railgun.last();
         assertEq(note.from, vault);
@@ -296,14 +296,14 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.rescue(id, npk, ciphertext, FEE, sig);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
 
         vm.prank(relayer);
         swaps.payout(id, npk, ciphertext, FEE, payoutSig(id, relayer, FEE));
         usdc.mint(swaps.vaultOf(id), AMOUNT);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.rescue(id, keccak256("the relayer's own npk"), ciphertext, FEE, sig);
+        swaps.rescue(id, keccak256("the relayer's own npk"), ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
     }
 
     function test_vault_takesOrdersOnlyFromTheEscrow() public {
@@ -313,12 +313,96 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vault.shield(railgun, address(usdc), npk, ciphertext, 0, address(this));
     }
 
+    function testRescueApprovalIsConsumedAndCannotSpendALaterReturn() public {
+        bytes32 id = paidOut();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
+        usdc.mint(swaps.vaultOf(id), AMOUNT);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(swaps.rescueNonces(id), 1);
+        usdc.mint(swaps.vaultOf(id), AMOUNT);
+        uint256 before = usdc.balanceOf(relayer);
+        vm.expectRevert(ZecSwap.BadSignature.selector);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(usdc.balanceOf(relayer), before);
+        bytes32 note = keccak256(abi.encode(npk, ciphertext));
+        bytes memory fresh = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(1), deadline)));
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 1, deadline, fresh);
+        assertEq(swaps.rescueNonces(id), 2);
+    }
+
+    function testRescueApprovalExpiresWithoutBeingConsumed() public {
+        bytes32 id = paidOut();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
+        usdc.mint(swaps.vaultOf(id), AMOUNT);
+        vm.warp(deadline + 1);
+        vm.expectRevert(ZecSwap.Expired.selector);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(swaps.rescueNonces(id), 0);
+    }
+
+    function testRescueNonceAndDeadlineAreSigned() public {
+        bytes32 id = paidOut();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
+        usdc.mint(swaps.vaultOf(id), AMOUNT);
+        vm.expectRevert(ZecSwap.BadSignature.selector);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline + 1, sig);
+        vm.expectRevert(ZecSwap.BadSignature.selector);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 1, deadline, sig);
+    }
+
+    function testRescueFailureDoesNotConsumeApprovalOrChargeFee() public {
+        bytes32 id = paidOut();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
+        address vault = swaps.vaultOf(id);
+        usdc.mint(vault, AMOUNT);
+        uint256 feesBefore = usdc.balanceOf(relayer);
+        railgun.setPaused(true);
+        vm.expectRevert("paused");
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(swaps.rescueNonces(id), 0);
+        assertEq(usdc.balanceOf(relayer), feesBefore);
+        assertEq(usdc.balanceOf(vault), AMOUNT);
+        railgun.setPaused(false);
+        vm.prank(relayer);
+        swaps.rescue(id, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(swaps.rescueNonces(id), 1);
+    }
+
+    // The same fixed vector as the Rust/JNI/Kotlin signer tests, decoded independently here.
+    function testRescueTypedDataMatchesNativeSignerVector() public pure {
+        bytes32 domain = keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            keccak256("ZecSwap"), keccak256("1"), uint256(11155111), address(0x1111111111111111111111111111111111111111)
+        ));
+        bytes32 typed = keccak256(abi.encode(
+            RESCUE_TYPEHASH,
+            bytes32(0xf222c5c748f566811318f3e2851848301cf248bb706b32a98278936350465ed7),
+            bytes32(0x5af6901ba7cb01f49785a29c4a2e57e31af3e53382ce3dd2e35678897515ffc1),
+            address(0x2222222222222222222222222222222222222222), uint128(20000), uint64(0), uint64(1790000000)
+        ));
+        address recovered = ecrecover(keccak256(abi.encodePacked("\x19\x01", domain, typed)), 27,
+            0x91eab39afaafa2c37bfd18b4b64436386a8e2d19bb04e866f5178cc8f1878894,
+            0x4999e9a2c9fabac3cda546d0fd22ad9faa53ca75759637ab6a42975f33278bea);
+        assertEq(recovered, address(0x757De38c2d9880E44AB59827D1622403fBF88Ff5));
+    }
+
     // helpers
 
     bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
-        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)");
+        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
 
     function open() internal returns (bytes32) {
         return openWith(e, z);
@@ -391,7 +475,7 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         uint128 fee
     ) internal view returns (bytes memory) {
         bytes32 note = keccak256(abi.encode(noteNpk, noteCiphertext));
-        return sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, by, fee)));
+        return sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, by, fee, uint64(0), uint64(block.timestamp + 5 minutes))));
     }
 
     function sign(bytes32 structHash) internal view returns (bytes memory) {

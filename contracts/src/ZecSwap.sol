@@ -71,6 +71,7 @@ contract ZecSwap {
     }
 
     mapping(bytes32 id => ReverseFunding) public reverseFunding;
+    mapping(bytes32 id => uint64) public rescueNonces;
     bytes32 private constant OPEN_REVERSE_TYPEHASH = keccak256(
         "OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)"
     );
@@ -84,7 +85,7 @@ contract ZecSwap {
     bytes32 private constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 private constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 private constant RESCUE_TYPEHASH =
-        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee)");
+        keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
     /// secp256k1's n / 2. A signature with a larger `s` is the malleated twin of one without.
     uint256 private constant HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
@@ -409,16 +410,21 @@ contract ZecSwap {
         bytes32 npk,
         IRailgun.ShieldCiphertext calldata ciphertext,
         uint128 fee,
+        uint64 nonce,
+        uint64 deadline,
         bytes calldata signature
     ) external {
+        if (block.timestamp > deadline) revert Expired();
+        if (nonce != rescueNonces[id]) revert BadSignature();
         Swap storage swap = swaps[id];
         if (!swap.paidOut) revert WrongStage();
         bytes32 note = noteCommitment(npk, ciphertext);
         _checkSignature(
             reverseFunding[id].refundNote == 0 ? swap.user : swap.maker,
-            keccak256(abi.encode(RESCUE_TYPEHASH, id, note, msg.sender, fee)),
+            keccak256(abi.encode(RESCUE_TYPEHASH, id, note, msg.sender, fee, nonce, deadline)),
             signature
         );
+        rescueNonces[id] = nonce + 1;
         ShieldVault(vaultOf(id)).shield(RAILGUN, swap.token, npk, ciphertext, fee, msg.sender);
         emit Rescued(id, msg.sender, fee);
     }

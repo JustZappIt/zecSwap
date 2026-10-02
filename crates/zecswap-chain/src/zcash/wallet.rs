@@ -31,7 +31,7 @@ use zcash_primitives::transaction::builder::BundlePadding;
 use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{ShieldedPool, TxId};
-use zecswap_core::{JointAccount, SpendKey, sign_pczt};
+use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
 
 use super::cache::MemoryBlockCache;
 use super::lightwalletd::{self, Lightwalletd};
@@ -298,7 +298,23 @@ impl Wallet {
             None,
         )
         .map_err(Error::wallet)?;
-        let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key))?);
+        if proposal.steps().len() != 1 {
+            return Err(Error::Wallet("a sweep must fit one transaction".into()));
+        }
+        let minimum = proposal
+            .steps()
+            .head
+            .transaction_request()
+            .total()
+            .map_err(Error::wallet)?
+            .ok_or_else(|| Error::Wallet("sweep amount is missing".into()))?;
+        let intent = SweepIntent::from_address(
+            &to.to_string(),
+            self.network.network_type(),
+            minimum.into(),
+            320_000,
+        )?;
+        let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key), &intent)?);
         self.store_proposal(prover, account, &proposal, sign)
     }
 

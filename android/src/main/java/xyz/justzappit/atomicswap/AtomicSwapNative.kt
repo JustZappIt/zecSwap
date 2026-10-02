@@ -66,6 +66,9 @@ internal object AtomicSwapNative {
         makerShare: ByteArray,
         makerSecret: ByteArray,
         pczt: ByteArray,
+        recipient: String,
+        minimumReceivedZat: Long,
+        maximumFeeZat: Long,
     ): ByteArray
 
     @JvmStatic external fun railgunAddress(railgunSeed: ByteArray): String
@@ -107,6 +110,8 @@ internal object AtomicSwapNative {
         swapId: ByteArray,
         relayer: ByteArray,
         fee: String,
+        nonce: Long,
+        deadline: Long,
     ): ByteArray
 
     @JvmStatic external fun signRefundPayout(

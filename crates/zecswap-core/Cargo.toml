@@ -17,6 +17,7 @@ pczt.workspace = true
 rand_core.workspace = true
 sha3 = "0.10"
 zcash_address.workspace = true
+zcash_note_encryption = "0.4"
 zcash_protocol.workspace = true
 zeroize.workspace = true
 
@@ -26,6 +27,5 @@ orchard = { workspace = true, features = ["circuit"] }
 pczt = { workspace = true, features = ["io-finalizer", "prover", "spend-finalizer", "tx-extractor", "zcp-builder"] }
 rand_chacha = "0.3"
 shardtree = "0.7"
-zcash_note_encryption = "0.4"
 zcash_primitives = "0.30"
 zcash_protocol = { workspace = true, features = ["local-consensus"] }
