@@ -284,7 +284,23 @@ struct CmcResponse {
 }
 #[derive(Deserialize)]
 struct CmcStatus {
+    #[serde(deserialize_with = "status_code")]
     error_code: u32,
+}
+
+fn status_code<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Code {
+        Number(u32),
+        Text(String),
+    }
+    match Code::deserialize(deserializer)? {
+        Code::Number(code) => Ok(code),
+        Code::Text(code) => code
+            .parse()
+            .map_err(|_| serde::de::Error::custom("invalid CMC status code")),
+    }
 }
 #[derive(Deserialize)]
 struct CmcAsset {
@@ -379,7 +395,7 @@ mod tests {
         }
     }
     fn sample(zec: &str, usdc: &str, at: &str) -> Vec<u8> {
-        format!(r#"{{"status":{{"error_code":0}},"data":[{{"id":1437,"symbol":"ZEC","quote":[{{"id":2781,"symbol":"USD","price":{zec},"last_updated":"{at}"}}]}},{{"id":3408,"symbol":"USDC","quote":[{{"id":2781,"symbol":"USD","price":{usdc},"last_updated":"{at}"}}]}}]}}"#).into_bytes()
+        format!(r#"{{"status":{{"error_code":"0"}},"data":[{{"id":1437,"symbol":"ZEC","quote":[{{"id":2781,"symbol":"USD","price":{zec},"last_updated":"{at}"}}]}},{{"id":3408,"symbol":"USDC","quote":[{{"id":2781,"symbol":"USD","price":{usdc},"last_updated":"{at}"}}]}}]}}"#).into_bytes()
     }
     const NOW: u64 = 1_767_225_600; // 2026-01-01
     const AT: &str = "2026-01-01T00:00:00.000Z";
@@ -402,6 +418,39 @@ mod tests {
         assert_eq!(forward.deposit_zat, 1_513_499);
         assert_eq!(reverse.deposit_zat, 1_483_379);
         assert!(forward.deposit_zat > reverse.deposit_zat);
+    }
+
+    #[test]
+    fn supports_live_v3_text_status_codes_and_documented_numeric_status_codes() {
+        let mut body: serde_json::Value = serde_json::from_slice(&sample("40", "1", AT)).unwrap();
+        for code in [json!("0"), json!(0)] {
+            body["status"]["error_code"] = code;
+            assert!(
+                parse_price(
+                    &serde_json::to_vec(&body).unwrap(),
+                    NOW,
+                    policy().market.as_ref().unwrap()
+                )
+                .is_ok()
+            );
+        }
+        for code in [
+            json!("1001"),
+            json!(1001),
+            json!("invalid"),
+            json!(-1),
+            json!(null),
+        ] {
+            body["status"]["error_code"] = code;
+            assert!(
+                parse_price(
+                    &serde_json::to_vec(&body).unwrap(),
+                    NOW,
+                    policy().market.as_ref().unwrap()
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

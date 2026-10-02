@@ -65,6 +65,11 @@ files live in `/etc/zecswap-maker` and `/etc/zecswap-relayer`. The tunnel uses a
 credential loaded from `/etc/zecswap-tunnel/token`. API listeners are loopback-only; the
 firewall permits inbound SSH. The host has 1 GB RAM, a 25 GB disk and a 1 GB swap file.
 
+The maker config must be readable by its service account: root ownership, group
+`zecswap-maker`, mode `0640`. Preserve that group and mode when replacing the file
+atomically. Environment files can remain root-owned `0600`, since systemd reads them
+before switching to the service account.
+
 From `deploy/worker/`, run `npm ci`, `npm run types`, `npm run check`, `npm test`, then
 `npx wrangler deploy --dry-run` before `npm run deploy`. The VPC binding is pinned in
 `wrangler.jsonc`. The gateway streams request bodies unchanged, disables caching and does
