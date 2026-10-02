@@ -88,6 +88,7 @@ impl Maker {
         })?)
     }
 
+    #[tracing::instrument(skip_all, fields(operation = "accept_reverse", quote_id = %id, swap_id = tracing::field::Empty), err(level = "warn"))]
     pub async fn accept_reverse(
         &self,
         id: B256,
@@ -116,6 +117,7 @@ impl Maker {
             )
             .map_err(|_| MakerError::Rejected("user share proof does not verify".into()))?;
         let swap_id = swap_id(quote.user, &quote.terms.maker_share);
+        tracing::Span::current().record("swap_id", tracing::field::display(swap_id));
         let mut zcash = self.zcash.lock().await;
         self.check_watchtower()?;
         if let Some(existing) = self.store.reverse_swap(swap_id)? {
@@ -172,6 +174,7 @@ impl Maker {
             wallet.forget(account)?;
             return Err(error.into());
         }
+        tracing::info!(%swap_id, outcome = "accepted", "reverse swap accepted; awaiting escrow funding");
         Ok(Accepted { swap_id })
     }
 
@@ -277,6 +280,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_reverse"), err(level = "warn"))]
     pub(super) async fn advance_reverse(&self, swap: &mut ReverseSwap, synced: bool) -> Result<()> {
         let config = self
             .config
@@ -393,6 +397,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_reverse_claim"), err(level = "warn"))]
     pub(super) async fn advance_reverse_claim(&self, swap: &ReverseSwap) -> Result<()> {
         let Some(snapshot) = self.wallet_snapshot(swap.account) else {
             return Ok(());
@@ -422,6 +427,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "fund_reverse"), err(level = "warn"))]
     async fn fund_reverse(&self, swap: &mut ReverseSwap) -> Result<()> {
         let (inventory, key) = self
             .inventory
@@ -464,6 +470,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "recover_reverse"), err(level = "warn"))]
     async fn recover_reverse(
         &self,
         swap: &mut ReverseSwap,
@@ -525,6 +532,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "finish_reverse"), err(level = "warn"))]
     async fn finish_reverse(&self, swap: &mut ReverseSwap, detail: &str) -> Result<()> {
         let event = self.reverse_alert(swap, "finished", detail);
         swap.settled = true;

@@ -51,6 +51,9 @@ must remain online when the development Mac sleeps or shuts down.
 
 ## Operating the deployment
 
+Grafana Cloud telemetry setup, resource limits, credential handling and rollback
+are documented in [Bridge observability](observability.md).
+
 `scripts/build-server.sh` cross-compiles the Linux release binaries from macOS using the
 pinned Rust toolchain, cargo-zigbuild and Zig. It needs `uv` and `rustup`. Upload the binaries
 from `target/x86_64-unknown-linux-gnu/release/` to a new `/opt/zecswap/releases/<release>/`

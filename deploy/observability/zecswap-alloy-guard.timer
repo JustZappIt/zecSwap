@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Alloy impact on the bridge every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=zecswap-alloy-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -362,6 +362,7 @@ impl Wallet {
     }
 
     /// Sends a stored transaction to the network. Sending one again is harmless.
+    #[tracing::instrument(skip_all, fields(transaction_hash = %txid, chain = "zcash", operation = "broadcast"), err(level = "warn"))]
     pub async fn broadcast(&mut self, client: &mut Lightwalletd, txid: TxId) -> Result<(), Error> {
         let tx = self
             .db
@@ -369,7 +370,16 @@ impl Wallet {
             .ok_or_else(|| Error::Wallet(format!("transaction {txid} is not stored")))?;
         let mut raw = Vec::new();
         tx.write(&mut raw).map_err(Error::wallet)?;
-        lightwalletd::broadcast(client, txid, raw).await
+        tracing::info!(
+            outcome = "submitting",
+            "broadcasting stored Zcash transaction"
+        );
+        lightwalletd::broadcast(client, txid, raw).await?;
+        tracing::info!(
+            outcome = "accepted",
+            "Zcash submission verified; awaiting mining"
+        );
+        Ok(())
     }
 
     pub fn is_mined(&self, txid: TxId) -> Result<bool, Error> {

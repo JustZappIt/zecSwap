@@ -23,6 +23,29 @@ pub(super) fn transaction_links(chain_id: u64, hash: B256, uses_railgun: Option<
 }
 
 impl Maker {
+    fn log_observed_event(&self, scope: &str, event: &SwapEvent) {
+        if self.store.swap(&event.id).ok().flatten().is_none()
+            && self.store.reverse_swap(event.id).ok().flatten().is_none()
+        {
+            return;
+        }
+        // Overlapping index windows are re-read on every pass. Emit once per
+        // observed event/block identity, including a changed identity after a reorg.
+        let known = self
+            .store
+            .evm_transactions(scope, event.id)
+            .unwrap_or_default();
+        if !known.iter().any(|tx| {
+            tx.transaction_hash == event.transaction_hash
+                && tx.block_hash == event.block_hash
+                && tx.log_index == event.log_index
+        }) {
+            tracing::info!(swap_id = %event.id, transaction_hash = %event.transaction_hash,
+                operation = event.kind.as_str(), chain = "evm", outcome = "observed",
+                block_number = event.block_number, "settlement event observed at configured confirmation depth");
+        }
+    }
+
     pub(super) fn transaction_scope(&self) -> String {
         format!(
             "{}:{}:{}:{}",
@@ -106,6 +129,7 @@ impl Maker {
         let mut events = Vec::new();
         for event in self.settlement.swap_events(from, to).await? {
             let alert = if event.block_number >= cursor.notify_from_block {
+                self.log_observed_event(scope, &event);
                 self.classify_transaction(scope, &event).await;
                 self.transaction_alert(&event)?
             } else {
@@ -169,6 +193,7 @@ impl Maker {
             let mut events = Vec::new();
             for event in result? {
                 let alert = if event.block_number >= cursor.notify_from_block {
+                    self.log_observed_event(&scope, &event);
                     self.classify_transaction(&scope, &event).await;
                     self.transaction_alert(&event)?
                 } else {
@@ -186,12 +211,23 @@ impl Maker {
 
     pub(super) async fn run_transaction_observer(&self) {
         loop {
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(45), self.transaction_pass()).await,
-                Ok(Ok(_))
-            ) {
+            let failure = match tokio::time::timeout(
+                Duration::from_secs(45),
+                self.transaction_pass(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => Some(super::observer_failure(&error)),
+                Err(_) => Some("timeout"),
+            };
+            if let Some(failure_kind) = failure {
                 // RPC errors can contain authenticated URLs; export and log a fixed message.
-                tracing::warn!("Ethereum transaction indexing failed; retrying");
+                tracing::warn!(
+                    operation = "evm_transaction_observer",
+                    failure_kind,
+                    "Ethereum transaction indexing failed; retrying"
+                );
                 let _ = self.store.record_transaction_pass(
                     &self.transaction_scope(),
                     0,
@@ -199,11 +235,22 @@ impl Maker {
                     true,
                 );
             }
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(20), self.enrich_evm_history()).await,
-                Ok(Ok(()))
-            ) {
-                tracing::warn!("Ethereum explorer metadata lookup delayed; retrying");
+            let failure = match tokio::time::timeout(
+                Duration::from_secs(20),
+                self.enrich_evm_history(),
+            )
+            .await
+            {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(super::observer_failure(&error)),
+                Err(_) => Some("timeout"),
+            };
+            if let Some(failure_kind) = failure {
+                tracing::warn!(
+                    operation = "evm_metadata_observer",
+                    failure_kind,
+                    "Ethereum explorer metadata lookup delayed; retrying"
+                );
             }
             tokio::time::sleep(Duration::from_secs(15)).await;
         }

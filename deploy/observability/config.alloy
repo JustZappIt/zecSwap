@@ -1,0 +1,141 @@
+// Service logs to Grafana Cloud. No local telemetry database.
+logging {
+  level = "warn"
+}
+
+local.file "known_secrets" {
+  filename  = sys.env("CREDENTIALS_DIRECTORY") + "/redact.regex"
+  is_secret = true
+}
+
+loki.source.journal "maker" {
+  matches    = "_SYSTEMD_UNIT=zecswap-maker.service"
+  max_age    = "5m"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+loki.source.journal "relayer" {
+  matches    = "_SYSTEMD_UNIT=zecswap-relayer.service"
+  // The relayer is usually silent; include its recent startup on initial setup.
+  max_age    = "3h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+// PID 1 lifecycle/failure messages use UNIT, rather than _SYSTEMD_UNIT.
+// Include them so exits/OOM/restarts remain visible even when the app cannot log.
+loki.source.journal "maker_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-maker.service"
+  max_age    = "5m"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+loki.source.journal "relayer_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-relayer.service"
+  max_age    = "3h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+// BEGIN REDACTION PIPELINE (the integration test runs this exact block).
+loki.process "bridge" {
+  forward_to = [loki.write.cloud.receiver]
+  stage.decolorize {}
+  // Wallet open checks run every flow-observer pass. Keep actual migrations/errors.
+  stage.drop {
+    expression          = `\bINFO\s+schemerz:\s+Migrating everything\s*$`
+    drop_counter_reason = "wallet_migration_check"
+  }
+  stage.drop {
+    longer_than         = "8KB"
+    drop_counter_reason = "oversize"
+  }
+  // Combined worst case: 2 lines/s * 8 KiB, under 44 GB/month.
+  stage.limit {
+    rate  = 2
+    burst = 100
+    drop  = true
+  }
+  // Exact configured secrets also catch otherwise unrecognizable bare values.
+  stage.replace {
+    // RE2 requires a string. Admin access is restricted to root and Alloy;
+    // never expose its evaluated component configuration to other users.
+    expression = convert.nonsensitive(local.file.known_secrets.content)
+    replace    = "[REDACTED]"
+  }
+  // Redact entire authenticated provider URLs, including JSON-escaped URLs.
+  stage.replace {
+    expression = `(?i)(https?:[\\/]+[^\s"'<>]*alchemy(?:api)?\.(?:com|io)[^\s"'<>]*)`
+    replace    = "[REDACTED_ALCHEMY_URL]"
+  }
+  stage.replace {
+    expression = `(?i)(https?:[\\/]+[^\s"'<>/]+:[^\s"'<>@]+@[^\s"'<>]+)`
+    replace    = "[REDACTED_AUTH_URL]"
+  }
+  stage.replace {
+    expression = `(?i)(?:authorization|proxy-authorization)["']?\s*[:=]\s*["']?((?:bearer|basic)\s+[^\s"',;}]+|[^\s"',;}]+)`
+    replace    = "[REDACTED]"
+  }
+  stage.replace {
+    expression = `(?i)(?:bearer|basic)\s+([A-Za-z0-9._~+/=-]{8,})`
+    replace    = "[REDACTED]"
+  }
+  // Mnemonics with an unquoted value, before generic single-value matching.
+  stage.replace {
+    expression = `(?i)(?:seed|mnemonic|seed_phrase|recovery_phrase)["']?\s*[:=]\s*((?:[a-z]{2,16}\s+){23}[a-z]{2,16}|(?:[a-z]{2,16}\s+){20}[a-z]{2,16}|(?:[a-z]{2,16}\s+){17}[a-z]{2,16}|(?:[a-z]{2,16}\s+){14}[a-z]{2,16}|(?:[a-z]{2,16}\s+){11}[a-z]{2,16})`
+    replace    = "[REDACTED]"
+  }
+  stage.replace {
+    expression = `(?i)(?:[a-z0-9_-]*(?:private[_-]?key|viewing[_-]?key|spending[_-]?key|root[_-]?secret|seed|mnemonic|api[_-]?key|cmc[_-]?key|bot[_-]?token|monitor[_-]?token|access[_-]?token|ingestion[_-]?token|secret|password|ufvk|uivk|xprv|nsk|ask|osk)[a-z0-9_-]*|telegram[_-]?(?:key|token|chat[_-]?id)|X-CMC_PRO_API_KEY)["']?\s*[:=]\s*("(?:\\.|[^"\\])*"|'[^']*'|\[[^\]]*\]|[^\s,;}]+)`
+    replace    = "[REDACTED]"
+  }
+  stage.replace {
+    expression = `(?i)(?:private\s+key|viewing\s+key|recovery\s+phrase|seed\s+phrase)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;}]+)`
+    replace    = "[REDACTED]"
+  }
+  stage.replace {
+    expression = `([0-9]{6,12}:[A-Za-z0-9_-]{30,})`
+    replace    = "[REDACTED_TELEGRAM_TOKEN]"
+  }
+  stage.replace {
+    expression = `(?i)(\b(?:uviewtest1|uview1|uivktest1|uivk1|zxviews|zxviewtestsapling|secret-extended-key-test|secret-extended-key-main|xprv)[a-z0-9]+)`
+    replace    = "[REDACTED_KEY]"
+  }
+  // Extract public identifiers ONLY after all redaction has completed.
+  stage.regex {
+    expression = `(?:\b)(?:swap_id|swapId|id)["']?\s*[:=]\s*["']?(?P<swap_id>(?:0x)?[a-fA-F0-9]{64})\b`
+  }
+  stage.regex {
+    expression = `(?:\b)(?:tx|txid|tx_hash|txHash|transaction_hash|transactionHash|hash)["']?\s*[:=]\s*["']?(?P<transaction_hash>(?:0x)?[a-fA-F0-9]{64})\b`
+  }
+  stage.structured_metadata {
+    values = {swap_id = "", transaction_hash = ""}
+  }
+  stage.label_keep {
+    values = ["app", "environment", "network", "evm_chain", "instance", "service"]
+  }
+}
+// END REDACTION PIPELINE
+
+loki.write "cloud" {
+  endpoint {
+    url                 = sys.env("GRAFANA_LOGS_URL")
+    batch_size          = "64KiB"
+    batch_wait          = "5s"
+    remote_timeout      = "10s"
+    min_backoff_period  = "1s"
+    max_backoff_period  = "30s"
+    max_backoff_retries = 3
+    follow_redirects    = false
+    basic_auth {
+      username      = sys.env("GRAFANA_LOGS_USERNAME")
+      password_file = sys.env("CREDENTIALS_DIRECTORY") + "/ingestion.token"
+    }
+    tls_config {
+      min_version = "TLS12"
+    }
+  }
+  // No log WAL: logs are held in a small batch in memory.
+}

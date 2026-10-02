@@ -1,0 +1,10 @@
+[Unit]
+Description=Stop Alloy if host resource pressure threatens the bridge
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/zecswap-observability/guard.py
+Nice=10
+MemoryMax=32M
+TimeoutStartSec=20s
+UMask=0077

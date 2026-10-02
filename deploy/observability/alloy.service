@@ -1,0 +1,55 @@
+[Unit]
+Description=ZecSwap telemetry to Grafana Cloud (bridge has priority)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/alloy/cloud.env
+ConditionPathExists=/etc/alloy/ENABLED
+StartLimitIntervalSec=600
+StartLimitBurst=2
+
+[Service]
+User=alloy
+Group=alloy
+SupplementaryGroups=systemd-journal
+EnvironmentFile=/etc/alloy/cloud.env
+Environment=GOMAXPROCS=1
+Environment=GOMEMLIMIT=64MiB
+LoadCredential=ingestion.token:/etc/alloy/ingestion.token
+LoadCredential=redact.regex:/etc/alloy/redact.regex
+ExecStartPre=+/usr/bin/python3 /opt/zecswap-observability/admin_access.py
+ExecStart=/usr/local/bin/alloy run --disable-reporting --server.http.enable-pprof=false --server.http.disable-support-bundle --server.http.listen-addr=127.0.0.1:12345 --storage.path=/run/alloy /etc/alloy/config.alloy
+Restart=no
+TimeoutStopSec=15
+RuntimeDirectory=alloy
+RuntimeDirectoryMode=0700
+# RAM-only, cannot swap into the bridge's disk. Lost on stop/reboot.
+TemporaryFileSystem=/run/alloy:rw,nosuid,nodev,noexec,noswap,size=8M,mode=0700,uid=@ALLOY_UID@,gid=@ALLOY_GID@
+MemoryAccounting=yes
+MemoryHigh=96M
+MemoryMax=128M
+MemorySwapMax=0
+CPUAccounting=yes
+CPUQuota=5%
+CPUWeight=10
+IOWeight=10
+Nice=19
+OOMScoreAdjust=900
+TasksMax=64
+LimitNOFILE=4096
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20
+
+[Install]
+WantedBy=multi-user.target

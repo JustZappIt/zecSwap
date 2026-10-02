@@ -1,0 +1,7 @@
+{
+  "plan": "free",
+  "stack_url": "https://zealousglider2700.grafana.net",
+  "logs_url": "https://COPY-LOGS-HOST.grafana.net/loki/api/v1/push",
+  "logs_username": "COPY_LOGS_USER_ID",
+  "ingestion_token": "COPY_STACK_SCOPED_LOGS_WRITE_TOKEN"
+}

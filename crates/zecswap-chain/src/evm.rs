@@ -14,7 +14,7 @@ use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
@@ -470,6 +470,7 @@ impl Settlement {
         Ok(self.submit(call).await?.transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(operation = "open", chain = "evm"))]
     pub async fn open(&self, request: &OpenRequest<'_>) -> Result<B256, Error> {
         let call = self.contract.open(
             request.token,
@@ -527,6 +528,7 @@ impl Settlement {
         }))
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "ready_with_sig", chain = "evm"))]
     pub async fn ready_with_sig(
         &self,
         id: B256,
@@ -542,6 +544,7 @@ impl Settlement {
             .transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund_with_sig", chain = "evm"))]
     pub async fn lock_refund_with_sig(
         &self,
         id: B256,
@@ -557,6 +560,7 @@ impl Settlement {
             .transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund_payout", chain = "evm"))]
     pub async fn refund_payout(
         &self,
         id: B256,
@@ -576,10 +580,12 @@ impl Settlement {
             .transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "ready", chain = "evm"))]
     pub async fn ready(&self, id: B256) -> Result<B256, Error> {
         Ok(self.submit(self.contract.ready(id)).await?.transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_claim", chain = "evm"))]
     pub async fn lock_claim(&self, id: B256) -> Result<B256, Error> {
         Ok(self
             .submit(self.contract.lockClaim(id))
@@ -588,6 +594,7 @@ impl Settlement {
     }
 
     /// Takes the claim lock for the swap's `user`, which signed for it.
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_claim_with_sig", chain = "evm"))]
     pub async fn lock_claim_with_sig(
         &self,
         id: B256,
@@ -602,6 +609,7 @@ impl Settlement {
 
     /// Shields a claimed swap's amount to its committed `note`, keeping the `fee` its user
     /// signed for this account.
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "payout", chain = "evm"))]
     pub async fn payout(
         &self,
         id: B256,
@@ -620,6 +628,7 @@ impl Settlement {
     }
 
     /// Shields what came back to a swap's vault to a `note` its user signed for.
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "rescue", chain = "evm"))]
     pub async fn rescue(
         &self,
         id: B256,
@@ -648,6 +657,7 @@ impl Settlement {
             .map_err(Error::contract)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "claim", chain = "evm"))]
     pub async fn claim(&self, id: B256, user_secret: &SecretShare) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(user_secret.to_be_bytes());
         Ok(self
@@ -656,6 +666,7 @@ impl Settlement {
             .transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund", chain = "evm"))]
     pub async fn lock_refund(&self, id: B256) -> Result<B256, Error> {
         Ok(self
             .submit(self.contract.lockRefund(id))
@@ -663,6 +674,7 @@ impl Settlement {
             .transaction_hash)
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund", chain = "evm"))]
     pub async fn refund(&self, id: B256, maker_secret: &SecretShare) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(maker_secret.to_be_bytes());
         Ok(self
@@ -748,11 +760,14 @@ impl Settlement {
                 // depends on. If an earlier attempt did reach the network, the repeat is
                 // harmless: swap moves revert, and token moves stay within this account's own.
                 Err(e) if attempts < SEND_ATTEMPTS => {
-                    warn!("retrying a transaction the RPC rejected: {e}");
+                    warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %e, "RPC rejected transaction submission");
                     attempts += 1;
                     tokio::time::sleep(SEND_RETRY_DELAY).await;
                 }
-                Err(e) => return Err(Error::contract(e)),
+                Err(e) => {
+                    warn!(attempt = attempts, outcome = "send_failed", error = %e, "transaction submission failed");
+                    return Err(Error::contract(e));
+                }
             }
         }
     }
@@ -805,14 +820,21 @@ fn signing_provider(rpc_url: &str, signer: Option<PrivateKeySigner>) -> Result<D
 async fn confirmed(
     pending: PendingTransactionBuilder<Ethereum>,
 ) -> Result<TransactionReceipt, Error> {
+    let transaction_hash = *pending.tx_hash();
+    info!(%transaction_hash, outcome = "submitted", "transaction submitted; awaiting receipt");
     let receipt = pending
         .with_timeout(Some(RECEIPT_TIMEOUT))
         .get_receipt()
         .await
-        .map_err(Error::contract)?;
+        .map_err(|error| {
+            warn!(%transaction_hash, outcome = "unknown", error = %error, "receipt unavailable; submission may still mine");
+            Error::contract(error)
+        })?;
     if receipt.status() {
+        info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
         Ok(receipt)
     } else {
+        warn!(%transaction_hash, block_number = receipt.block_number, outcome = "reverted", "transaction reverted on chain");
         Err(Error::Contract(format!(
             "transaction {} reverted",
             receipt.transaction_hash
