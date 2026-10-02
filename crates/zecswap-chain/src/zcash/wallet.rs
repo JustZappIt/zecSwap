@@ -134,6 +134,39 @@ impl Wallet {
         Ok(account.id())
     }
 
+    /// A separate operations wallet can retain history without owning either spend share.
+    pub async fn import_joint_view(
+        &mut self,
+        client: &mut Lightwalletd,
+        joint: &JointAccount,
+        name: &str,
+        from_height: Option<u32>,
+    ) -> Result<AccountUuid, Error> {
+        for account in self.db.get_account_ids()? {
+            if self.tracks_joint(account, joint)? {
+                return Ok(account);
+            }
+        }
+        let encoded = joint.ufvk(self.network.network_type());
+        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
+        let birthday = if let Some(height) = from_height {
+            let state = lightwalletd::tree_state(client, BlockHeight::from(height)).await?;
+            AccountBirthday::from_treestate(state, None).map_err(Error::wallet)?
+        } else {
+            Self::birthday_at_tip(client).await?
+        };
+        Ok(self
+            .db
+            .import_account_ufvk(
+                name,
+                &ufvk,
+                &birthday,
+                AccountPurpose::ViewOnly,
+                Some(JOINT_KEY_SOURCE),
+            )?
+            .id())
+    }
+
     /// Adds a seed-derived spending account born at the chain tip.
     pub async fn create_account(
         &mut self,

@@ -1,4 +1,6 @@
+mod flow;
 mod monitoring;
+pub(crate) use flow::{FlowObservation, FlowStatus, ZecTransaction};
 mod notifications;
 mod reverse;
 mod transactions;
@@ -97,6 +99,7 @@ impl Store {
         conn.execute_batch(reverse::SCHEMA)?;
         conn.execute_batch(notifications::SCHEMA)?;
         conn.execute_batch(transactions::SCHEMA)?;
+        conn.execute_batch(flow::SCHEMA)?;
         Ok(Self(Mutex::new(conn)))
     }
 

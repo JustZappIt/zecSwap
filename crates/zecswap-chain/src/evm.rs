@@ -396,6 +396,23 @@ impl Settlement {
         }
     }
 
+    /// Whether the receipt includes activity emitted by the configured Railgun proxy.
+    pub async fn uses_railgun(&self, tx: B256) -> Result<bool, Error> {
+        let railgun = self.railgun().await?;
+        let receipt = self
+            .provider
+            .get_transaction_receipt(tx)
+            .await
+            .map_err(Error::contract)?
+            .ok_or_else(|| Error::Contract("transaction receipt unavailable".into()))?;
+        Ok(!railgun.is_zero()
+            && receipt
+                .inner
+                .logs()
+                .iter()
+                .any(|log| log.address() == railgun))
+    }
+
     /// The notes a transaction shielded into Railgun.
     pub async fn shielded(&self, tx: B256) -> Result<Vec<Shielded>, Error> {
         let railgun = self.railgun().await?;

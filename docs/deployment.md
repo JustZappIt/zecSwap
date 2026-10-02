@@ -266,3 +266,27 @@ Set `REVERSE_TEST_DESTINATION` to a shielded Zcash testnet address, then run the
 ZEC. Resume with the same directory after interruption. Use `refund` instead of `receive`
 on a separate funded test to exercise cancellation and the committed private refund payout.
 Preserve the test seed and wallet: they control the ZEC and Railgun refund note.
+
+### Full bridge flow observation
+
+The monitor exports the complete Ethereum event history and `zcashFlow` deposit/spend
+observations for each visible swap. A separate `flow-wallet.sqlite` under the maker data
+directory imports only joint-account full viewing keys, including completed swaps, and
+scans their history. It owns no spending keys and cannot sign or broadcast transactions.
+It runs on a blocking worker separate from settlement, uses the configured lightwalletd,
+and never refreshes market prices. Back up this private database alongside `maker.sqlite`;
+its public export contains only transaction hashes, heights, confirmations and swap amounts.
+
+The observer refreshes up to 500 swaps per pass, prioritizing active swaps. Confirmation
+counts use fully scanned wallet height, exclude change from deposits, and require the
+configured deposit confirmation policy. The UI rejects stale observations. Claims/refunds
+and final ZEC escrow spends are separate steps; an Ethereum claim alone does not establish
+that the user's recovery completed. Shielded recipient and amount checks come from the
+viewing wallet, while ZecBlock links show public transaction inclusion.
+
+Zcash links use `https://testnet.zecblock.com/tx/` on testnet and
+`https://zecblock.com/tx/` on mainnet. Receipt logs determine Railgun participation: those
+transactions link to Railscan and Etherscan; public-only transactions link to Etherscan.
+Old history is backfilled without Telegram replay. Newly confirmed deposits and escrow
+spends enter the existing durable Telegram queue with explorer links. No additional
+credentials or price cron are needed.
