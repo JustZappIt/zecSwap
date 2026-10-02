@@ -112,7 +112,8 @@ that no transaction was submitted.
 Enable the example relayer configuration with a verified adapter and fund its existing
 `RELAYER_PRIVATE_KEY` account with Sepolia ETH. Startup rejects other chains, the maker's
 own gas account, and adapters whose `railgun()` differs from settlement's `RAILGUN()`.
-This code does not enable sponsorship on the hosted service automatically. Mainnet
+Operators opt in through configuration; the hosted Sepolia service is enabled as recorded
+in [deployment.md](deployment.md#october-2-initial-funding-sponsorship). Mainnet
 Railgun broadcaster submission and private fee-token reimbursement remain separate work,
 including verification of escrow failure recovery on that submission path.
 
