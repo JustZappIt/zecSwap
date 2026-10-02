@@ -29,6 +29,21 @@ use crate::policy::{self, Action, Observation};
 use crate::store::{Store, Swap};
 use crate::watchtower::{self, Health};
 
+// Background observer diagnostics must not expose authenticated URLs or RPC payloads.
+fn observer_failure(error: &anyhow::Error) -> &'static str {
+    use zecswap_chain::Error;
+    match error.downcast_ref::<Error>() {
+        Some(Error::Config(_)) => "configuration",
+        Some(Error::Lightwalletd(_) | Error::Connection(_)) => "lightwalletd",
+        Some(Error::Rejected { .. }) => "transaction_rejected",
+        Some(Error::Database(_) | Error::Wallet(_)) => "zcash_wallet",
+        Some(Error::Contract(_)) => "evm_rpc_or_contract",
+        Some(Error::Swap(_)) => "swap_validation",
+        None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
+        None => "operation_failed",
+    }
+}
+
 pub struct Maker {
     config: Config,
     account: Address,
@@ -301,6 +316,7 @@ impl Maker {
         })
     }
 
+    #[tracing::instrument(skip_all, fields(operation = "accept", %quote_id, swap_id = tracing::field::Empty), err(level = "warn"))]
     pub async fn accept(
         &self,
         quote_id: B256,
@@ -333,6 +349,7 @@ impl Maker {
         let joint = JointAccount::derive(&maker_share, &user_share, &viewing_keys)
             .map_err(|e| MakerError::Rejected(e.to_string()))?;
         let id = swap_id(self.account, &user_share);
+        tracing::Span::current().record("swap_id", tracing::field::display(id));
 
         // Watch the deposit address before the user can learn it from the chain.
         let zcash_account = wallet
@@ -368,7 +385,8 @@ impl Maker {
             self.forget(zcash_account).await;
             return Err(e.into());
         }
-        self.settlement
+        let transaction_hash = self
+            .settlement
             .open(&OpenRequest {
                 token: self.config.token,
                 amount: swap.quote.amount,
@@ -384,7 +402,7 @@ impl Maker {
         // after `now` when opens queue behind each other; `cancel_after` counts from here.
         self.store
             .set_opened_at(&id, self.settlement.now().await?)?;
-        info!(%id, amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
+        info!(swap_id = %id, %transaction_hash, outcome = "mined", amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
         Ok(Accepted { swap_id: id })
     }
 
@@ -434,7 +452,7 @@ impl Maker {
         for swap in self.store.watched_swaps()? {
             if let Err(e) = self.advance(&swap, now).await {
                 failed.push(swap.id);
-                warn!(id = %swap.id, "{e:#}");
+                warn!(swap_id = %swap.id, operation = "forward_watchtower", "{e:#}");
                 self.record_alert_failure("forward", swap.id, self.forward_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
             } else {
                 self.record_alert_failure("forward", swap.id, None);
@@ -443,7 +461,7 @@ impl Maker {
         for swap in self.store.pending_reverse_swaps()? {
             if let Err(e) = self.advance_reverse_claim(&swap).await {
                 failed.push(swap.id);
-                warn!(id = %swap.id, "reverse claim: {e:#}");
+                warn!(swap_id = %swap.id, operation = "reverse_claim", "{e:#}");
             }
         }
         self.record_monitor_errors(failed);
@@ -559,6 +577,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance"), err(level = "warn"))]
     async fn advance(&self, swap: &Swap, now: u64) -> Result<()> {
         let confirmations = u64::from(self.config.evm_confirmations.get());
         let Some(chain) = self.settlement.swap(swap.id).await? else {
@@ -661,6 +680,7 @@ impl Maker {
         self.wallet_snapshots.lock().unwrap().get(&account).copied()
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_sweep"), err(level = "warn"))]
     async fn advance_sweep(&self, swap: &Swap) -> Result<()> {
         if let Some(chain) = self.settlement.swap(swap.id).await?
             && chain.stage == Stage::Claimed
@@ -670,6 +690,7 @@ impl Maker {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "sweep"), err(level = "warn"))]
     async fn sweep(&self, swap: &Swap, chain: &OnChainSwap) -> Result<()> {
         let z = chain
             .revealed()?

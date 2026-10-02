@@ -4,6 +4,8 @@
 //! claim back until the lock lapses, then refund and race the user for the ZEC.
 
 pub mod api;
+#[cfg(test)]
+mod logging_tests;
 mod reverse;
 
 use std::net::SocketAddr;
@@ -94,6 +96,7 @@ impl Relayer {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_claim"), err(level = "warn"))]
     pub async fn lock_claim(&self, request: LockClaim) -> Result<Sent> {
         let swap = self.railgun_swap(request.swap_id).await?;
         let digest = self.domain.lock_claim(&request.swap_id, request.deadline);
@@ -110,6 +113,7 @@ impl Relayer {
 
     /// Reveals the user share, then pays out. Everything the payout needs is checked before the
     /// reveal; if the payout still fails, the swap stays claimed and `payout` can be retried.
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "claim"), err(level = "warn"))]
     pub async fn claim(&self, request: Claim) -> Result<Sent> {
         let swap = self.railgun_swap(request.swap_id).await?;
         if !matches!(swap.stage, Stage::Open | Stage::Ready) {
@@ -137,6 +141,7 @@ impl Relayer {
         Ok(Sent { transactions })
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "payout"), err(level = "warn"))]
     pub async fn payout(&self, request: Payout) -> Result<Sent> {
         let swap = self.railgun_swap(request.swap_id).await?;
         if swap.stage != Stage::Claimed || swap.paid_out {
@@ -151,6 +156,7 @@ impl Relayer {
     }
 
     /// Shields what Railgun sent back to a swap's vault to the note the user signed for.
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue"), err(level = "warn"))]
     pub async fn rescue(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
         let swap = self.railgun_swap(request.swap_id).await?;
         if !swap.paid_out {

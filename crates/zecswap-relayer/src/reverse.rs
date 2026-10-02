@@ -7,6 +7,7 @@ use zecswap_railgun::ShieldNote;
 use crate::{Relayer, RelayerError, Result};
 
 impl Relayer {
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "ready_reverse"), err(level = "warn"))]
     pub async fn ready_reverse(&self, request: Authorization) -> Result<Sent> {
         let (swap, _) = self.reverse_swap(request.swap_id).await?;
         self.check_reverse_signature(
@@ -28,6 +29,7 @@ impl Relayer {
         })
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_reverse_refund"), err(level = "warn"))]
     pub async fn lock_reverse_refund(&self, request: Authorization) -> Result<Sent> {
         let (swap, _) = self.reverse_swap(request.swap_id).await?;
         self.check_reverse_signature(
@@ -52,6 +54,7 @@ impl Relayer {
         })
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "refund_reverse"), err(level = "warn"))]
     pub async fn refund_reverse(&self, request: Refund) -> Result<Sent> {
         if request.swap_id != request.payout.swap_id {
             return Err(RelayerError::Rejected(
@@ -101,6 +104,7 @@ impl Relayer {
         Ok(Sent { transactions })
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "reverse_refund_payout"), err(level = "warn"))]
     pub async fn reverse_refund_payout(&self, request: Payout) -> Result<Sent> {
         let (swap, commitment) = self.reverse_swap(request.swap_id).await?;
         let note = self.check_reverse_payout(&swap, commitment, &request)?;
@@ -121,6 +125,7 @@ impl Relayer {
         })
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue_reverse"), err(level = "warn"))]
     pub async fn rescue_reverse(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
         let (swap, _) = self.reverse_swap(request.swap_id).await?;
         if !swap.paid_out {

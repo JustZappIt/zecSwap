@@ -60,6 +60,7 @@ async fn monitor(State(maker): State<Arc<Maker>>, headers: HeaderMap) -> Respons
     }
 }
 
+#[tracing::instrument(skip_all, fields(operation = "reverse_quote"), err(level = "warn"))]
 async fn reverse_quote(
     State(maker): State<Arc<Maker>>,
     Json(request): Json<zecswap_api::reverse::QuoteRequest>,
@@ -75,6 +76,7 @@ async fn accept_reverse(
     Ok(Json(maker.accept_reverse(quote_id, acceptance).await?))
 }
 
+#[tracing::instrument(skip_all, fields(operation = "reverse_status", %swap_id), err(level = "warn"))]
 async fn reverse_status(
     State(maker): State<Arc<Maker>>,
     Path(swap_id): Path<B256>,
@@ -86,6 +88,7 @@ async fn reverse_status(
         .ok_or(MakerError::UnknownSwap)
 }
 
+#[tracing::instrument(skip_all, fields(operation = "quote"), err(level = "warn"))]
 async fn quote(
     State(maker): State<Arc<Maker>>,
     Json(request): Json<QuoteRequest>,

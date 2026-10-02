@@ -194,7 +194,20 @@ impl Maker {
         tx.commit()?;
         let mut alerts = Vec::new();
         for (id, observation) in &observations {
+            let previous = self.store.flow_observation(&scope, *id).ok().flatten();
             for transaction in &observation.transactions {
+                if !previous.as_ref().is_some_and(|previous| {
+                    previous.transactions.iter().any(|old| {
+                        old.txid == transaction.txid
+                            && old.kind == transaction.kind
+                            && old.state == transaction.state
+                            && old.mined_height == transaction.mined_height
+                    })
+                }) {
+                    tracing::info!(swap_id = %id, transaction_hash = %transaction.txid,
+                        operation = %transaction.kind, chain = "zcash", outcome = %transaction.state,
+                        confirmations = transaction.confirmations, "Zcash flow observation changed");
+                }
                 if transaction.state != "confirmed"
                     || transaction
                         .block_time
@@ -242,16 +255,22 @@ impl Maker {
             let result = tokio::task::spawn_blocking(move || {
                 tokio::runtime::Handle::current().block_on(async {
                     let pass = AssertUnwindSafe(maker.flow_pass()).catch_unwind();
-                    matches!(
-                        tokio::time::timeout(Duration::from_secs(90), pass).await,
-                        Ok(Ok(Ok(())))
-                    )
+                    match tokio::time::timeout(Duration::from_secs(90), pass).await {
+                        Ok(Ok(Ok(()))) => None,
+                        Ok(Ok(Err(error))) => Some(super::observer_failure(&error)),
+                        Ok(Err(_)) => Some("panic"),
+                        Err(_) => Some("timeout"),
+                    }
                 })
             })
             .await;
-            if !matches!(result, Ok(true)) {
+            if let Some(failure_kind) = result.unwrap_or(Some("worker_failed")) {
                 let _ = self.store.flow_error(&self.transaction_scope());
-                tracing::warn!("Zcash flow observation unavailable; retrying");
+                tracing::warn!(
+                    operation = "zcash_flow_observer",
+                    failure_kind,
+                    "Zcash flow observation unavailable; retrying"
+                );
             }
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
