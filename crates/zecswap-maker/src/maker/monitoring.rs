@@ -79,6 +79,7 @@ pub(crate) struct MonitorSnapshot {
     inventory: Inventory,
     pricing: crate::market::PriceSnapshot,
     notifications: crate::store::NotificationStatus,
+    transactions: crate::store::TransactionStatus,
     policy: Policy,
     swaps: Vec<MonitorSwap>,
     swap_limit: usize,
@@ -247,7 +248,13 @@ impl Maker {
             }
         }
         let pricing = self.prices.snapshot(unix_now());
+        for swap in &mut swaps {
+            swap.evm_transactions = self
+                .store
+                .evm_transactions(&self.transaction_scope(), swap.id)?;
+        }
         Ok(MonitorSnapshot {
+            transactions: self.store.transaction_status(&self.transaction_scope())?,
             notifications: self.store.notification_status(self.telegram.enabled())?,
             schema_version: 1,
             generated_at: unix_now(),

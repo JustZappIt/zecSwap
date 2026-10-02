@@ -87,7 +87,7 @@ impl Maker {
             tracing::warn!("could not queue bridge notification");
         }
     }
-    fn alert_network(&self) -> &'static str {
+    pub(super) fn alert_network(&self) -> &'static str {
         match self.config.network {
             crate::Chain::Mainnet => "mainnet",
             crate::Chain::Testnet => "testnet",
@@ -108,12 +108,12 @@ impl Maker {
         let reference = if id.is_zero() {
             "Service notification".into()
         } else {
-            format!("Swap: {id}")
+            format!("Swap ID (bridge reference): {id}")
         };
         self.telegram.enabled().then(|| Notification {
             key: format!("{}:{phase}", self.alert_scope(direction, id)),
-            text: format!("Zapp bridge · {}\n{details}\n\n{reference}\nEVM chain: {}\nContract: {}\nMaker: {}\nEvent: {}\n{DASHBOARD}?network={}",
-                self.alert_network().to_uppercase(), self.chain_id, self.config.contract, self.account, timestamp(unix_now()), self.alert_network()),
+            text: format!("Zapp bridge · {}\n{details}\n\n{reference}{}\nEVM chain: {}\nContract: {}\nMaker: {}\nEvent: {}\n{DASHBOARD}?network={}",
+                self.alert_network().to_uppercase(), self.cached_transaction_links(id), self.chain_id, self.config.contract, self.account, timestamp(unix_now()), self.alert_network()),
             created_at: unix_now(),
         })
     }
