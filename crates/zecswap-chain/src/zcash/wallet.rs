@@ -327,6 +327,19 @@ impl Wallet {
         Ok(self.db.get_tx_height(txid)?.is_some())
     }
 
+    /// Settlement uses the fully scanned height, never an unscanned advertised tip.
+    /// Use the external-deposit depth even for our own sweeps: a reorg can undo them.
+    pub fn is_confirmed(&self, txid: TxId) -> Result<bool, Error> {
+        let Some(mined) = self.db.get_tx_height(txid)? else {
+            return Ok(false);
+        };
+        Ok(self.db.block_fully_scanned()?.is_some_and(|block| {
+            u32::from(block.block_height())
+                .checked_sub(u32::from(mined))
+                .is_some_and(|depth| depth >= self.confirmations.untrusted().get() - 1)
+        }))
+    }
+
     pub fn is_expired(&self, txid: TxId) -> Result<bool, Error> {
         if self.is_mined(txid)? {
             return Ok(false);

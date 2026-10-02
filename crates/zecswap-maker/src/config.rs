@@ -30,12 +30,19 @@ pub struct Config {
     /// undoes a counted deposit costs the maker the payout.
     #[serde(default)]
     pub confirmations: Option<NonZeroU32>,
+    /// EVM depth required before a forward escrow is considered settled.
+    #[serde(default = "default_evm_confirmations")]
+    pub evm_confirmations: NonZeroU32,
     pub data_dir: PathBuf,
     pub listen: SocketAddr,
     pub pricing: Pricing,
     pub timing: Timing,
     #[serde(default)]
     pub reverse: Option<ReverseConfig>,
+}
+
+fn default_evm_confirmations() -> NonZeroU32 {
+    NonZeroU32::new(12).unwrap()
 }
 
 #[derive(Clone, Deserialize)]

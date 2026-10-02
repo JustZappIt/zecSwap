@@ -265,6 +265,7 @@ impl Env {
             token,
             sweep_to: sweep_to.clone(),
             confirmations: settings.confirmations,
+            evm_confirmations: std::num::NonZeroU32::new(2).unwrap(),
             data_dir: settings.work_dir.join(name),
             listen: "127.0.0.1:0".parse().expect("socket address"),
             pricing: pricing(),

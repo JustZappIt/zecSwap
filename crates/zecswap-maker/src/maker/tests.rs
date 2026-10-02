@@ -38,10 +38,16 @@ fn maker() -> (TempDir, Arc<Maker>) {
         settlement: Settlement::connect(&config.evm_rpc, config.contract, key).unwrap(),
         zcash: Mutex::new(Zcash {
             wallet: Some(Zcash::open_wallet(&config).unwrap()),
-            client: Lightwalletd::new(Endpoint::from_static("http://127.0.0.1:1").connect_lazy()),
+            client: Lightwalletd::new(
+                Endpoint::from_static("http://127.0.0.1:1")
+                    .connect_lazy()
+                    .into(),
+            ),
         }),
         prover: Prover::default(),
         health: Health::new(Duration::from_secs(config.timing.tick)),
+        zcash_health: Health::new(Duration::from_secs(config.timing.tick)),
+        wallet_snapshots: std::sync::Mutex::new(HashMap::new()),
         config,
     };
     (dir, Arc::new(maker))
@@ -76,6 +82,7 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         t1: 7300,
         sweep: None,
         settled: false,
+        refund_started: false,
     };
     assert!(
         maker
@@ -285,6 +292,7 @@ async fn readiness_tracks_watchtower_and_info_reports_the_configured_deployment(
             tokio::time::advance(Duration::from_secs(45)).await;
         } else {
             maker.health.completed();
+            maker.zcash_health.completed();
         }
     }
     let response = app
@@ -308,6 +316,7 @@ async fn invalid_requests_and_unknown_routes_have_machine_readable_errors() {
 
     let (_dir, maker) = maker();
     maker.health.completed();
+    maker.zcash_health.completed();
     let app = crate::api::router(maker);
     let cases = [
         (
@@ -356,6 +365,7 @@ async fn invalid_requests_and_unknown_routes_have_machine_readable_errors() {
 async fn reverse_routes_are_disabled_until_configured_and_unknown_status_is_404() {
     let (_dir, maker) = maker();
     maker.health.completed();
+    maker.zcash_health.completed();
     let app = crate::api::router(maker);
     let quote = request(
         "/v1/reverse/quote",
@@ -392,6 +402,7 @@ async fn both_endpoints_return_503_at_startup_and_when_stale() {
         let expected = match state {
             1 => {
                 maker.health.completed();
+                maker.zcash_health.completed();
                 (StatusCode::BAD_REQUEST, StatusCode::NOT_FOUND)
             }
             2 => {
@@ -435,6 +446,7 @@ async fn accept_rechecks_health_after_waiting_without_consuming_quote() {
         .insert_quote(id, Address::repeat_byte(1), None, 1, 1, unix_now() + 120)
         .unwrap();
     maker.health.completed();
+    maker.zcash_health.completed();
     let wallet_lock = maker.zcash.lock().await;
     let response = tokio::spawn(crate::api::router(maker.clone()).oneshot(request(
         &format!("/v1/quote/{}/accept", B256::from(id)),
@@ -504,4 +516,212 @@ async fn failed_reopen_leaves_no_wallet_and_retries_on_the_next_pass() {
             .await
             .unwrap()
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn evm_health_alone_never_admits_new_swaps_and_snapshots_expire() {
+    let (_dir, maker) = maker();
+    maker.health.completed();
+    assert!(maker.check_watchtower().is_err());
+    maker.zcash_health.completed();
+    assert!(maker.check_watchtower().is_ok());
+    let account = AccountUuid::from_uuid(uuid::Uuid::nil());
+    maker.wallet_snapshots.lock().unwrap().insert(
+        account,
+        WalletSnapshot {
+            funds: Funds {
+                total: 123,
+                spendable: 123,
+            },
+            sweep: None,
+        },
+    );
+    let _busy = maker.zcash.lock().await;
+    assert_eq!(maker.wallet_snapshot(account).unwrap().funds.spendable, 123);
+    tokio::time::advance(Duration::from_secs(maker.config.timing.tick * 3)).await;
+    maker.health.completed();
+    assert!(maker.wallet_snapshot(account).is_none());
+    assert!(maker.check_watchtower().is_err());
+}
+
+async fn anvil_rpc(url: &str, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let reply: serde_json::Value = reqwest::Client::new()
+        .post(url)
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(reply.get("error").is_none(), "{reply}");
+    reply["result"].clone()
+}
+
+#[tokio::test]
+async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() {
+    use alloy::node_bindings::Anvil;
+    use zecswap_chain::evm::{U256, deploy};
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("ZecSwap.sol/ZecSwap.json").exists() {
+        eprintln!("skipped: run forge build in contracts/");
+        return;
+    }
+    let creation = |name: &str| {
+        let artifact: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(artifacts.join(format!("{name}.sol/{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        hex::decode(
+            artifact["bytecode"]["object"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+        )
+        .unwrap()
+    };
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let url = anvil.endpoint();
+    let token = deploy(&url, key.clone(), creation("TestToken"))
+        .await
+        .unwrap();
+    let mut code = creation("ZecSwap");
+    code.extend_from_slice(&U256::from(maker.lock_duration).to_be_bytes::<32>());
+    code.extend_from_slice(&Address::ZERO.into_word().0);
+    let contract = deploy(&url, key.clone(), code).await.unwrap();
+    maker.account = key.address();
+    maker.config.evm_rpc = url.clone();
+    maker.config.contract = contract;
+    maker.config.token = token;
+    maker.config.evm_confirmations = std::num::NonZeroU32::new(3).unwrap();
+    maker.settlement = Settlement::connect(&url, contract, key).unwrap();
+    maker
+        .settlement
+        .mint_test_token(token, maker.account, 1_000_000)
+        .await
+        .unwrap();
+    maker
+        .settlement
+        .add_inventory(token, 1_000_000)
+        .await
+        .unwrap();
+    maker
+        .store
+        .insert_quote(
+            [1; 32],
+            Address::repeat_byte(7),
+            None,
+            1_000_000,
+            100_000,
+            unix_now() + 120,
+        )
+        .unwrap();
+    let quote = maker
+        .store
+        .take_quote(&[1; 32], unix_now())
+        .unwrap()
+        .unwrap();
+    let user_share = SecretShare::random(OsRng).public();
+    let now = maker.settlement.now().await.unwrap();
+    let swap = Swap {
+        id: swap_id(maker.account, &user_share),
+        quote,
+        user_share,
+        viewing: ViewingKeys::random(OsRng),
+        zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        opened_at: now,
+        t1: now + 7200,
+        sweep: None,
+        settled: false,
+        refund_started: false,
+    };
+    maker.store.insert_swap(&swap, None).unwrap();
+    maker
+        .settlement
+        .open(&OpenRequest {
+            token,
+            amount: swap.quote.amount,
+            maker_share: &maker.maker_share(swap.quote.nonce).unwrap().public(),
+            user_share: &swap.user_share,
+            user: swap.quote.payout,
+            t0: now + 3600,
+            t1: swap.t1,
+            payout_note: None,
+        })
+        .await
+        .unwrap();
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([now + 3300]),
+    )
+    .await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    let before_cancel = anvil_rpc(&url, "evm_snapshot", serde_json::json!([])).await;
+
+    // Simulates either a stalled sync or a proof that holds the wallet throughout.
+    // This is a current-thread runtime, so EVM progress cannot rely on spare async workers.
+    let busy = maker.zcash.lock().await;
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(10), maker.tick())
+            .await
+            .expect("EVM cancellation waited for the wallet lock")
+            .unwrap();
+    }
+    assert_eq!(
+        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        Stage::Refunded
+    );
+    maker.tick().await.unwrap();
+    assert!(
+        !maker.status(swap.id).unwrap().unwrap().settled,
+        "one confirmation is not final"
+    );
+    assert!(maker.store.swap(&swap.id).unwrap().unwrap().refund_started);
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x2"])).await;
+    maker.tick().await.unwrap();
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+    drop(busy);
+
+    // Reopen persisted state, then remove both the lock and the refund from the chain.
+    let store_path = _dir.path().join("maker.sqlite");
+    maker.store = Store::open(&store_path).unwrap();
+    assert_eq!(maker.store.watched_swaps().unwrap().len(), 1);
+    assert!(maker.store.unsettled_swaps().unwrap().is_empty());
+    assert_eq!(
+        anvil_rpc(&url, "evm_revert", serde_json::json!([before_cancel])).await,
+        true
+    );
+    let busy = maker.zcash.lock().await;
+    tokio::time::timeout(Duration::from_secs(10), maker.tick())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!maker.status(swap.id).unwrap().unwrap().settled);
+    assert!(
+        maker
+            .settlement
+            .swap(swap.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .refund_lock_until
+            > 0
+    );
+    tokio::time::timeout(Duration::from_secs(10), maker.tick())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        Stage::Refunded
+    );
+    drop(busy);
 }

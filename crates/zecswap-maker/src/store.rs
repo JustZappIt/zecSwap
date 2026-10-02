@@ -38,13 +38,14 @@ const SCHEMA: &str = "
         opened_at INTEGER NOT NULL,
         t1 INTEGER NOT NULL,
         sweep_txid BLOB,
-        settled INTEGER NOT NULL DEFAULT 0
+        settled INTEGER NOT NULL DEFAULT 0,
+        refund_started INTEGER NOT NULL DEFAULT 0
     );
 ";
 
 const SWAP_COLUMNS: &str = "
     s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
-    q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat
+    q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat, s.refund_started
 ";
 
 #[derive(Clone, Debug)]
@@ -72,6 +73,8 @@ pub struct Swap {
     pub t1: u64,
     pub sweep: Option<TxId>,
     pub settled: bool,
+    /// Persisted before cancellation sends; a reorg must not make a revealed share safe again.
+    pub refund_started: bool,
 }
 
 pub struct Store(Mutex<Connection>);
@@ -80,6 +83,17 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        let has_refund_started = conn
+            .prepare("PRAGMA table_info(swaps)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|column| column == "refund_started");
+        if !has_refund_started {
+            conn.execute_batch(
+                "ALTER TABLE swaps ADD COLUMN refund_started INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         conn.execute_batch(reverse::SCHEMA)?;
         conn.execute_batch(notifications::SCHEMA)?;
         conn.execute_batch(transactions::SCHEMA)?;
@@ -159,14 +173,23 @@ impl Store {
     }
 
     pub fn unsettled_swaps(&self) -> Result<Vec<Swap>> {
+        self.swaps(false)
+    }
+
+    /// Retain and revisit completed swaps so a reorg can resume settlement.
+    pub fn watched_swaps(&self) -> Result<Vec<Swap>> {
+        self.swaps(true)
+    }
+
+    fn swaps(&self, include_settled: bool) -> Result<Vec<Swap>> {
         let sql = format!(
             "SELECT {SWAP_COLUMNS} FROM swaps s JOIN quotes q USING (quote_id)
-             WHERE s.settled = 0 ORDER BY s.opened_at"
+             WHERE s.settled = 0 OR ?1 ORDER BY s.settled, s.opened_at"
         );
         let conn = self.conn();
         let mut statement = conn.prepare(&sql)?;
         let swaps = statement
-            .query_map([], swap_from_row)?
+            .query_map([include_settled], swap_from_row)?
             .collect::<Result<_, _>>()?;
         Ok(swaps)
     }
@@ -200,6 +223,22 @@ impl Store {
         Ok(())
     }
 
+    pub fn resume(&self, id: &B256) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET settled = 0 WHERE id = ?1",
+            params![id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    pub fn start_refund(&self, id: &B256) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET refund_started = 1 WHERE id = ?1",
+            params![id.as_slice()],
+        )?;
+        Ok(())
+    }
+
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.0
             .lock()
@@ -220,6 +259,7 @@ fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
         t1: row.get(5)?,
         sweep: row.get::<_, Option<[u8; 32]>>(6)?.map(TxId::from_bytes),
         settled: row.get(7)?,
+        refund_started: row.get(14)?,
         quote: quote_at(row, 8)?,
     })
 }

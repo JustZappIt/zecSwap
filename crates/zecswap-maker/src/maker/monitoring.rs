@@ -114,6 +114,7 @@ struct Policy {
     cancel_after_seconds: u64,
     deposit_confirmations: u32,
     evm_confirmations: Option<u32>,
+    forward_evm_confirmations: u32,
     reverse_fee_reserve_zat: Option<String>,
 }
 
@@ -260,7 +261,7 @@ impl Maker {
             generated_at: unix_now(),
             deployment: self.info(),
             uptime_seconds: unix_now().saturating_sub(self.monitoring.started_at),
-            watchtower_healthy: self.health.check().is_ok(),
+            watchtower_healthy: self.check_watchtower().is_ok(),
             last_pass_age_seconds: self.health.completed_age_seconds(),
             runtime,
             counts,
@@ -293,6 +294,7 @@ impl Maker {
                     .reverse
                     .as_ref()
                     .map(|value| value.evm_confirmations.get()),
+                forward_evm_confirmations: self.config.evm_confirmations.get(),
                 reverse_fee_reserve_zat: self
                     .config
                     .reverse

@@ -47,7 +47,7 @@ impl Health {
             .map(|last| last.elapsed().as_secs())
     }
 
-    fn failed(&self) {
+    pub(crate) fn failed(&self) {
         *self.last_completed.lock().unwrap() = None;
     }
 }

@@ -34,6 +34,7 @@ zecswap-core = { path = "../zecswap-core" }
 zeroize.workspace = true
 
 [dev-dependencies]
+alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tonic = { version = "0.14", default-features = false, features = ["channel"] }

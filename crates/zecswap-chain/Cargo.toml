@@ -22,6 +22,8 @@ alloy = { version = "1.8", default-features = false, features = [
 alloy-primitives = { version = "~1.5", default-features = false }
 alloy-sol-type-parser = { version = "~1.5", default-features = false }
 async-trait = "0.1"
+http-body = "1"
+tower-service = "0.3"
 orchard = { workspace = true, features = ["circuit"] }
 pczt = { workspace = true, features = ["prover"] }
 rand_core.workspace = true
