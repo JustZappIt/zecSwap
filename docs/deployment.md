@@ -61,9 +61,11 @@ The dashboard's Production `BRIDGE_TESTNET_CONTRACT` now selects this address.
 The existing approved Vercel release was rebuilt with that setting as deployment
 `dpl_6sL3Tm3dzQm9W66GAd4BUNFgeStK`. A public dashboard API check at
 2026-10-02 17:28 UTC returned all nine checks healthy, no alerts, and zero swaps.
-The newer dashboard source is pushed to `main`, but its separate manual upload
-was blocked by Vercel's commit-author access check; the new Logs page remains
-pending that account connection and a dedicated Grafana read token.
+After the owner updated the GitHub sign-in connection, a normal manual deployment
+published dashboard source `b04b2f1` as `dpl_EPVWCWe32WwXuxqz5tipnMfHfSbJ`,
+including the new Logs page. All nine live bridge checks remained healthy with
+no alerts. Logs routes reject unauthenticated requests; Cloud queries still need
+a dedicated Grafana read token in Vercel and a redeployment.
 
 The three changed Android files pass targeted ktlint. The targeted session test
 could not compile because of existing chat dependency errors involving
