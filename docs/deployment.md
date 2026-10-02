@@ -37,7 +37,7 @@ inventory was withdrawn and deposited into the new contract. The old deployment
 manifest and protocol smoke evidence are archived under `deployments/retired/`;
 its on-chain bytecode still exists but hosted services no longer target it.
 
-Both VPS binaries are from source `bcc362f9a820d1c97a90af67e7c858a156f56acf`, in
+At the replacement cutover, both VPS binaries were from source `bcc362f9a820d1c97a90af67e7c858a156f56acf`, in
 `/opt/zecswap/releases/20261002-rescue-bcc362f`. The code is merged into `main`.
 At cutover there were no unsettled swaps. The new store started with zero swaps,
 75.991968 test USDC inventory, and 0.16595541 spendable testnet ZEC retained in the
@@ -70,6 +70,36 @@ a dedicated Grafana read token in Vercel and a redeployment.
 The three changed Android files pass targeted ktlint. The targeted session test
 could not compile because of existing chat dependency errors involving
 `replyToContentType`; no new APK was built or installed.
+
+## October 2 initial funding sponsorship
+
+At 18:48 UTC, relayer source `e831bda0c9423f8d5cfcb68989d8df2f0d7d13d1` was deployed in
+`/opt/zecswap/releases/20261002-funding-e831bda`, which is now `/opt/zecswap/current`.
+The release retains the exact previous maker binary; only the relayer was restarted.
+The maker remained running with its existing state, and both services retained their keys.
+[sepolia-relayer-funding.json](../deployments/sepolia-relayer-funding.json) records the
+binary checksum, configuration and public API verification.
+
+`POST /relayer/v1/reverse/fund` is enabled on the public testnet gateway.
+`GET /relayer/v1/terms` advertises `reverseFunding` with V2 Relay Adapt
+`0x7e3d929ebd5bdc84d02bd3205c777578f33a214d`, the existing test token and maker, a
+4,000,000 gas limit, and a 20-gwei gas-price ceiling. The existing independent relayer
+wallet pays Sepolia ETH. Payout fees are unchanged. The adapter's `railgun()` was
+verified against the configured settlement proxy at startup.
+
+Public checks verified capability discovery, rejection of malformed calldata, wrong
+chain, native value and unknown fields, method restrictions, and both request-size
+boundaries. A 34-KiB proof-shaped request reached application validation through the new
+nginx route; a body over 132 KiB was rejected. An Android HTTP-client user agent also
+reached the API. Maker info still identifies the same deployment, and `/maker/healthz`
+returns 204. These probes submit no transaction. A real Railgun proof and funded Android
+swap remain unverified; follow the [funding API handoff](reverse-flow.md#sponsored-initial-funding-sepolia).
+
+Rollback files are in `/var/backups/zecswap/20261002-funding-e831bda` (root-only):
+`relayer-config.toml`, `nginx.conf`, and `previous-current`. Restore their original owners
+and permissions (relayer config is `root:zecswap-relayer`, `0640`), restore the previous
+release symlink, test/reload nginx, and restart only the relayer. Never restore or roll
+back the maker wallet databases during this binary/configuration rollback.
 
 ## Deployment sequence
 
@@ -126,8 +156,10 @@ on the VPS is persistent storage, not an off-host backup. Restoring an old snaps
 requires reconciling newer on-chain swaps before admitting new quotes.
 
 Additional API abuse protection is deferred. The existing forward acceptance endpoint spends
-maker gas before the user's ZEC deposit. Reverse maker payments require confirmed escrow, but
-relayer sponsorship has no token/maker allowlist or funding-confirmation admission policy.
+maker gas before the user's ZEC deposit. Reverse maker payments require confirmed escrow.
+Initial reverse funding sponsorship now has token/maker allowlists, transaction validation
+and per-transaction gas caps. The other sponsored relayer actions retain their existing
+admission policy; the new funding route has no aggregate sponsorship budget.
 The shared nginx rate limit is not sufficient protection against deliberate gas griefing or
 abandoned reservations. The live smoke tests establish protocol functionality, not production
 abuse resistance. Keep the existing forward ordering: depositing ZEC before escrow exists

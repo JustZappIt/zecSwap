@@ -1,0 +1,41 @@
+{
+  "chainId": 11155111,
+  "relayerSourceCommit": "e831bda0c9423f8d5cfcb68989d8df2f0d7d13d1",
+  "makerSourceCommit": "bcc362f9a820d1c97a90af67e7c858a156f56acf",
+  "release": "/opt/zecswap/releases/20261002-funding-e831bda",
+  "relayerSha256": "f79c8cab3a5995fc2efff629776b005fd222583e8b6f47965ed61fb6d99438da",
+  "makerSha256": "3f50e57f0485f67676af0a9d5683c8009d52cfbc830ea7c1ce7e085981bee999",
+  "deployedAt": "2026-10-02T18:48:36Z",
+  "verifiedAt": "2026-10-02T18:53:23Z",
+  "status": "api-live-device-swap-unverified",
+  "contract": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
+  "relayer": "0xd9633572041886fa7584a2e12f36c8c7f1126412",
+  "baseUrl": "https://zecswap-testnet.pepeman931.workers.dev/relayer",
+  "fundingPath": "/v1/reverse/fund",
+  "reverseFunding": {
+    "relayAdapt": "0x7e3d929ebd5bdc84d02bd3205c777578f33a214d",
+    "token": "0x5764d0044bef5aa839e0ddafe2073421101b9ed8",
+    "maker": "0x2bac02b5032e9092493814c705f156b49e288922",
+    "maxGasLimit": 4000000,
+    "maxGasPriceWei": "20000000000",
+    "maxCalldataBytes": 65536
+  },
+  "validation": {
+    "linuxBuildFromCleanCommittedCheckout": true,
+    "cleanCheckoutE2eCompilation": true,
+    "uploadedBinaryChecksumVerified": true,
+    "nginxConfigurationTest": true,
+    "publicTerms": 200,
+    "publicMalformedCalldata": 400,
+    "publicWrongChain": 400,
+    "publicNonzeroNativeValue": 400,
+    "publicUnknownFields": 422,
+    "public34000ByteHexCalldataReachedValidator": 400,
+    "publicOversizedBody": 413,
+    "publicWrongMethod": 405,
+    "publicAndroidHttpClientUserAgent": 200,
+    "publicMakerHealth": 204,
+    "makerBinaryAndProcessUnchanged": true,
+    "liveRailgunFundedDeviceSwap": false
+  }
+}
