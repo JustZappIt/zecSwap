@@ -105,7 +105,9 @@ The endpoint never syncs the wallet, generates proofs, sends transactions, or wr
 inventory. RPC observations have bounded concurrency and a six-second total time budget;
 failed observations return unknown fields. A busy wallet uses the last captured inventory
 reading and sets `walletBusy`; individual wallet readings remain unknown while busy.
-The dashboard validates the deployment and reads ERC-20 decimals before formatting USDC.
+The dashboard validates the deployment and token precision before formatting USDC.
+The pinned test token has no optional `decimals()` metadata and uses explicitly configured
+six-decimal USDC units; mainnet has no default token precision.
 Mainnet uses its own dashboard environment variables and monitoring token.
 
 - Maker `GET /v1/info`: exact expected chain ID, contract, token, Zcash network and
