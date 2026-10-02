@@ -320,7 +320,7 @@ impl Wallet {
             .ok_or_else(|| Error::Wallet(format!("transaction {txid} is not stored")))?;
         let mut raw = Vec::new();
         tx.write(&mut raw).map_err(Error::wallet)?;
-        lightwalletd::broadcast(client, raw).await
+        lightwalletd::broadcast(client, txid, raw).await
     }
 
     pub fn is_mined(&self, txid: TxId) -> Result<bool, Error> {

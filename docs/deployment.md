@@ -121,6 +121,12 @@ distinct from successful settlement; an observed claim with a pending escrow pay
 is explicitly labeled. User-side private ZEC recovery is not observable by the maker.
 No price-feed calls are made by the notification worker.
 Deposit alerts also report observed user ZEC funds or confirmed user USDC escrow funding.
+Rebroadcasting a recorded ZEC transaction may return a backend duplicate error while
+it is already in the mempool or mined. The adapter checks `GetTransaction` for the
+same transaction ID and exact serialized bytes before treating such a rejection as
+successful submission. A transaction known only on a noncanonical fork, a different
+transaction, an unavailable lookup, or a five-second lookup timeout retains the
+original error. This does not replace wallet confirmation or escrow readiness checks.
 
 Delivery runs independently of the watchtower with a ten-second request timeout.
 The durable queue retries outages with backoff, respects Telegram rate limits, and
