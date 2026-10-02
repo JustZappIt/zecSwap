@@ -201,7 +201,7 @@ line before checking already-applied migrations. It does not indicate a bridge
 restart or prove that any migration changed the database. Existing Cloud entries
 remain visible until retention expires; this filter affects newly forwarded logs.
 
-Application logging changes are prepared in this repository, **not deployed**:
+Application logging changes are deployed in release `20261002-rescue-bcc362f`:
 
 - Maker acceptance joins quote ID to swap ID and the escrow-open transaction.
 - Maker watchtower/sweep and forward/reverse relayer errors retain operation and
@@ -219,19 +219,27 @@ Failures before broadcast can have a swap/quote ID but no transaction hash.
 Wallet/client failures before reaching either service are not visible in server
 logs. Use the swap ID across both services, then inspect transaction-specific
 lines. Older logs cannot acquire context that the old binary never emitted.
-No application restart or bridge transaction was triggered for this work. Before
-building/deploying these changes, review the release baseline: the VPS runs
-`20261002-flow-08d2361`, while the local repository is at `ff6daf9`, which also
-contains separate security/API changes. A blanket deployment of the local tree
-would include those changes. Coordinate that release, or apply just the logging
-patch to the deployed baseline and validate it, before restarting services.
-Retain the current release and all databases.
+On explicit approval, both services were upgraded on 2026-10-02 together with the
+new Sepolia contract `0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc`. Its deployed
+runtime matches the build and the nonce/deadline rescue ABI is verified. The old
+contract is retired. Both services report the new address and use the rebuilt
+binaries. Swap history started empty; the maker root secret was rotated because
+quote nonces restart. The existing ETH keys, Zcash seed, funded wallet and scan
+state were retained, as were Telegram, CMC pricing and monitoring credentials.
+A synthetic rejected relayer request verified that operation/swap context appears
+without the secret share, signature or note. It sent no transaction.
+
+The old configuration and consistent SQLite snapshots are protected in
+`/var/backups/zecswap/20261002-retired-bd9a37`. Old application/flow databases live
+in its `retired-runtime` directory, outside the service's active data directory.
+Rollback now requires coordinating contract, inventory, root secret and swap
+store; do not restore just an old binary/config or overwrite the current funded
+wallet. Reconcile any swaps on the new contract before moving inventory back.
 
 Validation passed: all 47 maker unit tests, a relayer rejection test that verifies
 swap context while excluding private payloads, and a local Anvil transaction test
 that verifies matching swap/hash on submission and mining. Checks and Clippy for
-maker/relayer/chain passed with warnings denied. These are local tests, not proof
-that the deployed binaries emit the new events.
+maker/relayer/chain passed with warnings denied. The deployed relayer also passed the correlated rejection check.
 
 The separate `zapp-dashboard` repository has a prepared `/bridge/logs` page and
 protected `/api/bridge/logs` server route. It reads Cloud logs only on demand,
