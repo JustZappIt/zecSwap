@@ -1,0 +1,17 @@
+{
+  "chainId": 11155111,
+  "contract": "0xbd9a37f47a988aefc4d80395727f41feb698e225",
+  "token": "0x5764D0044bef5AA839E0dDafE2073421101B9Ed8",
+  "railgun": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
+  "lockDurationSeconds": 600,
+  "deploymentTransaction": "0xca043c7a229f08a27204034b20bfab72634d58f4daa5570954f74e7377134e4d",
+  "deploymentBlock": 11802912,
+  "zcashNetwork": "testnet",
+  "makerUrl": "https://zecswap-testnet.pepeman931.workers.dev/maker",
+  "relayerUrl": "https://zecswap-testnet.pepeman931.workers.dev/relayer",
+  "maker": "0x2bac02B5032e9092493814c705F156B49E288922",
+  "relayer": "0xd9633572041886Fa7584a2E12F36C8C7f1126412",
+  "status": "retired",
+  "retiredAt": "2026-10-02",
+  "replacedBy": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc"
+}

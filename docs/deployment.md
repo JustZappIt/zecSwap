@@ -15,7 +15,7 @@ and signing keys. This does not provide independent operators: the production re
 remain independent of the maker, as the protocol requires.
 
 The reverse-capable Sepolia contract is deployed at
-[`0xbd9a37f47a988aefc4d80395727f41feb698e225`](https://sepolia.etherscan.io/address/0xbd9a37f47a988aefc4d80395727f41feb698e225).
+[`0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc`](https://sepolia.etherscan.io/address/0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc).
 [sepolia-reverse.json](../deployments/sepolia-reverse.json) records the transaction, block,
 test token, Railgun proxy and lock duration. Its runtime code was checked against the build,
 and its lock, Railgun proxy and reverse-funding getter were checked on-chain. Both hosted
@@ -28,6 +28,34 @@ SQLite databases there would lose swap recovery state on restart. A Cloudflare-o
 requires a durable-storage design before it can hold funded swaps. A persistent host behind
 Tunnel is compatible with the current implementation. For independent operation, that host
 must remain online when the development Mac sleeps or shuts down.
+
+## October 2, 2026 replacement
+
+The current Sepolia contract includes single-use, expiring rescue authorizations.
+It replaces `0xbd9a37f47a988aefc4d80395727f41feb698e225`, whose available maker
+inventory was withdrawn and deposited into the new contract. The old deployment
+manifest and protocol smoke evidence are archived under `deployments/retired/`;
+its on-chain bytecode still exists but hosted services no longer target it.
+
+Both VPS binaries are from source `bcc362f9a820d1c97a90af67e7c858a156f56acf`, in
+`/opt/zecswap/releases/20261002-rescue-bcc362f`. The code is merged into `main`.
+At cutover there were no unsettled swaps. The new store started with zero swaps,
+75.991968 test USDC inventory, and 0.16595541 spendable testnet ZEC retained in the
+existing wallet. Maker/relayer ETH accounts and the existing test token are reused.
+The maker root secret was rotated when resetting quote history, to avoid reusing
+previously revealed per-swap secrets. Wallet seed and scan state are unchanged.
+
+Old state/configuration is archived at
+`/var/backups/zecswap/20261002-retired-bd9a37` (root-only). Never remove the funded
+wallet or replace it with an old snapshot during a rollback. Returning to the old
+contract would require reconciling new swaps, moving available inventory, and
+restoring matching application state and maker root; a symlink-only rollback is
+not sufficient across this contract migration.
+
+The 53 Railgun/reverse contract tests passed, and runtime bytecode, lock duration,
+Railgun proxy and rescue nonce reads were verified on the new contract. Maker and
+relayer report the new contract and healthy local APIs. The September smoke test
+below belongs to the retired contract; a new full live swap has not yet been run.
 
 ## Deployment sequence
 
@@ -250,7 +278,7 @@ by an older maker are not reconstructed by this upgrade.
 On September 28, 2026, the public gateway completed a one-test-USDC reverse swap through
 confirmed ZEC receipt, including maker restarts after funding and after the ZEC deposit.
 A separate cancellation completed its committed Railgun refund payout. Public transaction
-evidence is in [sepolia-reverse-smoke.json](../deployments/sepolia-reverse-smoke.json).
+evidence is in [retired deployment smoke evidence](../deployments/retired/sepolia-reverse-bd9a37-smoke.json).
 Both tests funded escrow with public test tokens; a real Railgun unshield-to-escrow transaction
 and the Android application flow remain to be validated.
 

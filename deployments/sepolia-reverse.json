@@ -1,14 +1,36 @@
 {
   "chainId": 11155111,
-  "contract": "0xbd9a37f47a988aefc4d80395727f41feb698e225",
+  "contract": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
   "token": "0x5764D0044bef5AA839E0dDafE2073421101B9Ed8",
   "railgun": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
   "lockDurationSeconds": 600,
-  "deploymentTransaction": "0xca043c7a229f08a27204034b20bfab72634d58f4daa5570954f74e7377134e4d",
-  "deploymentBlock": 11802912,
+  "deploymentTransaction": "0x6da1588ea9ba44e16eea65bb6a6e72b16a28335e28a395f6bfc6e6b48d6000c5",
+  "deploymentBlock": 11830337,
   "zcashNetwork": "testnet",
   "makerUrl": "https://zecswap-testnet.pepeman931.workers.dev/maker",
   "relayerUrl": "https://zecswap-testnet.pepeman931.workers.dev/relayer",
   "maker": "0x2bac02B5032e9092493814c705F156B49E288922",
-  "relayer": "0xd9633572041886Fa7584a2E12F36C8C7f1126412"
+  "relayer": "0xd9633572041886Fa7584a2E12F36C8C7f1126412",
+  "sourceCommit": "bcc362f9a820d1c97a90af67e7c858a156f56acf",
+  "rescueAuthorization": "nonce-and-deadline",
+  "deployedAt": "2026-10-02",
+  "status": "active",
+  "replaces": "0xbd9a37f47a988aefc4d80395727f41feb698e225",
+  "inventoryMigrationTransactions": [
+    {
+      "hash": "0x1d78f0ce887090c5b0ef96b9ece7c941dabc682413d53137b1a69a7d65c5a8cb",
+      "block": 11830365,
+      "gasUsed": 53754
+    },
+    {
+      "hash": "0x842723e1fe6d741f7b719f890b8268d4013e333f36eec28ebc25cecf377256de",
+      "block": 11830366,
+      "gasUsed": 44237
+    },
+    {
+      "hash": "0x265885fcd8ff57e3bd75a954cc371d38970b39cf07ffda446eb80b04922ba07f",
+      "block": 11830367,
+      "gasUsed": 75333
+    }
+  ]
 }
