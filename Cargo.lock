@@ -6876,6 +6876,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "axum",
+ "blake2b_simd",
  "clap",
  "futures-util",
  "hex",

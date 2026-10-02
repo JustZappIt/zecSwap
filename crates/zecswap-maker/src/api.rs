@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use alloy_primitives::B256;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
@@ -19,6 +19,7 @@ pub fn router(maker: Arc<Maker>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/info", get(info))
+        .route("/v1/monitor", get(monitor))
         .route("/v1/quote", post(quote))
         .route("/v1/quote/{quote_id}/accept", post(accept))
         .route("/v1/reverse/quote", post(reverse_quote))
@@ -37,6 +38,26 @@ async fn health(State(maker): State<Arc<Maker>>) -> Result<StatusCode, MakerErro
 
 async fn info(State(maker): State<Arc<Maker>>) -> Json<MakerInfo> {
     Json(maker.info())
+}
+
+async fn monitor(State(maker): State<Arc<Maker>>, headers: HeaderMap) -> Response {
+    let authorization = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok());
+    if !maker.monitor_authorized(authorization) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    match maker.monitor_snapshot().await {
+        Ok(snapshot) => axum::Json(snapshot).into_response(),
+        Err(e) => {
+            error!("monitor snapshot: {e:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "monitoring temporarily unavailable",
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn reverse_quote(

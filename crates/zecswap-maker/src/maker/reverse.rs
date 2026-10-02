@@ -160,7 +160,7 @@ impl Maker {
         Ok(Accepted { swap_id })
     }
 
-    fn reverse_reserved(&self) -> Result<u64> {
+    pub(super) fn reverse_reserved(&self) -> Result<u64> {
         let fee = self
             .config
             .reverse
