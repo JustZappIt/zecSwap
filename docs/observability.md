@@ -248,5 +248,15 @@ individual swaps. The existing dashboard is public, so logs have separate Basic
 authentication using existing dashboard credentials or dedicated `LOGS_*` values.
 A dedicated stack-scoped `logs:read` token is required as a sensitive Vercel
 `GRAFANA_LOGS_READ_TOKEN`; the VPS policy remains `logs:write` only. The page has
-not been deployed, and live reads from Vercel remain unverified until that token
-is supplied. See that repository's README for setup, validation and rollback.
+not been deployed: Vercel blocked the manual upload with `TEAM_ACCESS_REQUIRED`
+for the commit author. Connect the actual GitHub author to the owning Vercel
+account before retrying. Live reads also remain unverified until the dedicated
+read token is supplied. The existing approved dashboard was separately rebuilt
+with the new contract setting and verified healthy with no deployment mismatch
+alerts. See that repository's README for setup, validation and rollback.
+
+A post-cutover sample measured Alloy at 40.4 MiB, 537 MiB available host memory,
+no memory-pressure/OOM events, and 1.07 MiB cursor storage in its bounded tmpfs.
+Since the collector restart it had sent 86 entries with zero write retries or
+drops. Both bridge APIs were healthy. This confirms successful ingestion writes;
+an additional Cloud readback awaits read credentials.
