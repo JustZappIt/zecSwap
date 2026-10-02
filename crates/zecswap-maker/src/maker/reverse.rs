@@ -160,7 +160,15 @@ impl Maker {
             sweep: None,
             settled: false,
         };
-        if let Err(error) = self.store.insert_reverse_swap(&swap, unix_now()) {
+        let event = self.reverse_alert(
+            &swap,
+            "accepted",
+            "Bridge accepted; awaiting user USDC escrow funding.",
+        );
+        if let Err(error) = self
+            .store
+            .insert_reverse_swap(&swap, unix_now(), event.as_ref())
+        {
             wallet.forget(account)?;
             return Err(error.into());
         }
@@ -288,7 +296,8 @@ impl Maker {
                     .await?
                     .is_none()
             {
-                self.finish_reverse(swap).await?;
+                self.finish_reverse(swap, super::notifications::outcome(None, true))
+                    .await?;
             }
             return Ok(());
         };
@@ -299,7 +308,11 @@ impl Maker {
                 .await?
                 > swap.quote.ready_deadline
         {
-            self.finish_reverse(swap).await?;
+            self.finish_reverse(
+                swap,
+                "Bridge expired without maker funding. Escrow refund may still be pending.",
+            )
+            .await?;
             return Ok(());
         }
         self.verify_reverse(swap, &chain).await?;
@@ -313,7 +326,8 @@ impl Maker {
                     return Ok(());
                 }
                 if chain.stage == Stage::Claimed {
-                    self.finish_reverse(swap).await?;
+                    self.finish_reverse(swap, super::notifications::outcome(Some(&chain), true))
+                        .await?;
                 } else {
                     self.recover_reverse(swap, &chain, synced).await?;
                 }
@@ -373,6 +387,7 @@ impl Maker {
                 {
                     return Ok(());
                 }
+                self.queue_alert(self.reverse_alert(swap, "funded", "User USDC escrow funding confirmed; maker is preparing or confirming the ZEC deposit."));
                 self.fund_reverse(swap).await?;
             }
         }
@@ -428,7 +443,9 @@ impl Maker {
         synced: bool,
     ) -> Result<()> {
         if swap.deposit.is_none() {
-            return self.finish_reverse(swap).await;
+            return self
+                .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                .await;
         }
         if !synced {
             return Ok(());
@@ -439,7 +456,9 @@ impl Maker {
         if let Some(txid) = swap.sweep {
             if wallet.is_mined(txid)? {
                 drop(zcash);
-                return self.finish_reverse(swap).await;
+                return self
+                    .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                    .await;
             }
             if wallet.is_expired(txid)? {
                 swap.sweep = None;
@@ -454,7 +473,9 @@ impl Maker {
                 && wallet.is_expired(txid)?
             {
                 drop(zcash);
-                return self.finish_reverse(swap).await;
+                return self
+                    .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                    .await;
             }
             return Ok(());
         }
@@ -474,9 +495,11 @@ impl Maker {
         Ok(())
     }
 
-    async fn finish_reverse(&self, swap: &mut ReverseSwap) -> Result<()> {
+    async fn finish_reverse(&self, swap: &mut ReverseSwap, detail: &str) -> Result<()> {
+        let event = self.reverse_alert(swap, "finished", detail);
         swap.settled = true;
-        self.store.save_reverse_swap(swap)?;
+        self.store
+            .save_reverse_swap_with_notification(swap, event.as_ref())?;
         self.forget(swap.account).await;
         Ok(())
     }

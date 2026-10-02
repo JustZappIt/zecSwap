@@ -90,6 +90,53 @@ would remove its contract-backed recovery path.
 
 ## Public verification
 
+### Telegram bridge alerts
+
+Set `TELEGRAM_BOT_TOKEN` and a numeric `TELEGRAM_CHAT_ID` in the maker's protected
+process environment. Both must be supplied together; omitting both disables alerts.
+The hosted testnet reuses the onramp gas monitor's existing bot and private destination.
+It only calls Telegram `sendMessage`; it does not change that bot's webhook or consume
+updates. Keep these credentials out of Git, dashboard variables, browser responses and
+command arguments.
+
+On the host, use a root-owned `0600` `/etc/zecswap-maker/telegram.env` and a systemd
+drop-in `/etc/systemd/system/zecswap-maker.service.d/telegram.conf`:
+
+```ini
+[Service]
+EnvironmentFile=/etc/zecswap-maker/telegram.env
+```
+
+Reload systemd and restart the maker after configuring the environment. Under the
+same service environment and account, run
+`zecswap-maker --config /etc/zecswap-maker/config.toml telegram-test` to send one
+clearly labeled setup message without creating a financial swap. Successful output
+means Telegram acknowledged delivery, not that the recipient has read the message.
+
+Accepted bridges and terminal outcomes are queued transactionally with their SQLite
+state changes. Messages include the Zcash network, EVM chain/contract/maker, direction,
+exact locked USDC/ZEC amounts, swap ID, deadlines, any recorded ZEC deposit/recovery
+transaction IDs, and the matching dashboard link. Refunds and expired swaps are
+distinct from successful settlement; an observed claim with a pending escrow payout
+is explicitly labeled. User-side private ZEC recovery is not observable by the maker.
+No price-feed calls are made by the notification worker.
+Deposit alerts also report observed user ZEC funds or confirmed user USDC escrow funding.
+
+Delivery runs independently of the watchtower with a ten-second request timeout.
+The durable queue retries outages with backoff, respects Telegram rate limits, and
+keeps event IDs after successful delivery so restarts do not replay them. A message
+can be repeated if Telegram accepts it but its acknowledgement is lost. Existing
+settled history is never replayed; active swaps are enrolled when alerts are enabled.
+Swap and service errors notify once per failure episode, clearing after a successful
+pass. Protect `maker.sqlite` backups since they now also contain public swap alert text.
+
+`GET /v1/monitor` includes `notifications`: enabled state, pending count, oldest
+pending time, last acknowledged delivery time, and a sanitized delivery error.
+It never includes the bot token or destination ID. The dashboard displays this as
+the Telegram alerts health check. Mainnet uses the same code: deploy its own maker
+with separate configuration/data and supply the bot/destination environment pair.
+Messages and deduplication IDs include the deployment and network.
+
 ### Dashboard monitoring
 
 Live USD pricing is enabled by `[pricing.market]` in the maker configuration:

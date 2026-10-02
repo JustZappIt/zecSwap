@@ -1,4 +1,5 @@
 mod monitoring;
+mod notifications;
 mod reverse;
 
 use std::future::Future;
@@ -40,6 +41,7 @@ pub struct Maker {
     inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
     monitoring: monitoring::Monitoring,
     prices: crate::market::PriceBook,
+    telegram: crate::telegram::Telegram,
 }
 
 struct Zcash {
@@ -128,6 +130,7 @@ impl From<zecswap_chain::Error> for MakerError {
 impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
         let prices = crate::market::PriceBook::from_env(&config.pricing)?;
+        let telegram = crate::telegram::Telegram::from_env()?;
         std::fs::create_dir_all(&config.data_dir)?;
         let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
         anyhow::ensure!(
@@ -172,6 +175,7 @@ impl Maker {
             None
         };
         Ok(Self {
+            telegram,
             prices,
             monitoring: monitoring::Monitoring::from_env()?,
             inventory,
@@ -342,7 +346,12 @@ impl Maker {
         };
         // Recorded before `open`, whose outcome can be unknown: the watchtower then settles
         // the swap from what the chain shows.
-        if let Err(e) = self.store.insert_swap(&swap) {
+        let event = self.forward_alert(
+            &swap,
+            "accepted",
+            "Bridge accepted; awaiting escrow and user ZEC deposit.",
+        );
+        if let Err(e) = self.store.insert_swap(&swap, event.as_ref()) {
             self.forget(zcash_account).await;
             return Err(e.into());
         }
@@ -376,17 +385,23 @@ impl Maker {
     /// The watchtower: every tick, sync and take the next step for every unsettled swap.
     pub async fn run(self: Arc<Self>) {
         let maker = &self;
-        watchtower::run(
+        let watchtower = watchtower::run(
             Duration::from_secs(self.config.timing.tick),
             &self.health,
             |panicked| async move {
                 if panicked {
                     maker.zcash.lock().await.wallet = None;
+                    maker.record_alert_failure("watchtower-panic", B256::ZERO, maker.service_alert("Watchtower panicked; wallet will reopen and processing will retry. Check maker logs."));
                 }
-                maker.tick().await
+                let result = maker.tick().await;
+                maker.record_alert_failure("watchtower-pass", B256::ZERO, result.as_ref().err().and_then(|_| maker.service_alert("Watchtower pass failed; bridge processing will retry. Check maker health and logs.")));
+                if result.is_ok() {
+                    maker.record_alert_failure("watchtower-panic", B256::ZERO, None);
+                }
+                result
             },
-        )
-        .await;
+        );
+        tokio::join!(watchtower, self.run_notifications());
     }
 
     async fn tick(&self) -> Result<()> {
@@ -402,18 +417,35 @@ impl Maker {
                 .await?
         };
         self.record_monitor_sync(synced);
+        self.record_alert_failure("zcash-sync", B256::ZERO, (!synced).then(|| self.service_alert("Zcash wallet sync failed; watchtower is using the last synced state and retrying. Check lightwalletd and maker logs.")).flatten());
         let now = self.settlement.now().await?;
         let mut failed = Vec::new();
         for swap in self.store.unsettled_swaps()? {
+            self.queue_alert(self.forward_alert(
+                &swap,
+                "accepted",
+                "Bridge accepted; maker is monitoring escrow and ZEC deposit.",
+            ));
             if let Err(e) = self.advance(&swap, now, synced).await {
                 failed.push(swap.id);
                 warn!(id = %swap.id, "{e:#}");
+                self.record_alert_failure("forward", swap.id, self.forward_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
+            } else {
+                self.record_alert_failure("forward", swap.id, None);
             }
         }
         for mut swap in self.store.pending_reverse_swaps()? {
+            self.queue_alert(self.reverse_alert(
+                &swap,
+                "accepted",
+                "Bridge accepted; maker is monitoring USDC escrow funding.",
+            ));
             if let Err(e) = self.advance_reverse(&mut swap, synced).await {
                 failed.push(swap.id);
                 warn!(id = %swap.id, "reverse swap: {e:#}");
+                self.record_alert_failure("reverse", swap.id, self.reverse_alert(&swap, "error", "Bridge processing error: watchtower could not advance this swap. Check maker logs; funds remain subject to escrow deadlines."));
+            } else {
+                self.record_alert_failure("reverse", swap.id, None);
             }
         }
         self.record_monitor_errors(failed);
@@ -424,7 +456,7 @@ impl Maker {
         let Some(chain) = self.settlement.swap(swap.id).await? else {
             if now >= swap.t1 {
                 info!(id = %swap.id, "the swap never opened");
-                self.settle(swap).await?;
+                self.settle(swap, None).await?;
             }
             return Ok(());
         };
@@ -445,6 +477,11 @@ impl Maker {
             sweep_mined,
             lock_duration: self.lock_duration,
         };
+        if synced && funds.total > 0 {
+            self.queue_alert(self.forward_alert(swap, "funded", &format!(
+                "User ZEC deposit observed: {} zat total; {} zat spendable. Confirmation and escrow checks continue.", funds.total, funds.spendable
+            )));
+        }
         let action = policy::decide(&observation, &self.config.timing);
         if action != Action::Wait {
             info!(id = %swap.id, ?action, "watchtower");
@@ -462,7 +499,7 @@ impl Maker {
                 self.settlement.refund(swap.id, &e).await?;
             }
             Action::Sweep => self.sweep(swap, &observation.chain).await?,
-            Action::Settle => self.settle(swap).await?,
+            Action::Settle => self.settle(swap, Some(&observation.chain)).await?,
         }
         Ok(())
     }
@@ -486,9 +523,10 @@ impl Maker {
         Ok(())
     }
 
-    async fn settle(&self, swap: &Swap) -> Result<()> {
+    async fn settle(&self, swap: &Swap, chain: Option<&OnChainSwap>) -> Result<()> {
+        let event = self.forward_alert(swap, "finished", notifications::outcome(chain, false));
         self.forget(swap.zcash_account).await;
-        self.store.settle(&swap.id)
+        self.store.settle(&swap.id, event.as_ref())
     }
 
     async fn forget(&self, account: AccountUuid) {
