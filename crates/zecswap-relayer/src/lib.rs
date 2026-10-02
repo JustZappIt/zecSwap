@@ -5,6 +5,8 @@
 
 pub mod api;
 #[cfg(test)]
+mod funding_tests;
+#[cfg(test)]
 mod logging_tests;
 mod reverse;
 
@@ -16,6 +18,7 @@ use anyhow::Context as _;
 use serde::Deserialize;
 use tracing::{info, warn};
 use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
+use zecswap_chain::evm::funding::{FundingPolicy, MAX_CALLDATA_BYTES};
 use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, Settlement, Stage};
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::ShieldNote;
@@ -34,6 +37,31 @@ pub struct Config {
     /// claim could land after the lock lapses, handing the maker the next turn knowing both
     /// halves.
     pub claim_margin: u64,
+    /// Opt-in sponsorship of initial Railgun funding on Sepolia.
+    #[serde(default)]
+    pub reverse_funding: Option<ReverseFundingConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReverseFundingConfig {
+    pub relay_adapt: Address,
+    pub token: Address,
+    pub maker: Address,
+    pub max_gas_limit: u64,
+    pub max_gas_price_wei: u64,
+}
+
+impl ReverseFundingConfig {
+    fn policy(&self) -> FundingPolicy {
+        FundingPolicy {
+            relay_adapt: self.relay_adapt,
+            token: self.token,
+            maker: self.maker,
+            max_gas_limit: self.max_gas_limit,
+            max_gas_price_wei: self.max_gas_price_wei.into(),
+        }
+    }
 }
 
 impl Config {
@@ -75,6 +103,12 @@ impl Relayer {
             chain_id: settlement.chain_id().await?,
             contract: config.contract.into(),
         };
+        if let Some(funding) = &config.reverse_funding {
+            funding.policy().validate_config(domain.chain_id, account)?;
+            settlement
+                .check_funding_adapter(funding.relay_adapt)
+                .await?;
+        }
         Ok(Self {
             config,
             account,
@@ -93,6 +127,16 @@ impl Relayer {
             chain_id: self.domain.chain_id,
             contract: self.config.contract,
             fee: self.config.fee.into(),
+            reverse_funding: self.config.reverse_funding.as_ref().map(|funding| {
+                zecswap_api::relayer::ReverseFundingTerms {
+                    relay_adapt: funding.relay_adapt,
+                    token: funding.token,
+                    maker: funding.maker,
+                    max_gas_limit: funding.max_gas_limit,
+                    max_gas_price_wei: funding.max_gas_price_wei.into(),
+                    max_calldata_bytes: MAX_CALLDATA_BYTES,
+                }
+            }),
         }
     }
 

@@ -536,6 +536,7 @@ async fn start_relayer(
         listen: "127.0.0.1:0".parse().expect("socket address"),
         fee: RELAYER_FEE,
         claim_margin: 3 * 60,
+        reverse_funding: None,
     };
     let relayer = Arc::new(Relayer::new(config, key).await?);
     let listener = TcpListener::bind("127.0.0.1:0").await?;

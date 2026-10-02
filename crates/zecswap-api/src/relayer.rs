@@ -18,6 +18,22 @@ pub struct Terms {
     /// Token base units the relayer keeps from a payout, as a decimal string.
     #[serde(with = "decimal")]
     pub fee: u128,
+    /// Absent when initial reverse funding is not sponsored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse_funding: Option<ReverseFundingTerms>,
+}
+
+/// Sponsored Sepolia funding uses the V2 Relay Adapt ABI and no broadcaster fee.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReverseFundingTerms {
+    pub relay_adapt: Address,
+    pub token: Address,
+    pub maker: Address,
+    pub max_gas_limit: u64,
+    #[serde(with = "decimal")]
+    pub max_gas_price_wei: u128,
+    pub max_calldata_bytes: usize,
 }
 
 /// `POST /v1/lock-claim`.

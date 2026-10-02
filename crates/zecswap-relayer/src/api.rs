@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -19,6 +19,10 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
         .route("/v1/claim", post(claim))
         .route("/v1/payout", post(payout))
         .route("/v1/rescue", post(rescue))
+        .route(
+            "/v1/reverse/fund",
+            post(fund_reverse).layer(DefaultBodyLimit::max(132 * 1024)),
+        )
         .route("/v1/reverse/ready", post(ready_reverse))
         .route("/v1/reverse/lock-refund", post(lock_reverse_refund))
         .route("/v1/reverse/refund", post(refund_reverse))
@@ -67,6 +71,13 @@ async fn ready_reverse(
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
     Ok(Json(relayer.ready_reverse(request).await?))
+}
+
+async fn fund_reverse(
+    State(relayer): State<Arc<Relayer>>,
+    Json(request): Json<zecswap_api::reverse::Funding>,
+) -> Result<Json<Sent>, RelayerError> {
+    Ok(Json(relayer.fund_reverse(request).await?))
 }
 
 async fn lock_reverse_refund(

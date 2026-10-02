@@ -7,6 +7,42 @@ use zecswap_railgun::ShieldNote;
 use crate::{Relayer, RelayerError, Result};
 
 impl Relayer {
+    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "fund_reverse"), err(level = "warn"))]
+    pub async fn fund_reverse(&self, request: zecswap_api::reverse::Funding) -> Result<Sent> {
+        use zecswap_chain::evm::funding::FundingError;
+        let funding = self.config.reverse_funding.as_ref().ok_or_else(|| {
+            RelayerError::Rejected("initial reverse funding sponsorship is disabled".into())
+        })?;
+        if request.chain_id != self.domain.chain_id {
+            return Err(RelayerError::Rejected("wrong funding chain".into()));
+        }
+        let policy = funding.policy();
+        let map_error = |error| match error {
+            FundingError::Rejected(reason) => RelayerError::Rejected(reason.into()),
+            // Upstream RPC errors can contain request bytes. Do not log them.
+            FundingError::Chain(_) => RelayerError::Internal(anyhow::anyhow!(
+                "funding RPC unavailable or submission outcome unknown; reconcile escrow before retrying the same proof"
+            )),
+        };
+        let validated = policy
+            .validate(
+                self.domain,
+                request.swap_id,
+                request.to,
+                request.value,
+                request.data,
+            )
+            .map_err(map_error)?;
+        let tx = self
+            .settlement
+            .sponsor_reverse_funding(&policy, &validated)
+            .await
+            .map_err(map_error)?;
+        Ok(Sent {
+            transactions: tx.into_iter().collect(),
+        })
+    }
+
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "ready_reverse"), err(level = "warn"))]
     pub async fn ready_reverse(&self, request: Authorization) -> Result<Sent> {
         let (swap, _) = self.reverse_swap(request.swap_id).await?;

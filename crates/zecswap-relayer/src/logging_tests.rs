@@ -33,6 +33,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
             claim_margin: 30,
+            reverse_funding: None,
         },
         account: Address::repeat_byte(2),
         domain: Domain {

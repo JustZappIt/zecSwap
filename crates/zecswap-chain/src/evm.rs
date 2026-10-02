@@ -1,6 +1,7 @@
 //! Client for the ZecSwap settlement contract, on whichever EVM chain it is deployed.
 
 mod events;
+pub mod funding;
 pub use events::{SwapEvent, SwapEventKind};
 
 use std::time::Duration;
@@ -234,8 +235,9 @@ pub fn reverse_funding_calls(
 }
 
 /// A connection to the settlement contract, sending transactions as one account, or reading
-/// only. Sends are serialized, and each reads its nonce from the chain once the previous one
-/// has its receipt, so a send that fails leaves no gap behind it.
+/// only. Sends are serialized and read the pending nonce rather than caching it, so a failed
+/// send leaves no gap. Settlement calls wait for receipts; sponsored funding returns a hash
+/// while pending so the wallet can track inclusion independently.
 pub struct Settlement {
     provider: DynProvider,
     contract: IZecSwap::IZecSwapInstance<DynProvider>,

@@ -53,7 +53,73 @@ Refund settlement reveals the user's share without making token calls; the maker
 its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
 Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
 Ready and lock submissions currently use sponsored relayer gas; refund payout uses its configured
-fee. No success-path fee reimbursement is added by this change.
+fee. Initial funding can also use the opt-in Sepolia sponsorship below. It adds no
+success-path fee reimbursement.
+
+## Sponsored initial funding (Sepolia)
+
+The relayer accepts `POST /v1/reverse/fund` when its `[reverse_funding]` configuration
+is present. `GET /v1/terms` then includes `reverseFunding` with `relayAdapt`, `token`,
+`maker`, `maxGasLimit`, `maxGasPriceWei` (decimal string), and `maxCalldataBytes`.
+The ordinary `fee` in terms still applies to payouts, not this sponsored transaction.
+An absent `reverseFunding` means sponsorship is disabled; do not silently switch to a
+phone-funded transaction. Pin the chain, settlement, maker, token, and adapter before proving.
+
+The phone keeps its Railgun spending keys and generates the proof locally:
+
+1. Prepare the signed `approve` and `openReverse` calls as above. Use the **V2 legacy
+   Relay Adapt** transaction format, not V3 or the EIP-7702 adapter.
+2. Use `sendWithPublicWallet=true` and no broadcaster fee recipient throughout the Railgun
+   estimate/prove/populate sequence. Here the public submitting wallet belongs to the
+   relayer; the phone needs no ETH. This mode must produce `requireSuccess=true`.
+   Paid broadcaster mode can allow failed cross-contract calls to continue and is rejected.
+3. Include the escrow token in `relayAdaptShieldERC20Recipients`, addressed to the user's
+   private wallet. The complete action must contain exactly: approve the exact escrow
+   amount, open the signed escrow, then adapter `shield` with one ERC20 request of value
+   zero (shield all remaining dust). Budget Railgun's unshield fee so the adapter receives
+   at least the full escrow amount. The user's proof binds every call and the dust note.
+4. Persist the prepared calldata, deployment, and swap ID, then send:
+
+   ```json
+   {
+     "swapId": "0x<32-byte swap ID>",
+     "chainId": 11155111,
+     "to": "0x<V2 Relay Adapt address>",
+     "data": "0x<complete proved relay calldata>",
+     "value": "0"
+   }
+   ```
+
+The endpoint accepts no spending key, sender, nonce, or caller-selected gas settings.
+It validates the full call tree, EIP-712 authorization, proof-to-action binding, token,
+maker, chain, zero ETH value, and deadline. It simulates the complete transaction from
+the relayer account against pending state before submission, including on-chain Railgun
+proof checks, and caps the gas limit and gas price. It submits the original calldata
+without modifying any proof-bound field. Calldata is limited to 64 KiB and the HTTP
+body to 132 KiB; the nginx route has the matching limit.
+
+The response is `{ "transactions": ["0x<transaction hash>"] }` as soon as submission
+is acknowledged, **before confirmation**. Persist the hash and independently verify escrow
+with the required confirmations. A matching escrow already on-chain returns an empty list
+without another submission, including after a relayer restart. A different escrow is rejected.
+After any timeout or error, reconcile first and only retry the identical prepared proof;
+never generate another unshield merely because the response was lost. There is no durable
+relayer submission journal: an ambiguous send can require chain reconciliation and a retry
+can consume additional relayer gas. Railgun nullifiers and the unique escrow ID prevent
+funding twice. The client must retain its pending action and must not treat an error as proof
+that no transaction was submitted.
+
+Enable the example relayer configuration with a verified adapter and fund its existing
+`RELAYER_PRIVATE_KEY` account with Sepolia ETH. Startup rejects other chains, the maker's
+own gas account, and adapters whose `railgun()` differs from settlement's `RAILGUN()`.
+This code does not enable sponsorship on the hosted service automatically. Mainnet
+Railgun broadcaster submission and private fee-token reimbursement remain separate work,
+including verification of escrow failure recovery on that submission path.
+
+Local tests cover a fixture encoded by the installed Railgun SDK, rejected transaction
+mutations, API limits, and Anvil submission with the real escrow and a **mock** adapter.
+The mock substitutes minting for Railgun unshield/proof verification. A real locally proved
+Railgun-to-escrow transaction and Android device flow remain live integration checks.
 
 Keep the app's foreground swap worker active through local deposit verification and settlement.
 Persist before submitting: swap index and quote, joint account/birthday, funding transaction,
@@ -98,7 +164,8 @@ reusing `AtomicSwap.accept`, `payoutNote`, and `depositAccount`. Its native bina
 the new methods.
 
 This change does not wire the sibling Android app's screens, foreground worker, or Railgun
-Relay Adapt proof/broadcast bridge. Those integrations must follow the ordering above. Local
+Relay Adapt proof bridge. Its submission can now use `RelayerApi::fund_reverse` and the
+endpoint above. Those integrations must follow the ordering above. Local
 tests cover signatures, escrow settlement, private refunds, persistence, and forward-flow
 regressions; a real Railgun-to-Zcash reverse swap remains a live integration check.
 

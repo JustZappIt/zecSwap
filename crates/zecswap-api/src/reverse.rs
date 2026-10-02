@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, FixedBytes};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 use zecswap_core::{PublicShare, ReverseOpen};
 
@@ -44,6 +44,19 @@ pub struct Authorization {
     pub swap_id: B256,
     pub deadline: u64,
     pub signature: FixedBytes<65>,
+}
+
+/// `POST /v1/reverse/fund`: the locally proved, unsigned Relay Adapt transaction.
+/// Persist these exact bytes before sending. No spending keys or sender nonce are accepted.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Funding {
+    pub swap_id: B256,
+    pub chain_id: u64,
+    pub to: Address,
+    pub data: Bytes,
+    #[serde(with = "crate::decimal")]
+    pub value: u128,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

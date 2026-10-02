@@ -27,11 +27,20 @@ Implement this normal flow with two user authorizations:
 
 1. Derive and persist a fresh swap index, auth key, Railgun refund-note commitment and verified
    quote. Accept it and import the joint Zcash account before funding.
-2. First authorization: use the existing Railgun integration to build, prove and broadcast
+2. First authorization: use the existing Railgun integration to build and prove
    one atomic Relay Adapt transaction that unshields the exact escrow amount, approves it,
-   and calls `openReverse`. Account separately for Railgun and broadcaster fees. Do not
+   and calls `openReverse`. Discover initial funding sponsorship via the relayer's
+   `GET /v1/terms` `reverseFunding` field and use `POST /v1/reverse/fund` with the persisted
+   transaction as described in `docs/reverse-flow.md`. For sponsored Sepolia funding, use
+   V2 legacy Relay Adapt, `sendWithPublicWallet=true`, no broadcaster fee recipient,
+   `requireSuccess=true`, and a final shield of all remaining escrow-token dust. The relayer
+   pays Sepolia ETH; do not require or fund a phone EVM gas account. Absent sponsorship is an
+   explicit unsupported state, not permission to switch submission methods automatically.
+   Account separately for Railgun fees (and broadcaster fees on a future broadcaster route). Do not
    substitute an ordinary public ERC20 transfer. The maker detects confirmed funding itself;
    there is no separate funded notification.
+   A funding response contains a pending hash, not confirmation; an empty transaction list
+   means matching escrow already exists. Independently verify the escrow in both cases.
 3. Show resumable progress while independently verifying escrow and scanning the joint Zcash
    account. The maker's status and reported transaction ID are advisory. Only enable the
    second authorization when the full quoted `depositZat` is confirmed and spendable.
