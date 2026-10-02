@@ -19,8 +19,8 @@ The reverse-capable Sepolia contract is deployed at
 [sepolia-reverse.json](../deployments/sepolia-reverse.json) records the transaction, block,
 test token, Railgun proxy and lock duration. Its runtime code was checked against the build,
 and its lock, Railgun proxy and reverse-funding getter were checked on-chain. Both hosted
-services use this deployment. The existing local phone-test services still use the prior
-contract; switching Android requires updating its contract and endpoints together.
+services use this deployment. The Android hosted testnet pin is updated on
+`feature/private-usd-ui` in commit `b17a2e8f6`; installed builds still need an update.
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -56,6 +56,18 @@ The 53 Railgun/reverse contract tests passed, and runtime bytecode, lock duratio
 Railgun proxy and rescue nonce reads were verified on the new contract. Maker and
 relayer report the new contract and healthy local APIs. The September smoke test
 below belongs to the retired contract; a new full live swap has not yet been run.
+
+The dashboard's Production `BRIDGE_TESTNET_CONTRACT` now selects this address.
+The existing approved Vercel release was rebuilt with that setting as deployment
+`dpl_6sL3Tm3dzQm9W66GAd4BUNFgeStK`. A public dashboard API check at
+2026-10-02 17:28 UTC returned all nine checks healthy, no alerts, and zero swaps.
+The newer dashboard source is pushed to `main`, but its separate manual upload
+was blocked by Vercel's commit-author access check; the new Logs page remains
+pending that account connection and a dedicated Grafana read token.
+
+The three changed Android files pass targeted ktlint. The targeted session test
+could not compile because of existing chat dependency errors involving
+`replyToContentType`; no new APK was built or installed.
 
 ## Deployment sequence
 
