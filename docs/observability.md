@@ -241,19 +241,20 @@ swap context while excluding private payloads, and a local Anvil transaction tes
 that verifies matching swap/hash on submission and mining. Checks and Clippy for
 maker/relayer/chain passed with warnings denied. The deployed relayer also passed the correlated rejection check.
 
-The separate `zapp-dashboard` repository has a prepared `/bridge/logs` page and
+The separate `zapp-dashboard` repository has a deployed `/bridge/logs` page and
 protected `/api/bridge/logs` server route. It reads Cloud logs only on demand,
 keeps the token in Vercel server environment variables, and provides links from
 individual swaps. The existing dashboard is public, so logs have separate Basic
 authentication using existing dashboard credentials or dedicated `LOGS_*` values.
 A dedicated stack-scoped `logs:read` token is required as a sensitive Vercel
-`GRAFANA_LOGS_READ_TOKEN`; the VPS policy remains `logs:write` only. The page has
-not been deployed: Vercel blocked the manual upload with `TEAM_ACCESS_REQUIRED`
-for the commit author. Connect the actual GitHub author to the owning Vercel
-account before retrying. Live reads also remain unverified until the dedicated
-read token is supplied. The existing approved dashboard was separately rebuilt
-with the new contract setting and verified healthy with no deployment mismatch
-alerts. See that repository's README for setup, validation and rollback.
+`GRAFANA_LOGS_READ_TOKEN`; the VPS policy remains `logs:write` only. After the
+owner updated the GitHub sign-in connection, a normal manual deployment succeeded
+as `dpl_EPVWCWe32WwXuxqz5tipnMfHfSbJ` from dashboard source `b04b2f1`.
+Both Logs routes return 401 with `private, no-store` when unauthenticated.
+All nine live bridge checks are healthy with no deployment mismatch alerts.
+Live Cloud reads remain unverified until the dedicated read token is supplied
+and the dashboard is redeployed. See that repository's README for setup,
+validation and rollback.
 
 A post-cutover sample measured Alloy at 40.4 MiB, 537 MiB available host memory,
 no memory-pressure/OOM events, and 1.07 MiB cursor storage in its bounded tmpfs.
