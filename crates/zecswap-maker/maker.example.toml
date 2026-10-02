@@ -3,6 +3,7 @@
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
 #   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
 #   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor
+#   ZCASH_CMC_KEY       required when [pricing.market] is enabled; server-side only
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
@@ -22,6 +23,14 @@ price_per_zec = 40000000
 spread_bps = 100
 unit = 50000000
 max_units = 20
+
+# Enable live USD quotes for a six-decimal USDC token. This ignores price_per_zec.
+# Prices are fetched on quote/dashboard requests, with a shared cache; no cron or polling.
+# Never fall back to the fixed price if the provider fails or a price becomes stale.
+# [pricing.market]
+# token_decimals = 6
+# refresh_seconds = 60
+# max_age_seconds = 300
 
 [timing]
 quote_ttl = 120

@@ -4577,6 +4577,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -4690,6 +4691,23 @@ dependencies = [
  "smallvec",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "rust_decimal"
+version = "1.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7653272e75dcac41dc199fbea6f5797633994fafd339943c06c9af16bf29cd3a"
+dependencies = [
+ "arrayvec",
+ "borsh",
+ "bytes",
+ "num-traits",
+ "rand 0.8.8",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -6877,11 +6895,14 @@ dependencies = [
  "anyhow",
  "axum",
  "blake2b_simd",
+ "chrono",
  "clap",
  "futures-util",
  "hex",
  "rand_core 0.6.4",
+ "reqwest",
  "rusqlite",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tempfile",

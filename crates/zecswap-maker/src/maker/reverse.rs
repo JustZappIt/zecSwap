@@ -34,9 +34,13 @@ impl Maker {
                 "user and refund note must be nonzero".into(),
             ));
         }
-        let terms = self
-            .config
-            .pricing
+        self.prices.refresh().await;
+        let pricing = self
+            .prices
+            .quote(unix_now())
+            .ok_or(MakerError::PriceUnavailable)?;
+        let terms = pricing
+            .policy
             .reverse_terms(request.units)
             .ok_or_else(|| MakerError::Rejected("amount is outside the quotable range".into()))?;
         let zcash = self.zcash.lock().await;
@@ -57,6 +61,9 @@ impl Maker {
         let mut id = [0; 32];
         OsRng.fill_bytes(&mut id);
         self.health.check()?;
+        if !pricing.fresh(unix_now()) {
+            return Err(MakerError::PriceUnavailable);
+        }
         Ok(self.store.insert_reverse_quote(|nonce| {
             let share = self.maker_share(nonce)?;
             Ok(reverse::Quote {
