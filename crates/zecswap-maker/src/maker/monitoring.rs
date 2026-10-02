@@ -77,6 +77,7 @@ pub(crate) struct MonitorSnapshot {
     runtime: Runtime,
     counts: MonitorCounts,
     inventory: Inventory,
+    pricing: crate::market::PriceSnapshot,
     policy: Policy,
     swaps: Vec<MonitorSwap>,
     swap_limit: usize,
@@ -222,7 +223,8 @@ impl Maker {
             }
             observed
         };
-        let ((available, wallet, gas), observed) = tokio::join!(readings, observations);
+        let ((available, wallet, gas), observed, ()) =
+            tokio::join!(readings, observations, self.prices.refresh());
         for (id, chain) in observed {
             let swap = swaps.iter_mut().find(|swap| swap.id == id).unwrap();
             swap.chain_observed = true;
@@ -243,6 +245,7 @@ impl Maker {
                 swap.refund_lock_until = Some(chain.refund_lock_until);
             }
         }
+        let pricing = self.prices.snapshot(unix_now());
         Ok(MonitorSnapshot {
             schema_version: 1,
             generated_at: unix_now(),
@@ -264,7 +267,7 @@ impl Maker {
                 wallet_busy,
             },
             policy: Policy {
-                price_per_zec: self.config.pricing.price_per_zec.to_string(),
+                price_per_zec: pricing.price_per_zec.clone().unwrap_or_else(|| "0".into()),
                 spread_bps: self.config.pricing.spread_bps,
                 unit: self.config.pricing.unit.to_string(),
                 max_units: self.config.pricing.max_units,
@@ -287,6 +290,7 @@ impl Maker {
                     .as_ref()
                     .map(|value| value.fee_reserve_zat.to_string()),
             },
+            pricing,
             swaps,
             swap_limit: LIMIT,
         })

@@ -9,11 +9,23 @@ const BASIS_POINTS: u128 = 10_000;
 #[serde(deny_unknown_fields)]
 pub struct Pricing {
     /// Token base units per whole ZEC, before the spread.
+    #[serde(default)]
     pub price_per_zec: u128,
     pub spread_bps: u16,
     /// Token base units per denomination.
     pub unit: u128,
     pub max_units: u32,
+    /// When enabled, fixed prices are ignored, including during provider outages.
+    #[serde(default)]
+    pub market: Option<MarketConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarketConfig {
+    pub token_decimals: u8,
+    pub refresh_seconds: u64,
+    pub max_age_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +90,7 @@ mod tests {
             spread_bps: 100,
             unit: 50_000_000,
             max_units: 20,
+            market: None,
         }
     }
 

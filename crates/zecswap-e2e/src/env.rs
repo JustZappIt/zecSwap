@@ -559,6 +559,7 @@ fn creation_code(artifacts: &Path, name: &str) -> Result<Vec<u8>> {
 
 fn pricing() -> Pricing {
     Pricing {
+        market: None,
         price_per_zec: 500_000_000,
         spread_bps: 100,
         unit: 1_000_000,

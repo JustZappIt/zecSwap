@@ -108,6 +108,9 @@ impl IntoResponse for MakerError {
             MakerError::UnknownQuote => (StatusCode::NOT_FOUND, ErrorCode::UnknownQuote),
             MakerError::UnknownSwap => (StatusCode::NOT_FOUND, ErrorCode::UnknownSwap),
             MakerError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Unavailable),
+            MakerError::PriceUnavailable => {
+                (StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Unavailable)
+            }
             MakerError::WatchtowerUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::WatchtowerUnavailable,

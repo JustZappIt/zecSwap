@@ -39,6 +39,7 @@ pub struct Maker {
     health: Health,
     inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
     monitoring: monitoring::Monitoring,
+    prices: crate::market::PriceBook,
 }
 
 struct Zcash {
@@ -110,6 +111,8 @@ pub enum MakerError {
     UnknownSwap,
     #[error("cannot fill that amount right now")]
     Unavailable,
+    #[error("live market price is unavailable or stale; try again later")]
+    PriceUnavailable,
     #[error("watchtower has not completed a recent pass; try again later")]
     WatchtowerUnavailable,
     #[error(transparent)]
@@ -124,6 +127,7 @@ impl From<zecswap_chain::Error> for MakerError {
 
 impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
+        let prices = crate::market::PriceBook::from_env(&config.pricing)?;
         std::fs::create_dir_all(&config.data_dir)?;
         let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
         anyhow::ensure!(
@@ -168,6 +172,7 @@ impl Maker {
             None
         };
         Ok(Self {
+            prices,
             monitoring: monitoring::Monitoring::from_env()?,
             inventory,
             store,
@@ -223,7 +228,12 @@ impl Maker {
 
     pub async fn quote(&self, request: QuoteRequest) -> Result<Quote, MakerError> {
         self.health.check()?;
-        let terms = self.config.pricing.terms(request.units).ok_or_else(|| {
+        self.prices.refresh().await;
+        let pricing = self
+            .prices
+            .quote(unix_now())
+            .ok_or(MakerError::PriceUnavailable)?;
+        let terms = pricing.policy.terms(request.units).ok_or_else(|| {
             MakerError::Rejected(format!(
                 "{} units is outside the quotable range",
                 request.units
@@ -249,6 +259,9 @@ impl Maker {
         OsRng.fill_bytes(&mut quote_id);
         let expires_at = unix_now() + self.config.timing.quote_ttl;
         self.health.check()?;
+        if !pricing.fresh(unix_now()) {
+            return Err(MakerError::PriceUnavailable);
+        }
         let nonce = self.store.insert_quote(
             quote_id,
             request.payout,
@@ -503,7 +516,7 @@ impl Maker {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock is after 1970")

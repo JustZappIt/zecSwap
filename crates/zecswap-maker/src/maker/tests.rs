@@ -22,6 +22,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
+        prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         monitoring: monitoring::Monitoring::new(None),
         inventory: None,
         account: key.address(),

@@ -87,6 +87,29 @@ would remove its contract-backed recovery path.
 
 ### Dashboard monitoring
 
+Live USD pricing is enabled by `[pricing.market]` in the maker configuration:
+
+```toml
+[pricing.market]
+token_decimals = 6
+refresh_seconds = 60
+max_age_seconds = 300
+```
+
+Set `ZCASH_CMC_KEY` only in the maker's protected environment file. It is never a
+dashboard variable or part of a browser response. Quote and monitoring requests fetch
+CoinMarketCap's ZEC (ID 1437) and USDC (ID 3408) USD prices together, using a shared
+60-second cache and a single in-flight request. There is no cron or background polling.
+ZEC/USDC is ZEC/USD divided by USDC/USD, converted to six-decimal token units with decimal
+arithmetic; the existing spread and zatoshi rounding apply in both swap directions.
+Both asset timestamps must be within the configured maximum age. A provider failure can
+reuse the last valid price only within that limit; without one, new quotes return 503
+with `unavailable`. Provider retries are limited to once per ten seconds after failures.
+The old fixed price is ignored whenever market pricing is enabled. Issued quotes retain
+their exact stored amounts until expiry; settlement and watchtower recovery continue
+independently of the price feed. Omitting `[pricing.market]` retains fixed pricing for
+local tests. Production and mainnet should explicitly enable market pricing.
+
 `GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`. It is
 disabled unless `MAKER_MONITOR_TOKEN` is set (at least 32 characters), and requires
 `Authorization: Bearer <token>`. Use the same value as `BRIDGE_TESTNET_MONITOR_TOKEN`
@@ -96,6 +119,9 @@ authorization, or wallet account identifier is returned.
 The export reports contract and wallet USDC, maker ETH, shielded ZEC total/spendable/
 reserved/available inventory, quote and swap counts, watchtower readiness, sync recency,
 errors since restart, pricing/timing policy, and up to 50 swaps with active records first.
+The `pricing` object reports the same prices used for quotes, provider timestamps,
+cache/freshness policy and sanitized refresh errors. USD inventory values and displayed
+maker buy/sell rates use these readings, rather than another independent price feed.
 Swap details include observed contract states, deposit/sweep transaction IDs, wallet funds,
 and claim/refund deadlines. Settled counts include expired and refunded swaps; they are
 not successful-trade counts. Per-swap errors are from the last completed watchtower pass;
