@@ -23,6 +23,8 @@ enum Command {
     Serve,
     /// Shows the seed-derived ZEC inventory address and synced balance for reverse swaps.
     ZecInventory,
+    /// Sends a labeled Telegram setup test without creating a bridge transaction.
+    TelegramTest,
     /// Moves `amount` base units of the payout token into the contract inventory.
     AddInventory {
         amount: u128,
@@ -42,10 +44,14 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let config = Config::load(&cli.config)?;
+    if matches!(cli.command, Command::TelegramTest) {
+        return Maker::telegram_test(&config).await;
+    }
     let token = config.token;
     let maker = Arc::new(Maker::new(config, Secrets::from_env()?).await?);
 
     match cli.command {
+        Command::TelegramTest => unreachable!(),
         Command::ZecInventory => {
             let (address, funds) = maker.reverse_inventory().await?;
             println!(

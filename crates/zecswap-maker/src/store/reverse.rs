@@ -89,7 +89,12 @@ impl Store {
             .transpose()
     }
 
-    pub(crate) fn insert_reverse_swap(&self, swap: &ReverseSwap, now: u64) -> Result<()> {
+    pub(crate) fn insert_reverse_swap(
+        &self,
+        swap: &ReverseSwap,
+        now: u64,
+        event: Option<&super::Notification>,
+    ) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let taken = tx.execute("UPDATE quotes SET accepted = 1 WHERE quote_id = ?1 AND accepted = 0 AND expires_at > ?2",
@@ -103,6 +108,7 @@ impl Store {
                 serde_json::to_string(swap)?
             ],
         )?;
+        super::notifications::insert(&tx, event)?;
         tx.commit()?;
         Ok(())
     }
@@ -131,8 +137,18 @@ impl Store {
     }
 
     pub(crate) fn save_reverse_swap(&self, swap: &ReverseSwap) -> Result<()> {
+        self.save_reverse_swap_with_notification(swap, None)
+    }
+
+    pub(crate) fn save_reverse_swap_with_notification(
+        &self,
+        swap: &ReverseSwap,
+        event: Option<&super::Notification>,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
         ensure!(
-            self.conn().execute(
+            tx.execute(
                 "UPDATE reverse_swaps SET data = ?2, settled = ?3 WHERE id = ?1",
                 params![
                     swap.id.as_slice(),
@@ -142,6 +158,8 @@ impl Store {
             )? == 1,
             "reverse swap is missing"
         );
+        super::notifications::insert(&tx, event)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -221,9 +239,23 @@ mod tests {
             sweep: None,
             settled: false,
         };
-        assert!(store.insert_reverse_swap(&swap, 200).is_err());
-        store.insert_reverse_swap(&swap, 100).unwrap();
-        assert!(store.insert_reverse_swap(&swap, 100).is_err());
+        assert!(store.insert_reverse_swap(&swap, 200, None).is_err());
+        store.conn().execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON notifications WHEN NEW.event_key = 'reject' BEGIN SELECT RAISE(FAIL, 'injected queue failure'); END;").unwrap();
+        let bad = super::super::Notification {
+            key: "reject".into(),
+            text: "test".into(),
+            created_at: 100,
+        };
+        assert!(store.insert_reverse_swap(&swap, 100, Some(&bad)).is_err());
+        assert!(store.pending_reverse_swaps().unwrap().is_empty());
+        let accepted = super::super::Notification {
+            key: "accepted".into(),
+            ..bad
+        };
+        store
+            .insert_reverse_swap(&swap, 100, Some(&accepted))
+            .unwrap();
+        assert!(store.insert_reverse_swap(&swap, 100, None).is_err());
         swap.deposit = Some(TxId::from_bytes([8; 32]));
         store.save_reverse_swap(&swap).unwrap();
         drop(store);
@@ -250,7 +282,25 @@ mod tests {
         assert!(!exported.contains("acceptance"));
         assert!(!exported.contains(&swap.account.expose_uuid().to_string()));
         swap.settled = true;
-        store.save_reverse_swap(&swap).unwrap();
+        let bad = super::super::Notification {
+            key: "reject".into(),
+            text: "test".into(),
+            created_at: 101,
+        };
+        assert!(
+            store
+                .save_reverse_swap_with_notification(&swap, Some(&bad))
+                .is_err()
+        );
+        assert!(!store.reverse_swap(swap.id).unwrap().unwrap().settled);
+        let finished = super::super::Notification {
+            key: "finished".into(),
+            ..bad
+        };
+        store
+            .save_reverse_swap_with_notification(&swap, Some(&finished))
+            .unwrap();
+        assert_eq!(store.notification_status(true).unwrap().pending, 2);
         assert!(store.pending_reverse_swaps().unwrap().is_empty());
         assert!(store.reverse_swap(swap.id).unwrap().unwrap().settled);
     }

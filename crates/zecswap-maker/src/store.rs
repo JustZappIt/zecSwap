@@ -1,6 +1,8 @@
 mod monitoring;
+mod notifications;
 mod reverse;
 pub(crate) use monitoring::{MonitorCounts, MonitorSwap};
+pub(crate) use notifications::{Notification, NotificationStatus};
 pub(crate) use reverse::ReverseSwap;
 
 use std::path::Path;
@@ -77,6 +79,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(reverse::SCHEMA)?;
+        conn.execute_batch(notifications::SCHEMA)?;
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -121,8 +124,10 @@ impl Store {
             .optional()?)
     }
 
-    pub fn insert_swap(&self, swap: &Swap) -> Result<()> {
-        self.conn().execute(
+    pub fn insert_swap(&self, swap: &Swap, event: Option<&Notification>) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t1)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -135,6 +140,8 @@ impl Store {
                 swap.t1,
             ],
         )?;
+        notifications::insert(&tx, event)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -178,11 +185,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn settle(&self, id: &B256) -> Result<()> {
-        self.conn().execute(
+    pub fn settle(&self, id: &B256, event: Option<&Notification>) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE swaps SET settled = 1 WHERE id = ?1",
             params![id.as_slice()],
         )?;
+        notifications::insert(&tx, event)?;
+        tx.commit()?;
         Ok(())
     }
 

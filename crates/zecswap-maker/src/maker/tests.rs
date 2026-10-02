@@ -22,6 +22,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
+        telegram: crate::telegram::Telegram::new(None, None).unwrap(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         monitoring: monitoring::Monitoring::new(None),
         inventory: None,
@@ -52,6 +53,102 @@ fn acceptance() -> Acceptance {
         user_proof: ShareProof::from_bytes([0; 64]),
         viewing_keys: ViewingKeys::random(OsRng),
     }
+}
+
+#[tokio::test]
+async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    let swap = crate::store::Swap {
+        id: B256::repeat_byte(5),
+        quote: crate::store::Quote {
+            id: [1; 32],
+            nonce: 0,
+            payout: Address::repeat_byte(2),
+            payout_note: None,
+            amount: 1234567,
+            deposit_zat: 100001,
+        },
+        user_share: SecretShare::random(OsRng).public(),
+        viewing: ViewingKeys::random(OsRng),
+        zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        opened_at: 1000,
+        t1: 7300,
+        sweep: None,
+        settled: false,
+    };
+    assert!(
+        maker
+            .forward_alert(&swap, "accepted", "Bridge accepted")
+            .is_none()
+    );
+    maker.telegram =
+        crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+    let share = maker.maker_share(0).unwrap();
+    let reverse = crate::store::ReverseSwap {
+        id: B256::repeat_byte(6),
+        nonce: 0,
+        quote: zecswap_api::reverse::Quote {
+            terms: Quote {
+                quote_id: B256::repeat_byte(1),
+                maker: maker.account,
+                maker_share: share.public(),
+                maker_proof: maker.context([1; 32]).prove_maker(&share, OsRng),
+                chain_id: maker.chain_id,
+                contract: maker.config.contract,
+                token: maker.config.token,
+                amount: 1234567,
+                deposit_zat: 100001,
+                expires_at: 2000,
+            },
+            user: Address::repeat_byte(2),
+            refund_note: B256::repeat_byte(3),
+            funding_deadline: 3000,
+            ready_deadline: 4000,
+            refund_after: 5000,
+        },
+        acceptance: acceptance(),
+        account: swap.zcash_account,
+        deposit: Some(TxId::from_bytes([8; 32])),
+        sweep: None,
+        settled: false,
+    };
+    let mut keys = Vec::new();
+    for (network, name) in [
+        (crate::Chain::Testnet, "testnet"),
+        (crate::Chain::Mainnet, "mainnet"),
+    ] {
+        maker.config.network = network;
+        for (event, direction) in [
+            (
+                maker
+                    .forward_alert(&swap, "accepted", "Bridge accepted")
+                    .unwrap(),
+                "ZEC → USDC",
+            ),
+            (
+                maker
+                    .reverse_alert(&reverse, "accepted", "Bridge accepted")
+                    .unwrap(),
+                "USDC → ZEC",
+            ),
+        ] {
+            assert!(event.text.contains(&name.to_uppercase()));
+            assert!(event.text.contains(&format!("?network={name}")));
+            assert!(event.text.contains(direction));
+            assert!(event.text.contains("1.234567 USDC ↔ 0.00100001 ZEC"));
+            assert!(!event.text.contains("private-token"));
+            assert!(!event.text.contains("123456789"));
+            assert!(!event.text.contains(&hex::encode(swap.viewing.to_bytes())));
+            assert!(!event.text.contains(&hex::encode(*maker.root)));
+            assert!(event.text.chars().count() < 4096);
+            assert!(!keys.contains(&event.key));
+            keys.push(event.key);
+        }
+    }
+    let summary = serde_json::to_string(&maker.store.notification_status(true).unwrap()).unwrap();
+    assert!(!summary.contains("private-token"));
+    assert!(!summary.contains("123456789"));
 }
 
 fn request(path: &str, body: impl serde::Serialize) -> Request<Body> {
