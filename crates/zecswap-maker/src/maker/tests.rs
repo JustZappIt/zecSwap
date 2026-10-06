@@ -15,9 +15,9 @@ fn maker() -> (TempDir, Arc<Maker>) {
     config.evm_rpc = "http://127.0.0.1:1".into();
     std::fs::create_dir(&config.data_dir).unwrap();
     let joint = JointAccount::derive(
-        &SecretShare::random(OsRng).public(),
-        &SecretShare::random(OsRng).public(),
-        &ViewingKeys::random(OsRng),
+        &SecretShare::random(UnwrapErr(SysRng)).public(),
+        &SecretShare::random(UnwrapErr(SysRng)).public(),
+        &ViewingKeys::random(UnwrapErr(SysRng)),
     )
     .unwrap();
     let key = PrivateKeySigner::random();
@@ -55,9 +55,9 @@ fn maker() -> (TempDir, Arc<Maker>) {
 
 fn acceptance() -> Acceptance {
     Acceptance {
-        user_share: SecretShare::random(OsRng).public(),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
         user_proof: ShareProof::from_bytes([0; 64]),
-        viewing_keys: ViewingKeys::random(OsRng),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
     }
 }
 
@@ -75,8 +75,8 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
             amount: 1234567,
             deposit_zat: 100001,
         },
-        user_share: SecretShare::random(OsRng).public(),
-        viewing: ViewingKeys::random(OsRng),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: 1000,
         t1: 7300,
@@ -112,7 +112,9 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
                 quote_id: B256::repeat_byte(1),
                 maker: maker.account,
                 maker_share: share.public(),
-                maker_proof: maker.context([1; 32]).prove_maker(&share, OsRng),
+                maker_proof: maker
+                    .context([1; 32])
+                    .prove_maker(&share, UnwrapErr(SysRng)),
                 chain_id: maker.chain_id,
                 contract: maker.config.contract,
                 token: maker.config.token,
@@ -634,13 +636,13 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         .take_quote(&[1; 32], unix_now())
         .unwrap()
         .unwrap();
-    let user_share = SecretShare::random(OsRng).public();
+    let user_share = SecretShare::random(UnwrapErr(SysRng)).public();
     let now = maker.settlement.now().await.unwrap();
     let swap = Swap {
         id: swap_id(maker.account, &user_share),
         quote,
         user_share,
-        viewing: ViewingKeys::random(OsRng),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: now,
         t1: now + 7200,

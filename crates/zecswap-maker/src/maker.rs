@@ -1,4 +1,5 @@
 mod flow;
+mod gas_alerts;
 mod monitoring;
 mod notifications;
 mod reverse;
@@ -12,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use futures_util::FutureExt;
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
@@ -155,6 +156,9 @@ impl From<zecswap_chain::Error> for MakerError {
 
 impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
+        if let Some(alerts) = &config.gas_alerts {
+            alerts.check()?;
+        }
         let prices = crate::market::PriceBook::from_env(&config.pricing)?;
         let telegram = crate::telegram::Telegram::from_env()?;
         std::fs::create_dir_all(&config.data_dir)?;
@@ -287,7 +291,7 @@ impl Maker {
         }
 
         let mut quote_id = [0; 32];
-        OsRng.fill_bytes(&mut quote_id);
+        UnwrapErr(SysRng).fill_bytes(&mut quote_id);
         let expires_at = unix_now() + self.config.timing.quote_ttl;
         self.check_watchtower()?;
         if !pricing.fresh(unix_now()) {
@@ -306,7 +310,7 @@ impl Maker {
             quote_id: quote_id.into(),
             maker: self.account,
             maker_share: e.public(),
-            maker_proof: self.context(quote_id).prove_maker(&e, OsRng),
+            maker_proof: self.context(quote_id).prove_maker(&e, UnwrapErr(SysRng)),
             chain_id: self.chain_id,
             contract: self.settlement.contract(),
             token: self.config.token,
@@ -441,6 +445,7 @@ impl Maker {
             watchtower,
             self.run_zcash(),
             self.run_notifications(),
+            self.run_gas_alerts(),
             self.run_transaction_observer(),
             self.run_flow_observer()
         );

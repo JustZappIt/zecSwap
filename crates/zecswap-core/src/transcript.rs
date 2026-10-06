@@ -1,4 +1,4 @@
-use rand_core::{CryptoRng, RngCore};
+use rand::CryptoRng;
 
 use crate::{Error, PublicShare, SecretShare, ShareProof};
 
@@ -26,7 +26,7 @@ pub struct Payout {
 }
 
 impl SwapContext {
-    pub fn prove_maker<R: RngCore + CryptoRng>(&self, e: &SecretShare, rng: R) -> ShareProof {
+    pub fn prove_maker<R: CryptoRng>(&self, e: &SecretShare, rng: R) -> ShareProof {
         e.prove(&self.maker_message(&e.public()), rng)
     }
 
@@ -34,7 +34,7 @@ impl SwapContext {
         maker.verify(&self.maker_message(maker), proof)
     }
 
-    pub fn prove_user<R: RngCore + CryptoRng>(
+    pub fn prove_user<R: CryptoRng>(
         &self,
         maker: &PublicShare,
         z: &SecretShare,
@@ -81,7 +81,7 @@ impl SwapContext {
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
 
     use super::*;
 
@@ -95,8 +95,8 @@ mod tests {
 
     #[test]
     fn maker_proof_verifies_only_in_its_context() {
-        let e = SecretShare::random(OsRng);
-        let proof = context().prove_maker(&e, OsRng);
+        let e = SecretShare::random(UnwrapErr(SysRng));
+        let proof = context().prove_maker(&e, UnwrapErr(SysRng));
         assert_eq!(context().verify_maker(&e.public(), &proof), Ok(()));
 
         let replayed = SwapContext {
@@ -119,18 +119,21 @@ mod tests {
 
     #[test]
     fn user_proof_binds_maker_share_and_payout() {
-        let (e, z) = (SecretShare::random(OsRng), SecretShare::random(OsRng));
+        let (e, z) = (
+            SecretShare::random(UnwrapErr(SysRng)),
+            SecretShare::random(UnwrapErr(SysRng)),
+        );
         let payout = Payout {
             user: [3; 20],
             note: Some([5; 32]),
         };
-        let proof = context().prove_user(&e.public(), &z, &payout, OsRng);
+        let proof = context().prove_user(&e.public(), &z, &payout, UnwrapErr(SysRng));
         assert_eq!(
             context().verify_user(&e.public(), &z.public(), &payout, &proof),
             Ok(())
         );
 
-        let other_maker = SecretShare::random(OsRng).public();
+        let other_maker = SecretShare::random(UnwrapErr(SysRng)).public();
         let other_user = Payout {
             user: [4; 20],
             ..payout
@@ -157,9 +160,9 @@ mod tests {
 
     #[test]
     fn roles_are_domain_separated() {
-        let e = SecretShare::random(OsRng);
-        let proof = context().prove_maker(&e, OsRng);
-        let maker = SecretShare::random(OsRng).public();
+        let e = SecretShare::random(UnwrapErr(SysRng));
+        let proof = context().prove_maker(&e, UnwrapErr(SysRng));
+        let maker = SecretShare::random(UnwrapErr(SysRng)).public();
         let payout = Payout {
             user: [0; 20],
             note: None,

@@ -24,8 +24,12 @@ impl SweepIntent {
         minimum_received: u64,
         maximum_fee: u64,
     ) -> Result<Self, Error> {
-        let (actual_network, address) = unified::Address::decode(address)
+        let (actual_network, revision, address) = unified::Address::decode(address)
             .map_err(|_| policy("sweep destination must be a unified address"))?;
+        // Revision 2 can carry an expiry this check does not read.
+        if revision != unified::Revision::R0 {
+            return Err(policy("sweep destination must be a revision 0 unified address"));
+        }
         if actual_network != network {
             return Err(policy("sweep destination is on another network"));
         }
@@ -161,11 +165,9 @@ fn verify_ciphertext(action: &orchard::pczt::Action, pool: ValuePool) -> Result<
     use orchard::{
         Note,
         note::{NoteVersion, Rho},
-        note_encryption::{CompactAction, IronwoodDomain, OrchardDomain},
+        note_encryption::{IronwoodDomain, OrchardDomain},
     };
-    use zcash_note_encryption::{COMPACT_NOTE_SIZE, EphemeralKeyBytes};
     let output = action.output();
-    let encrypted = output.encrypted_note();
     let note = Note::from_parts(
         output
             .recipient()
@@ -184,21 +186,9 @@ fn verify_ciphertext(action: &orchard::pczt::Action, pool: ValuePool) -> Result<
     )
     .into_option()
     .ok_or_else(|| policy("invalid sweep output note"))?;
-    let compact = CompactAction::from_parts(
-        *action.spend().nullifier(),
-        *output.cmx(),
-        EphemeralKeyBytes(encrypted.epk_bytes),
-        encrypted.enc_ciphertext[..COMPACT_NOTE_SIZE]
-            .try_into()
-            .expect("fixed compact ciphertext size"),
-    );
-    let data = RecoveryOutput {
-        cmx: output.cmx().to_bytes(),
-        encrypted,
-    };
     let valid = match pool {
-        ValuePool::Orchard => recover(&OrchardDomain::for_compact_action(&compact), &note, &data),
-        ValuePool::Ironwood => recover(&IronwoodDomain::for_compact_action(&compact), &note, &data),
+        ValuePool::Orchard => recover(&OrchardDomain::for_pczt_action(action), &note, action),
+        ValuePool::Ironwood => recover(&IronwoodDomain::for_pczt_action(action), &note, action),
     };
     if valid {
         Ok(())
@@ -207,34 +197,10 @@ fn verify_ciphertext(action: &orchard::pczt::Action, pool: ValuePool) -> Result<
     }
 }
 
-struct RecoveryOutput<'a> {
-    cmx: [u8; 32],
-    encrypted: &'a orchard::note::TransmittedNoteCiphertext,
-}
-
-impl<D> zcash_note_encryption::ShieldedOutput<D, { zcash_note_encryption::ENC_CIPHERTEXT_SIZE }>
-    for RecoveryOutput<'_>
+fn recover<D>(domain: &D, note: &orchard::Note, action: &orchard::pczt::Action) -> bool
 where
-    D: zcash_note_encryption::Domain<ExtractedCommitmentBytes = [u8; 32]>,
-{
-    fn ephemeral_key(&self) -> zcash_note_encryption::EphemeralKeyBytes {
-        zcash_note_encryption::EphemeralKeyBytes(self.encrypted.epk_bytes)
-    }
-    fn cmstar_bytes(&self) -> [u8; 32] {
-        self.cmx
-    }
-    fn enc_ciphertext(&self) -> &[u8; zcash_note_encryption::ENC_CIPHERTEXT_SIZE] {
-        &self.encrypted.enc_ciphertext
-    }
-}
-
-fn recover<D>(domain: &D, note: &orchard::Note, output: &RecoveryOutput<'_>) -> bool
-where
-    D: zcash_note_encryption::Domain<
-            Note = orchard::Note,
-            Memo = [u8; 512],
-            ExtractedCommitmentBytes = [u8; 32],
-        >,
+    D: zcash_note_encryption::Domain<Note = orchard::Note>,
+    orchard::pczt::Action: zcash_note_encryption::ShieldedOutput<D>,
 {
     D::derive_esk(note)
         .and_then(|esk| {
@@ -242,7 +208,7 @@ where
                 domain,
                 D::get_pk_d(note),
                 esk,
-                output,
+                action,
             )
         })
         .is_some()

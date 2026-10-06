@@ -272,8 +272,10 @@ mod tests {
             t1: 200,
             claim_lock_until: 0,
             refund_lock_until: 0,
-            maker_share: SecretShare::random(rand_core::OsRng).public(),
-            user_share: SecretShare::random(rand_core::OsRng).public(),
+            maker_share: SecretShare::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng))
+                .public(),
+            user_share: SecretShare::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng))
+                .public(),
             secret: [0; 32],
             payout_note: None,
             paid_out: false,

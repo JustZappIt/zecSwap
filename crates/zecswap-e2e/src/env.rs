@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -258,6 +258,7 @@ impl Env {
 
         let maker_config = |name: &str| Config {
             reverse: None,
+            gas_alerts: None,
             network: Chain::Testnet,
             lightwalletd: settings.lightwalletd.clone(),
             evm_rpc: settings.evm_rpc.clone(),
@@ -578,7 +579,7 @@ fn maker_root(dir: &Path) -> Result<Zeroizing<[u8; 32]>> {
         return Ok(root);
     }
     std::fs::create_dir_all(dir)?;
-    OsRng.fill_bytes(&mut root[..]);
+    UnwrapErr(SysRng).fill_bytes(&mut root[..]);
     std::fs::write(&path, hex::encode(&root[..]))?;
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     Ok(root)

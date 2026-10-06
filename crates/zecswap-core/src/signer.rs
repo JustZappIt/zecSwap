@@ -11,7 +11,7 @@ use orchard::primitives::redpallas::{self, SpendAuth};
 use pczt::Pczt;
 use pczt::roles::signer::{Signer, SpendAuthSignature};
 use pczt::roles::verifier::{OrchardError, Verifier};
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 
 use crate::{Error, SpendKey, SweepIntent};
 
@@ -57,7 +57,7 @@ pub fn sign_pczt(pczt: Pczt, keys: &[SpendKey], intent: &SweepIntent) -> Result<
     let mut signer = Signer::new(verifier.finish()).map_err(pczt_error)?;
     let sighash = signer.shielded_sighash();
     for (pool, index, rsk) in pending {
-        let signature = (&rsk.sign(OsRng, &sighash)).into();
+        let signature = (&rsk.sign(UnwrapErr(SysRng), &sighash)).into();
         signer
             .apply_orchard_spend_auth_signature(&SpendAuthSignature::from_parts(
                 pool, index, signature,

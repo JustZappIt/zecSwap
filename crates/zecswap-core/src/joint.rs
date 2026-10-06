@@ -3,8 +3,8 @@ use group::{Group, GroupEncoding};
 use orchard::keys::{FullViewingKey, Scope};
 use orchard::primitives::redpallas::{self, SpendAuth};
 use pasta_curves::pallas;
-use rand_core::{CryptoRng, RngCore};
-use zcash_address::unified::{self, Encoding};
+use rand::CryptoRng;
+use zcash_address::unified::{self, Encoding, Revision, Uitem};
 use zcash_protocol::consensus::NetworkType;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -19,7 +19,7 @@ pub struct ViewingKeys {
 }
 
 impl ViewingKeys {
-    pub fn random<R: RngCore + CryptoRng>(mut rng: R) -> Self {
+    pub fn random<R: CryptoRng>(mut rng: R) -> Self {
         Self {
             nk: pallas::Base::random(&mut rng).to_repr(),
             rivk: pallas::Scalar::random(&mut rng).to_repr(),
@@ -89,9 +89,12 @@ impl JointAccount {
 
     /// An Orchard-only unified full viewing key, for importing as a view-only account.
     pub fn ufvk(&self, network: NetworkType) -> String {
-        unified::Ufvk::try_from_items(vec![unified::Fvk::Orchard(self.fvk.to_bytes())])
-            .expect("a lone Orchard FVK is a valid UFVK")
-            .encode(&network)
+        unified::Ufvk::try_from_items(
+            Revision::R0,
+            vec![Uitem::Data(unified::Fvk::Orchard(self.fvk.to_bytes()))],
+        )
+        .expect("a lone Orchard FVK is a valid UFVK")
+        .encode(&network)
     }
 
     pub fn deposit_address(&self) -> orchard::Address {
@@ -101,7 +104,7 @@ impl JointAccount {
     /// The deposit address as an Orchard-only unified address.
     pub fn unified_address(&self, network: NetworkType) -> String {
         let receiver = unified::Receiver::Orchard(self.deposit_address().to_raw_address_bytes());
-        unified::Address::try_from_items(vec![receiver])
+        unified::Address::try_from_items(Revision::R0, vec![Uitem::Data(receiver)])
             .expect("a lone Orchard receiver is a valid unified address")
             .encode(&network)
     }
@@ -134,19 +137,27 @@ impl SpendKey {
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
 
     use super::*;
 
     fn account(e: &SecretShare, z: &SecretShare) -> JointAccount {
-        JointAccount::derive(&e.public(), &z.public(), &ViewingKeys::random(OsRng)).unwrap()
+        JointAccount::derive(
+            &e.public(),
+            &z.public(),
+            &ViewingKeys::random(UnwrapErr(SysRng)),
+        )
+        .unwrap()
     }
 
     #[test]
     fn both_halves_combine_under_either_parity() {
         let (mut even, mut odd) = (0, 0);
         while even < 4 || odd < 4 {
-            let (e, z) = (SecretShare::random(OsRng), SecretShare::random(OsRng));
+            let (e, z) = (
+                SecretShare::random(UnwrapErr(SysRng)),
+                SecretShare::random(UnwrapErr(SysRng)),
+            );
             let joint = account(&e, &z);
             if joint.negated {
                 odd += 1
@@ -160,9 +171,12 @@ mod tests {
 
     #[test]
     fn either_half_alone_or_a_wrong_half_is_rejected() {
-        let (e, z) = (SecretShare::random(OsRng), SecretShare::random(OsRng));
+        let (e, z) = (
+            SecretShare::random(UnwrapErr(SysRng)),
+            SecretShare::random(UnwrapErr(SysRng)),
+        );
         let joint = account(&e, &z);
-        let stranger = SecretShare::random(OsRng);
+        let stranger = SecretShare::random(UnwrapErr(SysRng));
         assert_eq!(
             joint.spend_key(&e, &stranger).err(),
             Some(Error::ShareMismatch)
@@ -175,10 +189,13 @@ mod tests {
 
     #[test]
     fn opposite_shares_are_degenerate() {
-        let z = SecretShare::random(OsRng);
+        let z = SecretShare::random(UnwrapErr(SysRng));
         let minus_z = SecretShare::from_scalar(-z.scalar()).unwrap();
-        let result =
-            JointAccount::derive(&minus_z.public(), &z.public(), &ViewingKeys::random(OsRng));
+        let result = JointAccount::derive(
+            &minus_z.public(),
+            &z.public(),
+            &ViewingKeys::random(UnwrapErr(SysRng)),
+        );
         assert_eq!(result.err(), Some(Error::DegenerateJointKey));
     }
 
