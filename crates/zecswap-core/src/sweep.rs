@@ -24,11 +24,11 @@ impl SweepIntent {
         minimum_received: u64,
         maximum_fee: u64,
     ) -> Result<Self, Error> {
-        let (actual_network, revision, address) = unified::Address::decode(address)
+        let (actual_network, _, address) = unified::Address::decode(address)
             .map_err(|_| policy("sweep destination must be a unified address"))?;
-        // Revision 2 can carry an expiry this check does not read.
-        if revision != unified::Revision::R0 {
-            return Err(policy("sweep destination must be a revision 0 unified address"));
+        // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
+        if !address.metadata_items().is_empty() {
+            return Err(policy("sweep destination must not carry address metadata"));
         }
         if actual_network != network {
             return Err(policy("sweep destination is on another network"));
