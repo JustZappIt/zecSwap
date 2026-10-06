@@ -39,6 +39,59 @@ pub struct Config {
     pub timing: Timing,
     #[serde(default)]
     pub reverse: Option<ReverseConfig>,
+    /// Optional native-gas alerts using the existing Telegram delivery queue.
+    #[serde(default)]
+    pub gas_alerts: Option<GasAlerts>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GasAlerts {
+    pub interval_seconds: u64,
+    pub accounts: Vec<GasAlertAccount>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GasAlertAccount {
+    pub label: String,
+    pub address: Address,
+    pub low_wei: u64,
+    pub recovery_wei: u64,
+}
+
+impl GasAlerts {
+    pub fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            (60..=3600).contains(&self.interval_seconds),
+            "gas alert interval must be 60..3600 seconds"
+        );
+        anyhow::ensure!(
+            !self.accounts.is_empty() && self.accounts.len() <= 8,
+            "gas alerts require 1..8 accounts"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for account in &self.accounts {
+            anyhow::ensure!(
+                !account.label.is_empty()
+                    && account.label.len() <= 40
+                    && account
+                        .label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b" -_".contains(&b)),
+                "invalid gas alert account label"
+            );
+            anyhow::ensure!(
+                !account.address.is_zero() && seen.insert(account.address),
+                "gas alert addresses must be nonzero and unique"
+            );
+            anyhow::ensure!(
+                account.low_wei > 0 && account.recovery_wei > account.low_wei,
+                "gas recovery threshold must exceed a positive low threshold"
+            );
+        }
+        Ok(())
+    }
 }
 
 fn default_evm_confirmations() -> NonZeroU32 {

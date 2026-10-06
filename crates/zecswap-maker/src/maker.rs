@@ -1,4 +1,5 @@
 mod flow;
+mod gas_alerts;
 mod monitoring;
 mod notifications;
 mod reverse;
@@ -155,6 +156,9 @@ impl From<zecswap_chain::Error> for MakerError {
 
 impl Maker {
     pub async fn new(config: Config, secrets: Secrets) -> Result<Self> {
+        if let Some(alerts) = &config.gas_alerts {
+            alerts.check()?;
+        }
         let prices = crate::market::PriceBook::from_env(&config.pricing)?;
         let telegram = crate::telegram::Telegram::from_env()?;
         std::fs::create_dir_all(&config.data_dir)?;
@@ -441,6 +445,7 @@ impl Maker {
             watchtower,
             self.run_zcash(),
             self.run_notifications(),
+            self.run_gas_alerts(),
             self.run_transaction_observer(),
             self.run_flow_observer()
         );
