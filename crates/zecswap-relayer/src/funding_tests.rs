@@ -19,6 +19,7 @@ fn relayer(enabled: bool) -> Relayer {
                 maker: Address::repeat_byte(4),
                 max_gas_limit: 4_000_000,
                 max_gas_price_wei: 20_000_000_000,
+                fee: 250_000,
             }),
         },
         account: Address::repeat_byte(5),
@@ -89,4 +90,5 @@ fn funding_capability_is_opt_in_and_old_config_still_loads() {
     let enabled = serde_json::to_value(relayer(true).terms()).unwrap();
     assert_eq!(enabled["reverseFunding"]["maxGasPriceWei"], "20000000000");
     assert_eq!(enabled["reverseFunding"]["maxCalldataBytes"], 65536);
+    assert_eq!(enabled["reverseFunding"]["fee"], "250000");
 }

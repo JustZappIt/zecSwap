@@ -125,6 +125,7 @@ sol! {
     #[sol(rpc)]
     interface IErc20 {
         function approve(address spender, uint256 amount) external returns (bool);
+        function transfer(address to, uint256 amount) external returns (bool);
         function balanceOf(address owner) external view returns (uint256);
         function mint(address to, uint256 amount) external;
     }

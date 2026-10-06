@@ -15,6 +15,8 @@ fn fixture() -> (FundingPolicy, Domain, B256, IRelayAdapt::relayCall) {
         maker: address("maker"),
         max_gas_limit: 4_000_000,
         max_gas_price_wei: 20_000_000_000,
+        fee: json["fee"].as_str().unwrap().parse().unwrap(),
+        fee_recipient: address("relayer"),
     };
     let domain = Domain {
         chain_id: SEPOLIA_CHAIN_ID,
@@ -114,11 +116,16 @@ fn rejects_wrong_envelope_and_unsafe_configuration() {
     );
     assert!(p.validate_config(1, Address::repeat_byte(9)).is_err());
     assert!(p.validate_config(SEPOLIA_CHAIN_ID, p.maker).is_err());
+    assert!(
+        p.validate_config(SEPOLIA_CHAIN_ID, Address::repeat_byte(9))
+            .is_err()
+    );
+    assert!(p.validate_config(SEPOLIA_CHAIN_ID, p.fee_recipient).is_ok());
     let mut empty = p.clone();
     empty.max_gas_price_wei = 0;
     assert!(
         empty
-            .validate_config(SEPOLIA_CHAIN_ID, Address::repeat_byte(9))
+            .validate_config(SEPOLIA_CHAIN_ID, p.fee_recipient)
             .is_err()
     );
 }
@@ -157,13 +164,31 @@ fn rejects_tampered_actions_even_when_rebound() {
             c.data = o.abi_encode().into();
         }),
         Box::new(|r| {
+            r._actionData.calls.remove(2);
+        }),
+        Box::new(|r| r._actionData.calls.swap(2, 3)),
+        Box::new(|r| r._actionData.calls[2].to = Address::repeat_byte(9)),
+        Box::new(|r| {
             let c = &mut r._actionData.calls[2];
+            let mut t = IErc20::transferCall::abi_decode(&c.data).unwrap();
+            t.to = Address::repeat_byte(9);
+            c.data = t.abi_encode().into();
+        }),
+        Box::new(|r| {
+            let c = &mut r._actionData.calls[2];
+            let mut t = IErc20::transferCall::abi_decode(&c.data).unwrap();
+            t.amount -= U256::from(1);
+            c.data = t.abi_encode().into();
+        }),
+        Box::new(|r| r._actionData.calls[2].data = r._actionData.calls[0].data.clone()),
+        Box::new(|r| {
+            let c = &mut r._actionData.calls[3];
             let mut s = IRelayAdapt::shieldCall::abi_decode(&c.data).unwrap();
             s._shieldRequests[0].preimage.value = alloy::primitives::aliases::U120::from(1);
             c.data = s.abi_encode().into();
         }),
         Box::new(|r| {
-            let c = &mut r._actionData.calls[2];
+            let c = &mut r._actionData.calls[3];
             let mut s = IRelayAdapt::shieldCall::abi_decode(&c.data).unwrap();
             s._shieldRequests[0].preimage.token.tokenAddress = Address::ZERO;
             c.data = s.abi_encode().into();
@@ -250,6 +275,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
     let (mut p, _, _, mut relay) = fixture();
     p.token = token;
     p.relay_adapt = adapter;
+    p.fee_recipient = sponsor;
     p.validate_config(SEPOLIA_CHAIN_ID, sponsor).unwrap();
     let d = Domain {
         chain_id: SEPOLIA_CHAIN_ID,
@@ -275,10 +301,17 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         relay._actionData.calls[i].to = to;
         relay._actionData.calls[i].data = data.into();
     }
-    relay._actionData.calls[2].to = adapter;
-    let mut dust = IRelayAdapt::shieldCall::abi_decode(&relay._actionData.calls[2].data).unwrap();
+    relay._actionData.calls[2].to = token;
+    relay._actionData.calls[2].data = IErc20::transferCall {
+        to: sponsor,
+        amount: U256::from(p.fee),
+    }
+    .abi_encode()
+    .into();
+    relay._actionData.calls[3].to = adapter;
+    let mut dust = IRelayAdapt::shieldCall::abi_decode(&relay._actionData.calls[3].data).unwrap();
     dust._shieldRequests[0].preimage.token.tokenAddress = token;
-    relay._actionData.calls[2].data = dust.abi_encode().into();
+    relay._actionData.calls[3].data = dust.abi_encode().into();
     relay._transactions[0].boundParams.adaptContract = adapter;
     relay._transactions[0].unshieldPreimage.npk = adapter.into_word();
     relay._transactions[0].unshieldPreimage.token.tokenAddress = token;
@@ -377,6 +410,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         chain.token_balance(token, contract).await.unwrap(),
         terms.amount
     );
+    assert_eq!(chain.token_balance(token, sponsor).await.unwrap(), p.fee);
     assert!(chain.eth_balance(sponsor).await.unwrap() < before);
     assert_eq!(
         chain.sponsor_reverse_funding(&p, &request).await.unwrap(),

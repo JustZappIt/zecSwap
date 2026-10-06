@@ -16,7 +16,7 @@ impl Relayer {
         if request.chain_id != self.domain.chain_id {
             return Err(RelayerError::Rejected("wrong funding chain".into()));
         }
-        let policy = funding.policy();
+        let policy = funding.policy(self.account);
         let map_error = |error| match error {
             FundingError::Rejected(reason) => RelayerError::Rejected(reason.into()),
             // Upstream RPC errors can contain request bytes. Do not log them.
