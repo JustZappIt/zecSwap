@@ -183,8 +183,9 @@ mod tests {
                 &super::super::Swap {
                     id: B256::repeat_byte(1),
                     quote,
-                    user_share: SecretShare::random(rand_core::OsRng).public(),
-                    viewing: ViewingKeys::random(rand_core::OsRng),
+                    user_share: SecretShare::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng))
+                        .public(),
+                    viewing: ViewingKeys::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng)),
                     zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
                     opened_at: 100,
                     t1: 300,

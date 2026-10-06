@@ -5,7 +5,7 @@ use std::path::Path;
 use orchard::keys::SpendAuthorizingKey;
 use pczt::Pczt;
 use pczt::roles::signer::Signer;
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use secrecy::SecretVec;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::data_api::wallet::input_selection::{
@@ -42,7 +42,7 @@ const JOINT_KEY_SOURCE: &str = "zecswap";
 const SYNC_BATCH_SIZE: u32 = 1_000;
 const ORCHARD_POOLS: [ShieldedPool; 2] = [ShieldedPool::Orchard, ShieldedPool::Ironwood];
 
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+type Db = WalletDb<rusqlite::Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
 /// Value held in the Orchard-protocol pools.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,8 +63,8 @@ pub struct Wallet {
 impl Wallet {
     /// Opens a wallet that spends its own notes after 3 confirmations, and others' after 10.
     pub fn open(path: impl AsRef<Path>, network: Network) -> Result<Self, Error> {
-        let mut db =
-            WalletDb::for_path(path, network, SystemClock, OsRng).map_err(Error::wallet)?;
+        let mut db = WalletDb::for_path(path, network, SystemClock, UnwrapErr(SysRng))
+            .map_err(Error::wallet)?;
         init_wallet_db(&mut db, None)
             .map_err(|e| Error::Wallet(format!("migrating wallet: {e}")))?;
         Ok(Self {
@@ -448,6 +448,8 @@ impl Wallet {
         let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
             &mut self.db,
             &self.network,
+            &SystemClock,
+            &mut UnwrapErr(SysRng),
             account,
             OvkPolicy::Sender,
             proposal,
@@ -458,6 +460,8 @@ impl Wallet {
         let (pczt, circuit) = prover.prove(pczt)?;
         extract_and_store_transaction_from_pczt::<_, ReceivedNoteId>(
             &mut self.db,
+            &SystemClock,
+            &mut UnwrapErr(SysRng),
             sign(pczt)?,
             None,
             Some(&circuit.verifying_key),
@@ -472,12 +476,12 @@ fn sign_own_spends(pczt: Pczt, ask: &SpendAuthorizingKey) -> Result<Pczt, Error>
     let mut signer = Signer::new(pczt).map_err(|e| Error::Wallet(format!("{e:?}")))?;
     for index in orchard {
         signer
-            .sign_orchard(index, ask)
+            .sign_orchard(UnwrapErr(SysRng), index, ask)
             .map_err(|e| Error::Wallet(format!("{e:?}")))?;
     }
     for index in ironwood {
         signer
-            .sign_ironwood(index, ask)
+            .sign_ironwood(UnwrapErr(SysRng), index, ask)
             .map_err(|e| Error::Wallet(format!("{e:?}")))?;
     }
     Ok(signer.finish())

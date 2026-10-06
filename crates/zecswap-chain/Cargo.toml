@@ -26,7 +26,7 @@ http-body = "1"
 tower-service = "0.3"
 orchard = { workspace = true, features = ["circuit"] }
 pczt = { workspace = true, features = ["prover"] }
-rand_core.workspace = true
+rand.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 secrecy = "0.8"
@@ -35,20 +35,20 @@ tokio = { version = "1", features = ["sync", "time"] }
 tonic = { version = "0.14", default-features = false, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
 tracing = "0.1"
 zcash_address.workspace = true
-zcash_client_backend = { version = "0.24", features = [
+zcash_client_backend = { version = "=0.25.0-pre.0", features = [
     "lightwalletd-tonic",
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
     "sync",
 ] }
-zcash_client_sqlite = { version = "0.22", features = ["orchard", "serde", "transparent-inputs"] }
-zcash_keys = { version = "0.16", features = ["orchard"] }
-zcash_primitives = "0.30"
+zcash_client_sqlite = { version = "=0.23.0-pre.0", features = ["orchard", "serde", "transparent-inputs"] }
+zcash_keys = { version = "=0.17.0-pre.0", features = ["orchard"] }
+zcash_primitives = "=0.31.0-pre.0"
 zcash_protocol.workspace = true
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }
-zip32 = "0.2"
+zip32 = "0.3"
 
 [dev-dependencies]
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }

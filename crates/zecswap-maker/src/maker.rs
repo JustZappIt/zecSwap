@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use futures_util::FutureExt;
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
@@ -291,7 +291,7 @@ impl Maker {
         }
 
         let mut quote_id = [0; 32];
-        OsRng.fill_bytes(&mut quote_id);
+        UnwrapErr(SysRng).fill_bytes(&mut quote_id);
         let expires_at = unix_now() + self.config.timing.quote_ttl;
         self.check_watchtower()?;
         if !pricing.fresh(unix_now()) {
@@ -310,7 +310,7 @@ impl Maker {
             quote_id: quote_id.into(),
             maker: self.account,
             maker_share: e.public(),
-            maker_proof: self.context(quote_id).prove_maker(&e, OsRng),
+            maker_proof: self.context(quote_id).prove_maker(&e, UnwrapErr(SysRng)),
             chain_id: self.chain_id,
             contract: self.settlement.contract(),
             token: self.config.token,
