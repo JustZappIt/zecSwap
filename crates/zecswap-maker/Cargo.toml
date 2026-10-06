@@ -15,7 +15,7 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 futures-util = "0.3"
 hex = "0.4"
-rand_core.workspace = true
+rand.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "query"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

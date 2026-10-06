@@ -4,7 +4,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -26,7 +26,7 @@ impl Store {
             bail!("{} already exists", path.display());
         }
         let mut seed = vec![0; 32];
-        OsRng.fill_bytes(&mut seed);
+        UnwrapErr(SysRng).fill_bytes(&mut seed);
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)

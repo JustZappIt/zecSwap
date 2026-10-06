@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zcash_address::ZcashAddress;
 use zcash_protocol::consensus::Parameters;
 use zecswap_chain::evm::{OnChainSwap, Settlement, Stage};
@@ -249,7 +249,7 @@ impl Player {
     }
 
     async fn open(&self) -> Result<UserSwap> {
-        let swap = self.user.open(OsRng.next_u32() >> 1, 1).await?;
+        let swap = self.user.open(UnwrapErr(SysRng).next_u32() >> 1, 1).await?;
         // The index is logged so a failed run's deposits can be taken back with the user share.
         self.log(format!(
             "opened {} for {} zat, index {}",

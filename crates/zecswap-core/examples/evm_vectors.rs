@@ -3,8 +3,8 @@
 //!   evm_vectors [count]   JSON: edge-case and seeded-random scalars with their points
 //!   evm_vectors mul <k>   ABI-encoded `(x, y)` for the 32-byte hex scalar `k` (forge ffi)
 
+use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use rand_core::SeedableRng;
 use zecswap_core::SecretShare;
 
 const Q_MINUS_ONE: &str = "40000000000000000000000000000000224698fc0994a8dd8c46eb2100000000";

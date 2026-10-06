@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zcash_protocol::consensus::NetworkType;
 use zecswap_api::relayer::{self, Claim, LockClaim, Sent};
@@ -135,7 +135,12 @@ impl User {
 
         let acceptance = Acceptance {
             user_share: keys.share.public(),
-            user_proof: context.prove_user(&quote.maker_share, &keys.share, &payout, OsRng),
+            user_proof: context.prove_user(
+                &quote.maker_share,
+                &keys.share,
+                &payout,
+                UnwrapErr(SysRng),
+            ),
             viewing_keys: keys.viewing,
         };
         let accepted = self.maker.accept(quote.quote_id, &acceptance).await?;

@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 alloy-primitives = { version = "~1.5", features = ["serde"] }
 anyhow = "1"
-rand_core.workspace = true
+rand.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["time"] }

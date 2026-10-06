@@ -4,7 +4,7 @@ use ff::{Field, PrimeField};
 use group::{Curve, GroupEncoding};
 use orchard::primitives::redpallas::{self, SpendAuth};
 use pasta_curves::pallas;
-use rand_core::{CryptoRng, RngCore};
+use rand::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Error, curve};
@@ -14,7 +14,7 @@ use crate::{Error, curve};
 pub struct SecretShare([u8; 32]);
 
 impl SecretShare {
-    pub fn random<R: RngCore + CryptoRng>(mut rng: R) -> Self {
+    pub fn random<R: CryptoRng>(mut rng: R) -> Self {
         loop {
             if let Ok(share) = Self::from_scalar(pallas::Scalar::random(&mut rng)) {
                 return share;
@@ -50,7 +50,7 @@ impl SecretShare {
     }
 
     /// A RedPallas signature under this share is a Schnorr proof of knowledge of it.
-    pub(crate) fn prove<R: RngCore + CryptoRng>(&self, message: &[u8], rng: R) -> ShareProof {
+    pub(crate) fn prove<R: CryptoRng>(&self, message: &[u8], rng: R) -> ShareProof {
         let key = redpallas::SigningKey::<SpendAuth>::try_from(self.0)
             .expect("constructed from a canonical scalar");
         ShareProof((&key.sign(rng, message)).into())

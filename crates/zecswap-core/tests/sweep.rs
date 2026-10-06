@@ -21,7 +21,7 @@ use pczt::roles::redactor::Redactor;
 use pczt::roles::redactor::orchard::OrchardRedactor;
 use pczt::roles::spend_finalizer::SpendFinalizer;
 use pczt::roles::tx_extractor::TransactionExtractor;
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use shardtree::ShardTree;
 use shardtree::store::memory::MemoryShardStore;
 use zcash_note_encryption::try_note_decryption;
@@ -47,9 +47,16 @@ struct Swap {
 
 impl Swap {
     fn new() -> Self {
-        let (e, z) = (SecretShare::random(OsRng), SecretShare::random(OsRng));
-        let joint =
-            JointAccount::derive(&e.public(), &z.public(), &ViewingKeys::random(OsRng)).unwrap();
+        let (e, z) = (
+            SecretShare::random(UnwrapErr(SysRng)),
+            SecretShare::random(UnwrapErr(SysRng)),
+        );
+        let joint = JointAccount::derive(
+            &e.public(),
+            &z.public(),
+            &ViewingKeys::random(UnwrapErr(SysRng)),
+        )
+        .unwrap();
         Self { e, z, joint }
     }
 
@@ -69,7 +76,7 @@ impl Swap {
         let (anchor, path) = single_leaf_witness(&note);
 
         let mut builder = Builder::new(
-            nu6_3_network(),
+            nu7_network(),
             BlockHeight::from_u32(10_000_000),
             BuildConfig::Standard {
                 sapling_anchor: None,
@@ -93,10 +100,10 @@ impl Swap {
                 .unwrap();
         }
         let PcztResult { pczt_parts, .. } = builder
-            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .build_for_pczt(UnwrapErr(SysRng), &zip317::FeeRule::standard())
             .unwrap();
         IoFinalizer::new(Creator::build_from_parts(pczt_parts).unwrap())
-            .finalize_io()
+            .finalize_io(UnwrapErr(SysRng))
             .unwrap()
     }
 }
@@ -161,7 +168,7 @@ fn circuit_keys() -> &'static (ProvingKey, VerifyingKey) {
 
 fn prove(pczt: Pczt) -> Pczt {
     Prover::new(pczt)
-        .create_ironwood_proof(&circuit_keys().0)
+        .create_ironwood_proof(UnwrapErr(SysRng), &circuit_keys().0)
         .unwrap()
         .finish()
 }
@@ -170,7 +177,7 @@ fn extract(pczt: Pczt) {
     let pczt = SpendFinalizer::new(pczt).finalize_spends().unwrap();
     let tx = TransactionExtractor::new(pczt)
         .with_orchard(&circuit_keys().1)
-        .extract()
+        .extract(UnwrapErr(SysRng))
         .unwrap();
     assert!(tx.ironwood_bundle().is_some());
 }
@@ -217,7 +224,8 @@ fn receive_ironwood_note(fvk: &FullViewingKey, to: Address) -> Note {
             MemoBytes::empty().into_bytes(),
         )
         .unwrap();
-    let (bundle, meta): (orchard::Bundle<_, i64>, _) = builder.build(&mut OsRng).unwrap().unwrap();
+    let (bundle, meta): (orchard::Bundle<_, i64>, _) =
+        builder.build(&mut UnwrapErr(SysRng)).unwrap().unwrap();
     let action = &bundle.actions()[meta.output_action_index(0).unwrap()];
     let ivk = fvk.to_ivk(Scope::External).prepare();
     try_note_decryption(&IronwoodDomain::for_action(action), &ivk, action)
@@ -244,7 +252,7 @@ fn destination() -> Address {
     FullViewingKey::from(&sk).address_at(0u32, Scope::External)
 }
 
-fn nu6_3_network() -> LocalNetwork {
+fn nu7_network() -> LocalNetwork {
     LocalNetwork {
         overwinter: Some(BlockHeight::from_u32(1)),
         sapling: Some(BlockHeight::from_u32(2)),
@@ -256,6 +264,7 @@ fn nu6_3_network() -> LocalNetwork {
         nu6_1: Some(BlockHeight::from_u32(8)),
         nu6_2: Some(BlockHeight::from_u32(9)),
         nu6_3: Some(BlockHeight::from_u32(10)),
+        nu7: Some(BlockHeight::from_u32(11)),
     }
 }
 
@@ -329,7 +338,7 @@ fn corrupted_encrypted_output_is_rejected_before_signing() {
                 .actions()
                 .iter()
                 .find(|a| a.output().value().unwrap().inner() > 0)
-                .map(|a| a.output().encrypted_note().enc_ciphertext);
+                .map(|a| a.output().encrypted_note().enc_ciphertext.0);
             Ok(())
         })
         .unwrap();

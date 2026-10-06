@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_chain::evm::{Address, Settlement, Stage};
 use zecswap_chain::zcash::{Network, Prover, TxId, Wallet, connect};
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     if !seed_path.exists() {
         ensure!(operation == "prepare", "no saved reverse test");
         let mut seed = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(seed.as_mut());
+        UnwrapErr(SysRng).fill_bytes(seed.as_mut());
         OpenOptions::new()
             .write(true)
             .create_new(true)

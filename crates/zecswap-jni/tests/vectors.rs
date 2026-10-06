@@ -1,7 +1,7 @@
 //! The bindings' operations reproduce `cargo run -p zecswap-client --example vectors`, the known
 //! answers the Android port is checked against.
 
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zecswap::ops::{Swap, railgun_address};
 use zecswap_core::{Domain, Payout, PublicShare, ShareProof, SwapContext, derive_maker_share};
 use zecswap_railgun::{Keys as RailgunKeys, ShieldCiphertext, ShieldNote};
@@ -261,7 +261,7 @@ fn accept_proves_against_the_payout_it_quotes() {
         contract: CONTRACT,
         quote_id: [0x33; 32],
     };
-    let maker_proof = context.prove_maker(&maker, OsRng).to_bytes();
+    let maker_proof = context.prove_maker(&maker, UnwrapErr(SysRng)).to_bytes();
     let accepted = swap()
         .accept(
             &RAILGUN_SEED,
@@ -300,7 +300,7 @@ fn accept_refuses_a_maker_proof_for_another_quote() {
         contract: CONTRACT,
         quote_id: [0x33; 32],
     };
-    let proof = context.prove_maker(&maker, OsRng).to_bytes();
+    let proof = context.prove_maker(&maker, UnwrapErr(SysRng)).to_bytes();
     let other = SwapContext {
         quote_id: [0x44; 32],
         ..context

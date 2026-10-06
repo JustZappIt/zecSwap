@@ -12,9 +12,9 @@ const TIP: u32 = 4_395_130;
 
 fn import_at(wallet: &mut Wallet, birthday: u32) -> AccountUuid {
     let joint = JointAccount::derive(
-        &SecretShare::random(OsRng).public(),
-        &SecretShare::random(OsRng).public(),
-        &ViewingKeys::random(OsRng),
+        &SecretShare::random(UnwrapErr(SysRng)).public(),
+        &SecretShare::random(UnwrapErr(SysRng)).public(),
+        &ViewingKeys::random(UnwrapErr(SysRng)),
     )
     .unwrap();
     let ufvk =
