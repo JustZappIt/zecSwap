@@ -74,7 +74,8 @@ could not compile because of existing chat dependency errors involving
 ## October 2 initial funding sponsorship
 
 At 18:48 UTC, relayer source `e831bda0c9423f8d5cfcb68989d8df2f0d7d13d1` was deployed in
-`/opt/zecswap/releases/20261002-funding-e831bda`, which is now `/opt/zecswap/current`.
+`/opt/zecswap/releases/20261002-funding-e831bda`, which was `/opt/zecswap/current` until the
+[October 6 NU7 maker upgrade](#october-6-nu7-maker-upgrade).
 The release retains the exact previous maker binary; only the relayer was restarted.
 The maker remained running with its existing state, and both services retained their keys.
 [sepolia-relayer-funding.json](../deployments/sepolia-relayer-funding.json) records the
@@ -100,6 +101,41 @@ Rollback files are in `/var/backups/zecswap/20261002-funding-e831bda` (root-only
 and permissions (relayer config is `root:zecswap-relayer`, `0640`), restore the previous
 release symlink, test/reload nginx, and restart only the relayer. Never restore or roll
 back the maker wallet databases during this binary/configuration rollback.
+
+## October 6 NU7 maker upgrade
+
+Zcash testnet activated NU7 at block 4,465,026 (2026-10-04 18:21 UTC, consensus branch ID
+`0x77190AD9`). The maker built from `bcc362f` used zcash_protocol 0.10.6, which knows NU6.3
+as the newest upgrade, so lightwalletd rejected every testnet transaction it built with
+"transaction uses an incorrect consensus branch id". Reverse swap `0x73e8f227…` never
+received its ZEC deposit, and its user refunded through the escrow.
+
+At 04:27 UTC the maker binary was replaced by a build of source
+`bb7fb0a0ac2112b6cf735708311f33143f0cc035` (#3 and #5), in
+`/opt/zecswap/releases/20261006-nu7-bb7fb0a`, which is now `/opt/zecswap/current`. That source uses
+the librustzcash NU7 pre-releases and includes the gas alert code, inert without
+`[gas_alerts]`. The relayer binary is unchanged from `e831bda`, and only the maker was
+restarted. A build of `5f86999` ran from 04:18 to 04:27 UTC. It did not recognise already
+imported joint accounts, which stopped the dashboard's flow observer, and `bb7fb0a` fixed
+that. [sepolia-nu7-maker.json](../deployments/sepolia-nu7-maker.json) records the checksums
+and checks.
+
+Its first start applied three schema migrations to `wallet.sqlite` and `flow-wallet.sqlite`
+(71 to 74 applied). Builds from before NU7 cannot be assumed to open them. Copies taken
+with the maker stopped, before the migrations, are in
+`/var/backups/zecswap/20261006-nu7-5f86999` (root-only), with `previous-current`.
+`/var/backups/zecswap/20261006-nu7-bb7fb0a` holds the migrated copies. Rolling back to a build
+from before NU7 would bring the rejected transactions back. Roll back only with those copies,
+and only if the testnet itself rolls NU7 back.
+
+Before the cutover, the same wallet code sent a testnet self-payment. It was accepted as a v6
+transaction with branch ID `0x77190ad9` and mined at block 4,469,704 (`c3af916a…`).
+After the cutover, local and public maker health returned 204, relayer terms 200, and maker
+info reported the same deployment. The flow observer completed its passes with no error,
+with no warnings and no restarts. No reverse swap has run through the upgraded maker yet.
+Android devices still run SDK builds from before NU7, so a device's own testnet
+transactions, including the final sweep of a reverse swap, are rejected until that SDK is
+updated.
 
 ## Deployment sequence
 
