@@ -53,15 +53,16 @@ Refund settlement reveals the user's share without making token calls; the maker
 its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
 Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
 Ready and lock submissions currently use sponsored relayer gas; refund payout uses its configured
-fee. Initial funding can also use the opt-in Sepolia sponsorship below. It adds no
-success-path fee reimbursement.
+fee. Initial funding can also use the opt-in Sepolia sponsorship below, which the funding
+transaction itself pays for with a relayer fee in the escrow token.
 
 ## Sponsored initial funding (Sepolia)
 
 The relayer accepts `POST /v1/reverse/fund` when its `[reverse_funding]` configuration
 is present. `GET /v1/terms` then includes `reverseFunding` with `relayAdapt`, `token`,
-`maker`, `maxGasLimit`, `maxGasPriceWei` (decimal string), and `maxCalldataBytes`.
-The ordinary `fee` in terms still applies to payouts, not this sponsored transaction.
+`maker`, `maxGasLimit`, `maxGasPriceWei` (decimal string), `maxCalldataBytes`, and `fee`
+(decimal string, escrow-token base units). That `fee` is what each funding transaction pays the
+relayer for its gas; the ordinary top-level `fee` in terms still applies to payouts.
 An absent `reverseFunding` means sponsorship is disabled; do not silently switch to a
 phone-funded transaction. Pin the chain, settlement, maker, token, and adapter before proving.
 
@@ -75,9 +76,12 @@ The phone keeps its Railgun spending keys and generates the proof locally:
    Paid broadcaster mode can allow failed cross-contract calls to continue and is rejected.
 3. Include the escrow token in `relayAdaptShieldERC20Recipients`, addressed to the user's
    private wallet. The complete action must contain exactly: approve the exact escrow
-   amount, open the signed escrow, then adapter `shield` with one ERC20 request of value
-   zero (shield all remaining dust). Budget Railgun's unshield fee so the adapter receives
-   at least the full escrow amount. The user's proof binds every call and the dust note.
+   amount, open the signed escrow, `transfer` at least the advertised funding `fee` of the
+   escrow token to the relayer's address (`relayer` in terms), then adapter `shield` with one
+   ERC20 request of value zero (shield all remaining dust). Budget Railgun's unshield fee so
+   the adapter receives at least the escrow amount plus the funding fee. The user's proof
+   binds every call and the dust note. With `requireSuccess=true` the relayer is paid only
+   if the escrow opens; its pre-submission simulation is what protects its gas.
 4. Persist the prepared calldata, deployment, and swap ID, then send:
 
    ```json
@@ -114,8 +118,8 @@ Enable the example relayer configuration with a verified adapter and fund its ex
 own gas account, and adapters whose `railgun()` differs from settlement's `RAILGUN()`.
 Operators opt in through configuration; the hosted Sepolia service is enabled as recorded
 in [deployment.md](deployment.md#october-2-initial-funding-sponsorship). Mainnet
-Railgun broadcaster submission and private fee-token reimbursement remain separate work,
-including verification of escrow failure recovery on that submission path.
+Railgun broadcaster submission (a private fee note with `requireSuccess=false`) remains
+separate work, including verification of escrow failure recovery on that submission path.
 
 Local tests cover a fixture encoded by the installed Railgun SDK, rejected transaction
 mutations, API limits, and Anvil submission with the real escrow and a **mock** adapter.

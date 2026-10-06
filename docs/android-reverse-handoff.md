@@ -33,11 +33,13 @@ Implement this normal flow with two user authorizations:
    `GET /v1/terms` `reverseFunding` field and use `POST /v1/reverse/fund` with the persisted
    transaction as described in `docs/reverse-flow.md`. For sponsored Sepolia funding, use
    V2 legacy Relay Adapt, `sendWithPublicWallet=true`, no broadcaster fee recipient,
-   `requireSuccess=true`, and a final shield of all remaining escrow-token dust. The relayer
-   pays Sepolia ETH; do not require or fund a phone EVM gas account. Absent sponsorship is an
+   `requireSuccess=true`, a `transfer` of the advertised `reverseFunding.fee` to the relayer
+   after `openReverse`, and a final shield of all remaining escrow-token dust. The relayer
+   pays Sepolia ETH and is reimbursed by that transfer; do not require or fund a phone EVM gas
+   account. Absent sponsorship is an
    explicit unsupported state, not permission to switch submission methods automatically.
-   Account separately for Railgun fees (and broadcaster fees on a future broadcaster route). Do not
-   substitute an ordinary public ERC20 transfer. The maker detects confirmed funding itself;
+   Account separately for Railgun fees and the relayer's funding fee. Do not
+   substitute an ordinary public ERC20 transfer for the escrow funding. The maker detects confirmed funding itself;
    there is no separate funded notification.
    A funding response contains a pending hash, not confirmation; an empty transaction list
    means matching escrow already exists. Independently verify the escrow in both cases.

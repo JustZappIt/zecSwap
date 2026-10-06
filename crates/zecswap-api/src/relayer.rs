@@ -23,7 +23,8 @@ pub struct Terms {
     pub reverse_funding: Option<ReverseFundingTerms>,
 }
 
-/// Sponsored Sepolia funding uses the V2 Relay Adapt ABI and no broadcaster fee.
+/// Sponsored Sepolia funding uses the V2 Relay Adapt ABI and no Railgun broadcaster fee note:
+/// the funding instead transfers `fee` of the escrow token to the relayer in the same action.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReverseFundingTerms {
@@ -34,6 +35,8 @@ pub struct ReverseFundingTerms {
     #[serde(with = "decimal")]
     pub max_gas_price_wei: u128,
     pub max_calldata_bytes: usize,
+    #[serde(with = "decimal")]
+    pub fee: u128,
 }
 
 /// `POST /v1/lock-claim`.

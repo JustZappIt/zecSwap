@@ -50,16 +50,20 @@ pub struct ReverseFundingConfig {
     pub maker: Address,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
+    /// Escrow-token base units each funding pays this relayer for its gas.
+    pub fee: u64,
 }
 
 impl ReverseFundingConfig {
-    fn policy(&self) -> FundingPolicy {
+    fn policy(&self, account: Address) -> FundingPolicy {
         FundingPolicy {
             relay_adapt: self.relay_adapt,
             token: self.token,
             maker: self.maker,
             max_gas_limit: self.max_gas_limit,
             max_gas_price_wei: self.max_gas_price_wei.into(),
+            fee: self.fee.into(),
+            fee_recipient: account,
         }
     }
 }
@@ -104,7 +108,9 @@ impl Relayer {
             contract: config.contract.into(),
         };
         if let Some(funding) = &config.reverse_funding {
-            funding.policy().validate_config(domain.chain_id, account)?;
+            funding
+                .policy(account)
+                .validate_config(domain.chain_id, account)?;
             settlement
                 .check_funding_adapter(funding.relay_adapt)
                 .await?;
@@ -135,6 +141,7 @@ impl Relayer {
                     max_gas_limit: funding.max_gas_limit,
                     max_gas_price_wei: funding.max_gas_price_wei.into(),
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
+                    fee: funding.fee.into(),
                 }
             }),
         }
