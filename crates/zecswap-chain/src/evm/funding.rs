@@ -64,6 +64,9 @@ pub struct FundingPolicy {
     pub maker: Address,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u128,
+    /// Escrow-token base units the funding must transfer to `fee_recipient` for the gas.
+    pub fee: u128,
+    pub fee_recipient: Address,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +102,10 @@ impl FundingPolicy {
         require(
             self.maker != account,
             "funding relayer must be separate from maker",
+        )?;
+        require(
+            self.fee_recipient == account,
+            "the funding fee must pay the submitting relayer",
         )?;
         require(
             self.max_gas_limit > 0 && self.max_gas_price_wei > 0,
@@ -145,19 +152,20 @@ impl FundingPolicy {
         )?;
         // Shield remaining token dust even when no remainder is expected.
         require(
-            action.calls.len() == 3,
-            "expected approve, openReverse, and shield calls",
+            action.calls.len() == 4,
+            "expected approve, openReverse, fee, and shield calls",
         )?;
         require(
             action.calls.iter().all(|c| c.value.is_zero()),
             "funding calls cannot send ETH",
         )?;
-        let [approve_call, open_call, shield_call] = action.calls.as_slice() else {
+        let [approve_call, open_call, fee_call, shield_call] = action.calls.as_slice() else {
             unreachable!()
         };
         require(
             approve_call.to == self.token
                 && open_call.to == Address::from(domain.contract)
+                && fee_call.to == self.token
                 && shield_call.to == self.relay_adapt,
             "unexpected funding call target",
         )?;
@@ -165,13 +173,20 @@ impl FundingPolicy {
             .map_err(|_| FundingError::Rejected("invalid token approval"))?;
         let open = IZecSwap::openReverseCall::abi_decode_validate(&open_call.data)
             .map_err(|_| FundingError::Rejected("invalid escrow open"))?;
+        let payment = IErc20::transferCall::abi_decode_validate(&fee_call.data)
+            .map_err(|_| FundingError::Rejected("invalid relayer fee"))?;
         let shield = IRelayAdapt::shieldCall::abi_decode_validate(&shield_call.data)
             .map_err(|_| FundingError::Rejected("invalid dust shield"))?;
         require(
             approve.abi_encode() == approve_call.data
                 && open.abi_encode() == open_call.data
+                && payment.abi_encode() == fee_call.data
                 && shield.abi_encode() == shield_call.data,
             "noncanonical funding call",
+        )?;
+        require(
+            payment.to == self.fee_recipient && payment.amount >= U256::from(self.fee),
+            "funding must pay the relayer its advertised fee",
         )?;
         let words = open.terms;
         require(
