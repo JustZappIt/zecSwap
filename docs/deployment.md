@@ -137,6 +137,26 @@ Android devices still run SDK builds from before NU7, so a device's own testnet
 transactions, including the final sweep of a reverse swap, are rejected until that SDK is
 updated.
 
+## October 6 relayer funding fee
+
+At 04:46 UTC the relayer binary was replaced by a build of source
+`a53d6f29f5fae5f6ce0c4fce5d8a02ddd02a90bb` (#4), in
+`/opt/zecswap/releases/20261006-fundfee-a53d6f2`, which is now `/opt/zecswap/current`. The release
+carries the exact `bb7fb0a` maker binary, and the maker was not restarted. The relayer config gained
+`fee = 250000` under `[reverse_funding]`, so sponsored reverse funding now has to transfer 0.25 test
+tokens to the relayer in the same Relay Adapt action, and `GET /relayer/v1/terms` advertises
+`reverseFunding.fee`. Clients that send the earlier three-call funding are rejected.
+[sepolia-relayer-funding-fee.json](../deployments/sepolia-relayer-funding-fee.json) records the
+checksums and checks. The relayer gas account was topped up by 0.02 Sepolia ETH beforehand.
+
+A first attempt at 04:44 UTC created the release directory with mode `0700`, so systemd could not
+execute the relayer (status 203/EXEC). The deploy script restored the previous config and release and
+restarted the relayer within seconds. Release directories must be `0755`.
+
+Rollback files are in `/var/backups/zecswap/20261006-fundfee-a53d6f2` (root-only):
+`relayer-config.toml` and `previous-current`. Restore the config as `root:zecswap-relayer`, `0640`,
+point `/opt/zecswap/current` back at the previous release, and restart only the relayer.
+
 ## Deployment sequence
 
 1. Deploy the updated `contracts/script/Deploy.s.sol` on the chosen EVM testnet with the
