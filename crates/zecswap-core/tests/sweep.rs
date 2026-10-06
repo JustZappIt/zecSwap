@@ -24,10 +24,11 @@ use pczt::roles::tx_extractor::TransactionExtractor;
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use shardtree::ShardTree;
 use shardtree::store::memory::MemoryShardStore;
+use zcash_address::unified::{self, Encoding, MetadataItem, Revision, Uitem};
 use zcash_note_encryption::try_note_decryption;
 use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding, PcztResult};
 use zcash_primitives::transaction::fees::zip317;
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::memo::MemoBytes;
 use zcash_protocol::value::Zatoshis;
@@ -299,6 +300,29 @@ fn sweep_intent_rejects_another_recipient_and_excess_fees() {
             Err(Error::SweepIntent(_))
         ));
     }
+}
+
+#[test]
+fn sweep_destination_takes_either_revision_but_refuses_metadata() {
+    let destination_with = |revision, metadata: Option<MetadataItem>| {
+        let receiver = unified::Receiver::Orchard(destination().to_raw_address_bytes());
+        let items = std::iter::once(Uitem::Data(receiver))
+            .chain(metadata.map(Uitem::Metadata))
+            .collect();
+        let address = unified::Address::try_from_items(revision, items).unwrap();
+        SweepIntent::from_address(
+            &address.encode(&NetworkType::Test),
+            NetworkType::Test,
+            DEPOSIT - FEE,
+            FEE,
+        )
+    };
+    for revision in [Revision::R0, Revision::R2] {
+        let intent = destination_with(revision, None).unwrap();
+        assert_eq!(intent.recipient, destination());
+    }
+    let expiring = destination_with(Revision::R2, Some(MetadataItem::ExpiryHeight(5_000_000)));
+    assert!(matches!(expiring, Err(Error::SweepIntent(_))));
 }
 
 #[test]
