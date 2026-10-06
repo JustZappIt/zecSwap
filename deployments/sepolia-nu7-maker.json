@@ -1,0 +1,31 @@
+{
+  "chainId": 11155111,
+  "zcashNetwork": "testnet",
+  "reason": "Zcash testnet NU7 activation at block 4465026, consensus branch 0x77190AD9",
+  "makerSourceCommit": "bb7fb0a0ac2112b6cf735708311f33143f0cc035",
+  "relayerSourceCommit": "e831bda0c9423f8d5cfcb68989d8df2f0d7d13d1",
+  "release": "/opt/zecswap/releases/20261006-nu7-bb7fb0a",
+  "makerSha256": "1769bf01e502a6c7a14057b8e8d8fec181750510cbc42a38a81bb43588f0df1a",
+  "relayerSha256": "f79c8cab3a5995fc2efff629776b005fd222583e8b6f47965ed61fb6d99438da",
+  "previousRelease": "/opt/zecswap/releases/20261006-nu7-5f86999",
+  "lastPreNu7Release": "/opt/zecswap/releases/20261002-funding-e831bda",
+  "preMigrationBackup": "/var/backups/zecswap/20261006-nu7-5f86999",
+  "deployedAt": "2026-10-06T04:27:28Z",
+  "status": "api-live-reverse-swap-unverified",
+  "contract": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
+  "validation": {
+    "linuxBuildFromCleanCommittedCheckout": true,
+    "uploadedBinaryChecksumVerified": true,
+    "workspaceTests": "118 passed, 0 failed (cargo test --workspace on bb7fb0a; live e2e skipped)",
+    "walletMigrationsApplied": "71 -> 74",
+    "nu7SelfSendTransaction": "c3af916aeac038cd2e40b387909725074e6e852cf0262e7e4403a3f046cfd3f4",
+    "nu7SelfSendMinedHeight": 4469704,
+    "nu7SelfSendBranchId": "0x77190ad9",
+    "localMakerHealth": 204,
+    "publicMakerHealth": 204,
+    "publicRelayerTerms": 200,
+    "flowObserverHealthy": true,
+    "makerRestartsAfterCutover": 0,
+    "liveReverseSwapAfterUpgrade": false
+  }
+}
