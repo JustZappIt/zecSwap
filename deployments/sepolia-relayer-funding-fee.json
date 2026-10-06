@@ -1,0 +1,34 @@
+{
+  "chainId": 11155111,
+  "reason": "Sponsored reverse funding charges the relayer's funding fee in the escrow token (PR #4)",
+  "relayerSourceCommit": "a53d6f29f5fae5f6ce0c4fce5d8a02ddd02a90bb",
+  "makerSourceCommit": "bb7fb0a0ac2112b6cf735708311f33143f0cc035",
+  "release": "/opt/zecswap/releases/20261006-fundfee-a53d6f2",
+  "previousRelease": "/opt/zecswap/releases/20261006-nu7-bb7fb0a",
+  "backup": "/var/backups/zecswap/20261006-fundfee-a53d6f2",
+  "relayerSha256": "ff1774fd869982a62de0ee01c3d378a6bbeff2b3d7927402be8763fef924c1a0",
+  "makerSha256": "1769bf01e502a6c7a14057b8e8d8fec181750510cbc42a38a81bb43588f0df1a",
+  "deployedAt": "2026-10-06T04:46:05Z",
+  "status": "api-live-device-swap-unverified",
+  "contract": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
+  "relayer": "0xd9633572041886fa7584a2e12f36c8c7f1126412",
+  "reverseFunding": {
+    "relayAdapt": "0x7e3d929ebd5bdc84d02bd3205c777578f33a214d",
+    "token": "0x5764d0044bef5aa839e0ddafe2073421101b9ed8",
+    "maker": "0x2bac02b5032e9092493814c705f156b49e288922",
+    "maxGasLimit": 4000000,
+    "maxGasPriceWei": "20000000000",
+    "maxCalldataBytes": 65536,
+    "fee": "250000"
+  },
+  "relayerGasTopUp": "0x93722a33264876a3ead9b9701bb2f1cc2ee8f3651b9a3c4390703ce09d7a5b04",
+  "validation": {
+    "linuxBuildFromCleanCommittedCheckout": true,
+    "uploadedBinaryChecksumVerified": true,
+    "localRelayerTermsAdvertiseFee": true,
+    "publicRelayerTermsAdvertiseFee": true,
+    "publicMakerHealth": 204,
+    "makerBinaryAndProcessUnchanged": true,
+    "liveRailgunFundedDeviceSwap": false
+  }
+}
