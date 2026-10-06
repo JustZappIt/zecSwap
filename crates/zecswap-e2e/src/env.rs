@@ -258,6 +258,7 @@ impl Env {
 
         let maker_config = |name: &str| Config {
             reverse: None,
+            gas_alerts: None,
             network: Chain::Testnet,
             lightwalletd: settings.lightwalletd.clone(),
             evm_rpc: settings.evm_rpc.clone(),

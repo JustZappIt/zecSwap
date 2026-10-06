@@ -93,6 +93,42 @@ impl Store {
         Ok(())
     }
 
+    /// Persist a low/recovered episode and its message together. Repeated readings
+    /// and process restarts do not duplicate alerts; an initial healthy reading is silent.
+    pub(crate) fn gas_notification(
+        &self,
+        scope: &str,
+        low: bool,
+        mut event: Notification,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let generation: Option<u64> = if low {
+            tx.query_row(
+                "INSERT INTO notification_failures (scope, active, generation) VALUES (?1, 1, 1)
+                 ON CONFLICT(scope) DO UPDATE SET active = 1, generation = generation + 1
+                 WHERE active = 0 RETURNING generation",
+                [scope],
+                |row| row.get(0),
+            )
+            .optional()?
+        } else {
+            tx.query_row(
+                "UPDATE notification_failures SET active = 0 WHERE scope = ?1 AND active = 1 RETURNING generation",
+                [scope], |row| row.get(0),
+            ).optional()?
+        };
+        if let Some(generation) = generation {
+            event.key = format!(
+                "{scope}:{}:{generation}",
+                if low { "low" } else { "recovered" }
+            );
+            insert(&tx, Some(&event))?;
+        }
+        tx.commit()?;
+        Ok(generation.is_some())
+    }
+
     pub(crate) fn claim_notification(&self, now: u64) -> Result<Option<Delivery>> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
