@@ -267,12 +267,15 @@ impl Wallet {
         }
     }
 
+    /// Compares keys, not encodings: a stored key re-encodes in a newer revision than
+    /// `JointAccount::ufvk`.
     pub fn tracks_joint(&self, account: AccountUuid, joint: &JointAccount) -> Result<bool, Error> {
-        Ok(self
-            .db
-            .get_account(account)?
-            .and_then(|account| account.ufvk().map(|ufvk| ufvk.encode(&self.network)))
-            == Some(joint.ufvk(self.network.network_type())))
+        Ok(self.db.get_account(account)?.and_then(|account| {
+            account
+                .ufvk()
+                .and_then(|ufvk| ufvk.orchard())
+                .map(|fvk| fvk.to_bytes())
+        }) == Some(joint.fvk().to_bytes()))
     }
 
     /// Stores a transaction sending everything in a joint account to `to`, authorized by the

@@ -10,13 +10,16 @@ use super::*;
 
 const TIP: u32 = 4_395_130;
 
-fn import_at(wallet: &mut Wallet, birthday: u32) -> AccountUuid {
-    let joint = JointAccount::derive(
+fn random_joint() -> JointAccount {
+    JointAccount::derive(
         &SecretShare::random(UnwrapErr(SysRng)).public(),
         &SecretShare::random(UnwrapErr(SysRng)).public(),
         &ViewingKeys::random(UnwrapErr(SysRng)),
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn import_at(wallet: &mut Wallet, joint: &JointAccount, birthday: u32) -> AccountUuid {
     let ufvk =
         UnifiedFullViewingKey::decode(&wallet.network, &joint.ufvk(wallet.network.network_type()))
             .unwrap();
@@ -44,7 +47,7 @@ fn previous_swap(scanned: bool) -> (TempDir, Wallet) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wallet.sqlite");
     let mut wallet = Wallet::open(&path, Network::TestNetwork).unwrap();
-    let old = import_at(&mut wallet, 4_395_100);
+    let old = import_at(&mut wallet, &random_joint(), 4_395_100);
     if scanned {
         // Synthetic scan metadata only: no incident database or real keys are needed.
         let conn = rusqlite::Connection::open(&path).unwrap();
@@ -88,7 +91,7 @@ fn future_birthday_panics_only_with_retained_blocks_at_unchanged_tip() {
         (true, TIP + 1, TIP + 1, false),
     ] {
         let (dir, mut wallet) = previous_swap(scanned);
-        import_at(&mut wallet, birthday);
+        import_at(&mut wallet, &random_joint(), birthday);
         // `sync` skips every tip that panics here.
         assert!(!panics || wallet.born_above(BlockHeight::from_u32(tip)).unwrap());
         if panics {
@@ -134,10 +137,20 @@ fn future_birthday_panics_only_with_retained_blocks_at_unchanged_tip() {
 }
 
 #[test]
+fn an_imported_joint_account_is_recognised_by_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork).unwrap();
+    let joint = random_joint();
+    let account = import_at(&mut wallet, &joint, 4_395_100);
+    assert!(wallet.tracks_joint(account, &joint).unwrap());
+    assert!(!wallet.tracks_joint(account, &random_joint()).unwrap());
+}
+
+#[test]
 fn a_birthday_above_the_tip_imports_and_syncs_from_the_next_block() {
     // Scanned to 4,395,105, so the import needs no rewind of the note trees.
     let (_dir, mut wallet) = previous_swap(true);
-    import_at(&mut wallet, 4_395_106);
+    import_at(&mut wallet, &random_joint(), 4_395_106);
     assert!(wallet.born_above(BlockHeight::from_u32(4_395_105)).unwrap());
     assert!(!wallet.born_above(BlockHeight::from_u32(4_395_106)).unwrap());
     wallet
@@ -153,7 +166,7 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
     let mut wallet = Wallet::open(&path, Network::TestNetwork)
         .unwrap()
         .with_confirmations(NonZeroU32::new(3).unwrap());
-    let account = import_at(&mut wallet, TIP);
+    let account = import_at(&mut wallet, &random_joint(), TIP);
     let conn = rusqlite::Connection::open(&path).unwrap();
     for height in TIP..=TIP + 20 {
         conn.execute(
