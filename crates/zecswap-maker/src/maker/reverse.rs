@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use rand_core::{OsRng, RngCore};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_api::reverse::{self, Phase};
 use zecswap_api::{Acceptance, Accepted, Quote};
 use zecswap_chain::evm::{B256, OnChainSwap, Stage, swap_id};
@@ -59,7 +59,7 @@ impl Maker {
         }
         let now = self.settlement.now().await?;
         let mut id = [0; 32];
-        OsRng.fill_bytes(&mut id);
+        UnwrapErr(SysRng).fill_bytes(&mut id);
         self.check_watchtower()?;
         if !pricing.fresh(unix_now()) {
             return Err(MakerError::PriceUnavailable);
@@ -71,7 +71,7 @@ impl Maker {
                     quote_id: id.into(),
                     maker: self.account,
                     maker_share: share.public(),
-                    maker_proof: self.context(id).prove_maker(&share, OsRng),
+                    maker_proof: self.context(id).prove_maker(&share, UnwrapErr(SysRng)),
                     chain_id: self.chain_id,
                     contract: self.settlement.contract(),
                     token: self.config.token,

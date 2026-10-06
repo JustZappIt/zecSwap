@@ -176,7 +176,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
     use zecswap_chain::evm::{Address, swap_id};
     use zecswap_core::{
         NetworkType, Payout, SwapContext, ViewingKeys, derive_maker_share, derive_user_keys,
@@ -202,7 +202,7 @@ mod tests {
                         quote_id: context.quote_id.into(),
                         maker: Address::repeat_byte(3),
                         maker_share: maker.public(),
-                        maker_proof: context.prove_maker(&maker, OsRng),
+                        maker_proof: context.prove_maker(&maker, UnwrapErr(SysRng)),
                         chain_id: 1,
                         contract: context.contract.into(),
                         token: Address::repeat_byte(4),
@@ -234,9 +234,9 @@ mod tests {
                     user: user.auth.address(),
                     note: Some(quote.refund_note.0),
                 },
-                OsRng,
+                UnwrapErr(SysRng),
             ),
-            viewing_keys: ViewingKeys::random(OsRng),
+            viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
         };
         let mut swap = ReverseSwap {
             id: swap_id(quote.user, &quote.terms.maker_share),

@@ -2,7 +2,7 @@
 //! call derives the swap's keys from the seed again: nothing secret outlives it. Railgun notes
 //! pay the wallet of a seed of their own, which no swap key derives from.
 
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_core::{
     Domain, JointAccount, NetworkType, Payout, PublicShare, ReverseOpen, SecretShare, ShareProof,
     SwapContext, SweepIntent, UserSwapKeys, derive_user_keys, sign_pczt_bytes,
@@ -177,7 +177,7 @@ impl<'a> Swap<'a> {
             user: keys.auth.address(),
             note: Some(self.note(&keys, railgun_seed)?.commitment()),
         };
-        let proof = context.prove_user(&maker, &keys.share, &payout, OsRng);
+        let proof = context.prove_user(&maker, &keys.share, &payout, UnwrapErr(SysRng));
         let mut bytes = Vec::with_capacity(3 * 64);
         bytes.extend_from_slice(&keys.share.public().to_affine_bytes());
         bytes.extend_from_slice(&proof.to_bytes());

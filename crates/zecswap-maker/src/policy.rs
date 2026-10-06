@@ -129,7 +129,7 @@ fn open_action(obs: &Observation, timing: &Timing) -> Action {
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
     use zecswap_chain::evm::Address;
     use zecswap_core::SecretShare;
 
@@ -167,8 +167,8 @@ mod tests {
                 t1: OPENED + 6_300,
                 claim_lock_until: 0,
                 refund_lock_until: 0,
-                maker_share: SecretShare::random(OsRng).public(),
-                user_share: SecretShare::random(OsRng).public(),
+                maker_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+                user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
                 secret: [0; 32],
                 payout_note: None,
                 paid_out: false,

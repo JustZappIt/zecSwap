@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result, ensure};
-use rand_core::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::reverse::{Authorization, Quote, QuoteRequest, Refund};
 use zecswap_api::{Acceptance, relayer};
@@ -96,7 +96,7 @@ impl ReverseUser {
                     user: keys.auth.address(),
                     note: Some(swap.quote.refund_note.0),
                 },
-                OsRng,
+                UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
         };

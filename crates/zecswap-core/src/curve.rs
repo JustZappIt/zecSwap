@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use ff::PrimeField;
-use group::{GroupEncoding, prime::PrimeCurveAffine};
+use group::{CurveAffine as _, GroupEncoding};
 use pasta_curves::{arithmetic::CurveAffine, pallas};
 
 use crate::Error;
@@ -66,7 +66,7 @@ mod tests {
     use group::{Curve, Group};
     use orchard::primitives::redpallas::{SigningKey, SpendAuth, VerificationKey};
     use pasta_curves::arithmetic::CurveExt;
-    use rand_core::OsRng;
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
 
     use super::*;
 
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(spend_auth_g(), hashed);
         assert_ne!(spend_auth_g(), pallas::Point::generator());
 
-        let k = pallas::Scalar::random(OsRng);
+        let k = pallas::Scalar::random(&mut UnwrapErr(SysRng));
         let sk = SigningKey::<SpendAuth>::try_from(k.to_repr()).unwrap();
         let vk: [u8; 32] = (&VerificationKey::from(&sk)).into();
         assert_eq!(vk, (spend_auth_g() * k).to_bytes());

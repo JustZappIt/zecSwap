@@ -4,6 +4,7 @@ use orchard::ValuePool;
 use orchard::circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey};
 use pczt::Pczt;
 use pczt::roles::prover::Prover as PcztProver;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zcash_primitives::transaction::components::orchard::bundle_version_for_branch;
 use zcash_protocol::consensus::BranchId;
 
@@ -40,12 +41,12 @@ impl Prover {
         }
         if prover.requires_orchard_proof() {
             prover = prover
-                .create_orchard_proof(&circuit.proving_key)
+                .create_orchard_proof(UnwrapErr(SysRng), &circuit.proving_key)
                 .map_err(|e| Error::Wallet(format!("Orchard proof: {e:?}")))?;
         }
         if prover.requires_ironwood_proof() {
             prover = prover
-                .create_ironwood_proof(&circuit.proving_key)
+                .create_ironwood_proof(UnwrapErr(SysRng), &circuit.proving_key)
                 .map_err(|e| Error::Wallet(format!("Ironwood proof: {e:?}")))?;
         }
         Ok((prover.finish(), circuit))
