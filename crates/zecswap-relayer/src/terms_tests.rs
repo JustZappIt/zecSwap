@@ -1,6 +1,7 @@
-//! A relayer handed terms that are not the swap's refuses before sending anything. The contract
-//! would revert such a call anyway, but a claim whose payout carries other terms would land and
-//! reveal the user's share before the payout failed.
+//! A relayer refuses, before sending anything, what it shouldn't pay for: a swap of another
+//! token or maker, and terms that are not the swap's. The contract would revert such a call
+//! anyway, but a claim whose payout carries other terms, or a fee that leaves nothing to shield,
+//! or that Railgun won't take, would land and reveal the user's share before the payout failed.
 
 use std::path::Path;
 
@@ -8,15 +9,20 @@ use alloy::network::EthereumWallet;
 use alloy::node_bindings::Anvil;
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
+use alloy::sol_types::SolCall;
 use zecswap_api::relayer::Rescue;
 use zecswap_api::reverse::{Authorization, Refund};
-use zecswap_chain::evm::{U256, deploy, reverse_funding_calls, swap_id};
+use zecswap_chain::evm::{U256, deploy, reverse_funding_calls, reverse_swap_id, swap_id};
 use zecswap_core::{NetworkType, ReverseOpen, derive_maker_share, derive_user_keys};
 
 use super::*;
 
+alloy::sol! {
+    function setTokenBlocked(address token, bool blocked);
+}
+
 #[tokio::test]
-async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
+async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
     let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
         eprintln!("skipped: anvil is not installed");
         return;
@@ -58,19 +64,43 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
         chain_id: maker.chain_id().await.unwrap(),
         contract: contract.into(),
     };
-    let relayer = Relayer {
-        config: Config {
-            evm_rpc: url.clone(),
-            contract,
-            listen: "127.0.0.1:0".parse().unwrap(),
-            fee: 20_000,
-            claim_margin: 30,
-            reverse_funding: None,
-        },
+    let config = Config {
+        evm_rpc: url.clone(),
+        contract,
+        token,
+        maker: maker_account,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        fee: 20_000,
+        claim_margin: 30,
+        reverse_funding: None,
+    };
+    let relayer_for = |config: Config| Relayer {
+        config,
         account: relayer_account,
         domain,
-        settlement: Settlement::connect(&url, contract, relayer_key).unwrap(),
+        settlement: Settlement::connect(&url, contract, relayer_key.clone()).unwrap(),
     };
+    let relayer = relayer_for(config.clone());
+    let strangers = || {
+        let other = Address::repeat_byte(0x66);
+        [
+            relayer_for(Config {
+                token: other,
+                ..config.clone()
+            }),
+            relayer_for(Config {
+                maker: other,
+                ..config.clone()
+            }),
+        ]
+    };
+    let funder = ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .with_gas_estimation()
+        .with_simple_nonce_management()
+        .fetch_chain_id()
+        .wallet(EthereumWallet::from(funder_key.clone()))
+        .connect_http(url.parse().unwrap());
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
     let sent = || async { chain.get_transaction_count(relayer_account).await.unwrap() };
     let refused = |result: Result<Sent>, why: &str| match result {
@@ -128,6 +158,12 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
     };
 
     refused(relayer.lock_claim(lock(&other)).await, "other terms");
+    for stranger in strangers() {
+        refused(
+            stranger.lock_claim(lock(&terms)).await,
+            "another token or maker",
+        );
+    }
     assert_eq!(sent().await, 0);
     relayer.lock_claim(lock(&terms)).await.unwrap();
     assert_eq!(sent().await, 1);
@@ -138,6 +174,35 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
         relayer.claim(claim(&terms, &other)).await,
         "different swaps or terms",
     );
+    let greedy = Claim {
+        payout: Payout {
+            fee: terms.amount,
+            signature: keys
+                .auth
+                .sign(&domain.payout(&id, &relayer_account.into(), terms.amount))
+                .into(),
+            ..payout(&terms)
+        },
+        ..claim(&terms, &terms)
+    };
+    refused(relayer.claim(greedy).await, "leaves nothing to shield");
+    let block = |blocked| {
+        let funder = &funder;
+        async move {
+            let call = setTokenBlockedCall { token, blocked };
+            let request = TransactionRequest::default()
+                .to(railgun)
+                .input(call.abi_encode().into());
+            let receipt = funder.send_transaction(request).await.unwrap();
+            assert!(receipt.get_receipt().await.unwrap().status());
+        }
+    };
+    block(true).await;
+    refused(
+        relayer.claim(claim(&terms, &terms)).await,
+        "Railgun is not accepting",
+    );
+    block(false).await;
     assert_eq!(sent().await, 1);
     let swap = maker.swap(id, &terms).await.unwrap().unwrap();
     assert_eq!((swap.stage, swap.secret), (Stage::Ready, [0; 32]));
@@ -175,13 +240,6 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
         refund_note: note.commitment(),
         deadline: now + 300,
     };
-    let funder = ProviderBuilder::new()
-        .disable_recommended_fillers()
-        .with_gas_estimation()
-        .with_simple_nonce_management()
-        .fetch_chain_id()
-        .wallet(EthereumWallet::from(funder_key.clone()))
-        .connect_http(url.parse().unwrap());
     maker
         .mint_test_token(token, funder_key.address(), open.amount)
         .await
@@ -198,7 +256,7 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
             .unwrap();
         assert!(receipt.status());
     }
-    let id = swap_id(keys.auth.address().into(), &e.public());
+    let id = reverse_swap_id(keys.auth.address().into(), &e.public());
     let deadline = maker.now().await.unwrap() + 60;
     let escrow = open.terms();
     let other = zecswap_core::Terms {
@@ -223,6 +281,12 @@ async fn requests_on_other_terms_are_refused_before_anything_is_sent() {
     };
 
     refused(relayer.ready_reverse(ready(&other)).await, "other terms");
+    for stranger in strangers() {
+        refused(
+            stranger.ready_reverse(ready(&escrow)).await,
+            "another token or maker",
+        );
+    }
     let refund = Refund {
         swap_id: id,
         terms: (&escrow).into(),

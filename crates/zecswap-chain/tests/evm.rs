@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use alloy::node_bindings::Anvil;
 use zecswap_chain::Error;
-use zecswap_chain::evm::{Address, PrivateKeySigner, Settlement, Stage, U256, deploy, swap_id};
+use zecswap_chain::evm::{
+    Address, PrivateKeySigner, Settlement, Stage, U256, deploy, reverse_swap_id, swap_id,
+};
 use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 
 #[tokio::test]
@@ -239,7 +241,7 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 .unwrap();
             assert!(receipt.status());
         }
-        let id = swap_id(keys.auth.address().into(), &e.public());
+        let id = reverse_swap_id(keys.auth.address().into(), &e.public());
         let escrow = terms.terms();
         let chain = maker.swap(id, &escrow).await.unwrap().unwrap();
         assert_eq!(chain.maker_share, keys.share.public());

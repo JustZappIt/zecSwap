@@ -30,6 +30,8 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         config: Config {
             evm_rpc: "http://127.0.0.1:1".into(),
             contract,
+            token: Address::repeat_byte(4),
+            maker: Address::repeat_byte(5),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
             claim_margin: 30,

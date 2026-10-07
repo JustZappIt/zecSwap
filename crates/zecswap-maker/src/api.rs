@@ -16,14 +16,23 @@ use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
 use crate::maker::{Maker, MakerError};
 
 pub fn router(maker: Arc<Maker>) -> Router {
+    // A token per swap, spent where spam would cost the maker inventory and gas: the accept.
+    let mut costly = Router::new()
+        .route("/v1/quote/{quote_id}/accept", post(accept))
+        .route("/v1/reverse/quote/{quote_id}/accept", post(accept_reverse));
+    if let Some(gate) = maker.tokens() {
+        costly = costly.route_layer(middleware::from_fn_with_state(
+            gate,
+            zecswap_tokens::server::require,
+        ));
+    }
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/info", get(info))
         .route("/v1/monitor", get(monitor))
         .route("/v1/quote", post(quote))
-        .route("/v1/quote/{quote_id}/accept", post(accept))
         .route("/v1/reverse/quote", post(reverse_quote))
-        .route("/v1/reverse/quote/{quote_id}/accept", post(accept_reverse))
+        .merge(costly)
         .route("/v1/reverse/swaps/{swap_id}", get(reverse_status))
         .fallback(server::not_found)
         .method_not_allowed_fallback(server::method_not_allowed)

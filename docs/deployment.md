@@ -165,14 +165,19 @@ point `/opt/zecswap/current` back at the previous release, and restart only the 
 2. Configure maker and independent relayer for that exact deployment. Use a separate data
    directory for a new maker deployment; keep existing services and their pending swaps
    running until settled. A contract that stores only the terms' hash (October 6) needs a
-   maker store created for it: an older `maker.sqlite` lacks each swap's `t0`. A fresh store
-   restarts quote nonces, so give it a new `MAKER_ROOT_SECRET`, as at the October 2
-   replacement, or earlier swaps' revealed maker shares would be reused. Enable `[reverse]` using the example maker config and supply
+   maker store created for it: an older `maker.sqlite` lacks each swap's token and `t0`, and
+   the maker refuses to start on one. A fresh store numbers maker shares from the clock, above
+   any an earlier store handed out, so it may keep the same `MAKER_ROOT_SECRET`; the maker
+   refuses to start if its secret or key is not the one its live swaps opened under. Enable
+   `[reverse]` using the example maker config and supply
    `MAKER_ZCASH_SEED` alongside the existing maker secrets through the process environment.
+   The relayer serves one token and one maker: set its `token` and `maker`.
 3. Run `zecswap-maker --config <maker-config> zec-inventory` to obtain the seed-derived ZEC
    inventory address and balance. Fund the test inventory and the services' EVM gas accounts.
-   Run `zecswap-maker --config <maker-config> serve` and
-   `zecswap-relayer --config <relayer-config>` under host process supervision.
+   Write the token issuer's key with `zecswap-issuer keygen <key>`, and once the app spends
+   tokens give the maker a `[tokens]` table with its public half ([tokens.md](tokens.md)). Run
+   `zecswap-issuer serve --config <issuer-config>`, `zecswap-maker --config <maker-config> serve`
+   and `zecswap-relayer --config <relayer-config>` under host process supervision.
 4. Configure a [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/get-started/)
    for a remotely managed tunnel to the host. `deploy/nginx.conf` routes `/maker/` and
    `/relayer/` to loopback listeners. `deploy/worker/` supplies the stable `workers.dev`
@@ -214,15 +219,16 @@ Keep the maker seed, root secret, and both databases together in protected backu
 on the VPS is persistent storage, not an off-host backup. Restoring an old snapshot also
 requires reconciling newer on-chain swaps before admitting new quotes.
 
-Additional API abuse protection is deferred. The existing forward acceptance endpoint spends
-maker gas before the user's ZEC deposit. Reverse maker payments require confirmed escrow.
-Initial reverse funding sponsorship now has token/maker allowlists, transaction validation
-and per-transaction gas caps. The other sponsored relayer actions retain their existing
-admission policy; the new funding route has no aggregate sponsorship budget.
-The shared nginx rate limit is not sufficient protection against deliberate gas griefing or
-abandoned reservations. The live smoke tests establish protocol functionality, not production
-abuse resistance. Keep the existing forward ordering: depositing ZEC before escrow exists
-would remove its contract-backed recovery path.
+A forward accept spends maker gas before the user's ZEC deposit, and a reverse accept reserves
+the maker's ZEC until its funding deadline. The maker's `max_awaiting_deposit` caps how many
+swaps wait on their users at once, in both directions. With `[tokens]`, every accept spends a
+Privacy Pass token from `zecswap-issuer`, so a device starts only `tokens_per_day` swaps a day
+([tokens.md](tokens.md)); that limit binds only once the issuer checks real attestations, which
+awaits the Zapp identity. The relayer serves only its configured token and maker, on every
+route, and every swap it serves paid for its accept; the funding route keeps its transaction
+validation and gas caps, and there is no aggregate sponsorship budget. The shared nginx rate limit is one bucket behind the
+tunnel: rely on the cap and the tokens, not on it. Keep the existing forward ordering:
+depositing ZEC before escrow exists would remove its contract-backed recovery path.
 
 ## Public verification
 

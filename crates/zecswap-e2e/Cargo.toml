@@ -21,9 +21,11 @@ zcash_protocol.workspace = true
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-client = { path = "../zecswap-client" }
 zecswap-core = { path = "../zecswap-core" }
+zecswap-issuer = { path = "../zecswap-issuer" }
 zecswap-maker = { path = "../zecswap-maker" }
 zecswap-railgun = { path = "../zecswap-railgun" }
 zecswap-relayer = { path = "../zecswap-relayer" }
+zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }
 zeroize.workspace = true
 zip32 = "0.3"
 

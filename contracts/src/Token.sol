@@ -24,6 +24,12 @@ library Token {
         call(token, abi.encodeCall(IERC20.approve, (spender, amount)));
     }
 
+    /// @dev What `owner` holds; an address without code fails as a transfer from it would.
+    function balanceOf(address token, address owner) internal view returns (uint256) {
+        if (token.code.length == 0) revert TransferFailed();
+        return IERC20(token).balanceOf(owner);
+    }
+
     function call(address token, bytes memory data) private {
         (bool ok, bytes memory result) = token.call(data);
         if (!ok || (result.length == 0 ? token.code.length == 0 : !abi.decode(result, (bool)))) {

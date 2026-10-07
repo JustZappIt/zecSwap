@@ -34,6 +34,10 @@ contract MockRailgun is IRailgun {
         paused = paused_;
     }
 
+    function setTokenBlocked(address token, bool blocked) external {
+        tokenBlocklist[token] = blocked;
+    }
+
     function shield(ShieldRequest[] calldata requests) external {
         require(!paused, "paused");
         for (uint256 i; i < requests.length; ++i) {

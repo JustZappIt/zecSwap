@@ -97,7 +97,19 @@ contract RailgunForkTest is SpendAuthVectors {
         deal(USDC, vault, 400e6);
 
         uint256 leaves = leafCount();
-        bytes memory sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, commitment, relayer, FEE, uint64(0), uint64(block.timestamp + 5 minutes))));
+        bytes memory sig = sign(
+            keccak256(
+                abi.encode(
+                    RESCUE_TYPEHASH,
+                    id,
+                    commitment,
+                    relayer,
+                    FEE,
+                    uint64(0),
+                    uint64(block.timestamp + 5 minutes)
+                )
+            )
+        );
         vm.recordLogs();
         vm.prank(relayer);
         swaps.rescue(id, swapTerms, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);

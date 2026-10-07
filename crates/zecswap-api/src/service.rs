@@ -13,6 +13,8 @@ pub enum ErrorCode {
     Internal,
     NotFound,
     MethodNotAllowed,
+    /// Spend a token from the issuer the `WWW-Authenticate` challenge names (RFC 9577).
+    TokenRequired,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

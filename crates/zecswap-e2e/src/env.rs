@@ -148,6 +148,8 @@ pub(crate) struct Env {
     pub(crate) contract: Address,
     pub(crate) token: Address,
     pub(crate) relayer_url: String,
+    /// What every player spends on its accepts, which the makers take tokens for.
+    pub(crate) tokens: Arc<zecswap_client::Tokens>,
     pub(crate) min_time_to_t0: u64,
     restart_after: Duration,
     pub(crate) zcash: Mutex<Zcash>,
@@ -228,7 +230,8 @@ impl Env {
                 )
                 .await?;
         }
-        let relayer_url = start_relayer(&settings, contract, relayer_key).await?;
+        let (issuer_url, gate) = start_issuer(&settings.work_dir).await?;
+        let relayer_url = start_relayer(&settings, contract, token, relayer_key).await?;
         log(
             started,
             "setup",
@@ -259,6 +262,13 @@ impl Env {
         let maker_config = |name: &str| Config {
             reverse: None,
             gas_alerts: None,
+            max_awaiting_deposit: None,
+            tokens: Some(gate(
+                "maker",
+                settings
+                    .work_dir
+                    .join(format!("{name}-spent-tokens.sqlite")),
+            )),
             network: Chain::Testnet,
             lightwalletd: settings.lightwalletd.clone(),
             evm_rpc: settings.evm_rpc.clone(),
@@ -294,6 +304,11 @@ impl Env {
             contract,
             token,
             relayer_url,
+            tokens: Arc::new(zecswap_client::Tokens::new(
+                issuer_url,
+                b"e2e".to_vec(),
+                10,
+            )?),
             min_time_to_t0: pace.min_time_to_t0,
             restart_after: pace.restart_after,
             zcash: Mutex::new(Zcash { wallet, client }),
@@ -526,14 +541,52 @@ async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address
 }
 
 /// Runs a relayer in-process, with its own key: it must never be a maker.
+/// Runs a token issuer in-process, with a new key, and what the makers' `[tokens]` hold.
+async fn start_issuer(
+    work_dir: &Path,
+) -> Result<(
+    String,
+    impl Fn(&str, PathBuf) -> zecswap_tokens::server::Config,
+)> {
+    let key = zecswap_tokens::IssuerKey::generate()?;
+    let pem = work_dir.join("issuer.pem");
+    std::fs::write(&pem, key.to_pem()?)?;
+    let issuer = zecswap_issuer::Issuer::new(zecswap_issuer::Config {
+        listen: "127.0.0.1:0".parse().expect("socket address"),
+        name: "zecswap-e2e".into(),
+        key: pem,
+        data_dir: work_dir.join("issuer"),
+        tokens_per_day: 1000,
+        attestation: zecswap_issuer::Attestation::InsecureTest,
+    })?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let router = zecswap_issuer::router(Arc::new(issuer));
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+    let token_key = key.token_key().to_base64();
+    let gate = move |origin: &str, spent: PathBuf| zecswap_tokens::server::Config {
+        issuer: "zecswap-e2e".into(),
+        origin: origin.into(),
+        keys: vec![token_key.clone()],
+        spent,
+    };
+    Ok((url, gate))
+}
+
 async fn start_relayer(
     settings: &Settings,
     contract: Address,
+    token: Address,
     key: PrivateKeySigner,
 ) -> Result<String> {
+    // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
         evm_rpc: settings.evm_rpc.clone(),
         contract,
+        token,
+        maker: settings.funder.address(),
         listen: "127.0.0.1:0".parse().expect("socket address"),
         fee: RELAYER_FEE,
         claim_margin: 3 * 60,

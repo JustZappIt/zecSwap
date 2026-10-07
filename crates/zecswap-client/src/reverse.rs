@@ -4,7 +4,7 @@ use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::reverse::{Authorization, Quote, QuoteRequest, Refund};
 use zecswap_api::{Acceptance, relayer};
-use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, swap_id};
+use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, reverse_swap_id};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Wallet};
 use zecswap_core::{
     Domain, JointAccount, NetworkType, Payout, SpendKey, SwapContext, Terms, UserSwapKeys,
@@ -76,7 +76,7 @@ impl ReverseUser {
             })
             .await?;
         let swap = ReverseSwap {
-            swap_id: swap_id(keys.auth.address().into(), &quote.terms.maker_share),
+            swap_id: reverse_swap_id(keys.auth.address().into(), &quote.terms.maker_share),
             quote,
             index,
         };
@@ -336,7 +336,7 @@ impl ReverseUser {
             "quote uses another user or refund note"
         );
         ensure!(
-            swap.swap_id == swap_id(quote.user, &quote.terms.maker_share),
+            swap.swap_id == reverse_swap_id(quote.user, &quote.terms.maker_share),
             "wrong reverse swap id"
         );
         ensure!(

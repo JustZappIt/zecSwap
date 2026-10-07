@@ -63,6 +63,7 @@ pub struct Maker {
     monitoring: monitoring::Monitoring,
     prices: crate::market::PriceBook,
     telegram: crate::telegram::Telegram,
+    tokens: Option<std::sync::Arc<zecswap_tokens::server::Gate>>,
 }
 
 #[derive(Clone, Copy)]
@@ -202,7 +203,15 @@ impl Maker {
         } else {
             None
         };
-        Ok(Self {
+        let tokens = config
+            .tokens
+            .as_ref()
+            .map(zecswap_tokens::server::Gate::open)
+            .transpose()
+            .context("[tokens]")?
+            .map(std::sync::Arc::new);
+        let maker = Self {
+            tokens,
             telegram,
             prices,
             monitoring: monitoring::Monitoring::from_env()?,
@@ -220,7 +229,34 @@ impl Maker {
             zcash_health: Health::new(Duration::from_secs(config.timing.tick)),
             wallet_snapshots: std::sync::Mutex::new(HashMap::new()),
             config,
-        })
+        };
+        maker.check_swaps().await?;
+        Ok(maker)
+    }
+
+    /// Refuses to run on live swaps it could no longer act on: opened from another account or
+    /// under another root secret, each of its calls would fail, cancels included, and an open
+    /// swap nobody deposited into would pay out after `t0`.
+    async fn check_swaps(&self) -> Result<()> {
+        for swap in self.store.unsettled_swaps()? {
+            anyhow::ensure!(
+                swap.id == swap_id(self.account, &swap.user_share),
+                "swap {} was opened from another EVM account than {}",
+                swap.id,
+                self.account
+            );
+            match self.settlement.swap(swap.id, &self.terms(&swap)?).await {
+                Ok(_) => {}
+                Err(zecswap_chain::Error::WrongTerms(id)) => {
+                    anyhow::bail!("swap {id} was opened under another MAKER_ROOT_SECRET")
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        for swap in self.store.pending_reverse_swaps()? {
+            self.check_reverse(&swap)?;
+        }
+        Ok(())
     }
 
     pub fn settlement(&self) -> &Settlement {
@@ -230,6 +266,43 @@ impl Maker {
     /// The account that opens swaps and holds the inventory.
     pub fn account(&self) -> Address {
         self.account
+    }
+
+    /// What quotes and accepts spend tokens through, if they must.
+    pub(crate) fn tokens(&self) -> Option<std::sync::Arc<zecswap_tokens::server::Gate>> {
+        self.tokens.clone()
+    }
+
+    /// Refuses another accept while `max_awaiting_deposit` swaps wait on their users to pay
+    /// in: forward ones with no deposit seen and no cancel started, and reverse ones whose ZEC
+    /// the maker has yet to send.
+    pub(crate) fn admit_another(&self) -> Result<(), MakerError> {
+        let Some(cap) = self.config.max_awaiting_deposit else {
+            return Ok(());
+        };
+        let forward = {
+            let snapshots = self.wallet_snapshots.lock().unwrap();
+            self.store
+                .unsettled_swaps()?
+                .iter()
+                .filter(|swap| {
+                    !swap.refund_started
+                        && snapshots
+                            .get(&swap.zcash_account)
+                            .is_none_or(|snapshot| snapshot.funds.total == 0)
+                })
+                .count()
+        };
+        let reverse = self
+            .store
+            .pending_reverse_swaps()?
+            .iter()
+            .filter(|swap| swap.deposit.is_none())
+            .count();
+        if forward + reverse >= cap {
+            return Err(MakerError::Unavailable);
+        }
+        Ok(())
     }
 
     pub fn listen(&self) -> std::net::SocketAddr {
@@ -327,15 +400,18 @@ impl Maker {
         acceptance: Acceptance,
     ) -> Result<Accepted, MakerError> {
         self.check_watchtower()?;
+        self.admit_another()?;
         let mut zcash = self.zcash.lock().await;
         // A request can wait behind a long sync or proof after its first health check.
         // Check again before consuming its quote or importing an account.
         self.check_watchtower()?;
         let Zcash { wallet, client } = &mut *zcash;
         let wallet = wallet.as_mut().ok_or(MakerError::WatchtowerUnavailable)?;
+        // Read, and taken only once the acceptance checks out: a malformed one leaves the quote
+        // to its user.
         let quote = self
             .store
-            .take_quote(&quote_id.0, unix_now())?
+            .quote(&quote_id.0, unix_now())?
             .ok_or(MakerError::UnknownQuote)?;
         let maker_share = self.maker_share(quote.nonce)?.public();
         let payout = Payout {
@@ -354,13 +430,17 @@ impl Maker {
             .map_err(|e| MakerError::Rejected(e.to_string()))?;
         let id = swap_id(self.account, &user_share);
         tracing::Span::current().record("swap_id", tracing::field::display(id));
+        // Before the import, so a failed read leaves no account watched for nothing.
+        let now = self.settlement.now().await?;
+        if self.store.take_quote(&quote_id.0, unix_now())?.is_none() {
+            return Err(MakerError::UnknownQuote);
+        }
 
         // Watch the deposit address before the user can learn it from the chain.
         let zcash_account = wallet
             .import_joint(client, &joint, &format!("swap {id}"))
             .await?;
         drop(zcash);
-        let now = self.settlement.now().await?;
         if let Err(e) = self.check_watchtower() {
             self.forget(zcash_account).await;
             return Err(e);
@@ -373,6 +453,7 @@ impl Maker {
             viewing: viewing_keys,
             zcash_account,
             opened_at: now,
+            token: self.config.token,
             t0: now + timing.t0_after,
             t1: now + timing.t1_after,
             sweep: None,
@@ -509,6 +590,16 @@ impl Maker {
                 })
                 .await?;
             if synced {
+                if let Some(wallet) = zcash.wallet.as_mut() {
+                    // No reorganisation reopens these any more: stop scanning their addresses.
+                    // ZEC sent to one from now on waits for a manual sweep.
+                    for (id, account) in self.store.final_swaps()? {
+                        if let Err(e) = wallet.forget(account) {
+                            warn!(swap_id = %id, "could not stop tracking {account:?}: {e}");
+                        }
+                        self.store.archive(&id)?;
+                    }
+                }
                 let wallet = zcash.wallet()?;
                 let mut snapshots = HashMap::new();
                 for swap in self.store.watched_swaps()? {
@@ -745,7 +836,7 @@ impl Maker {
     fn terms(&self, swap: &Swap) -> Result<Terms> {
         Ok(Terms {
             maker: self.account.into(),
-            token: self.config.token.into(),
+            token: swap.token.into(),
             amount: swap.quote.amount,
             maker_share: self.maker_share(swap.quote.nonce)?.public(),
             user_share: swap.user_share,

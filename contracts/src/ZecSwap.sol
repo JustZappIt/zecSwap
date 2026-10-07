@@ -3,16 +3,17 @@ pragma solidity 0.8.28;
 
 import {Pallas} from "./Pallas.sol";
 import {IRailgun, ShieldVault} from "./ShieldVault.sol";
-import {Token, IERC20} from "./Token.sol";
+import {Token} from "./Token.sol";
 
 /// @title ZecSwap
 /// @notice Settles atomic swaps of shielded ZEC for ERC-20 tokens held by makers.
 /// @dev The ZEC sits in an Orchard address whose spend key is ±(e + z): the maker holds e,
 /// the user holds z, and this contract stores E = [e]·G and Z = [z]·G. Revealing z pays the user
 /// (and lets the maker sweep the ZEC); revealing e refunds the maker (and lets the user sweep it
-/// back). A reveal is only accepted under a lock its party took in an earlier transaction, and the
-/// other party cannot lock while it is held, so a reveal can never lose a race and leave both
-/// halves public. A lock that lapses unused hands the other party the next turn, so neither can
+/// back). A reveal is only accepted under a lock its party holds, and the other party cannot lock
+/// while it is held, so a party that reveals only once its lock has landed can never lose a race
+/// and leave both halves public; nothing here stops a careless one revealing in the same
+/// transaction. A lock that lapses unused hands the other party the next turn, so neither can
 /// lock the other out for good. Reveals make no token calls either: payouts leave separately, so a
 /// paused or blacklisting token cannot revert a reveal.
 ///
@@ -164,7 +165,11 @@ contract ZecSwap {
     /// @notice Adds to the caller's inventory, from which it opens swaps.
     function deposit(address token, uint256 amount) external {
         if (amount == 0) revert ZeroAmount();
+        // Credited only for what arrived: a token that keeps a fee would otherwise hand the
+        // shortfall to everyone else holding it here.
+        uint256 before = Token.balanceOf(token, address(this));
         Token.transferFrom(token, msg.sender, address(this), amount);
+        if (Token.balanceOf(token, address(this)) != before + amount) revert InsufficientBalance();
         balanceOf[msg.sender][token] += amount;
         emit Deposited(msg.sender, token, amount);
     }
@@ -190,13 +195,18 @@ contract ZecSwap {
         uint64 t1,
         bytes32 payoutNote
     ) external returns (bytes32 id) {
-        return _open(Terms(msg.sender, token, amount, makerKey, userKey, user, t0, t1, payoutNote));
+        return _open(
+            Terms(msg.sender, token, amount, makerKey, userKey, user, t0, t1, payoutNote),
+            swapId(msg.sender, userKey)
+        );
     }
 
-    function _open(Terms memory terms) private returns (bytes32 id) {
+    function _open(Terms memory terms, bytes32 id) private returns (bytes32) {
         if (terms.amount == 0) revert ZeroAmount();
         if (terms.user == address(0)) revert ZeroAddress();
         if (terms.payoutNote != 0 && address(RAILGUN) == address(0)) revert NoShieldedPayouts();
+        // Railgun notes hold at most uint120: more could never be paid out after the claim.
+        if (terms.payoutNote != 0 && terms.amount > type(uint120).max) revert InvalidAmount();
         if (terms.t0 <= block.timestamp || terms.t1 <= terms.t0) revert InvalidDeadlines();
         uint256[2] memory makerKey = terms.makerKey;
         uint256[2] memory userKey = terms.userKey;
@@ -205,7 +215,6 @@ contract ZecSwap {
                 || makerKey[0] == userKey[0]
         ) revert InvalidKey();
 
-        id = swapId(terms.maker, userKey);
         _record(id, terms);
         emit Opened(
             id,
@@ -219,6 +228,7 @@ contract ZecSwap {
             terms.t1,
             terms.payoutNote
         );
+        return id;
     }
 
     /// @dev Debits the inventory open locks, spends the maker's share and stores the swap.
@@ -281,12 +291,13 @@ contract ZecSwap {
                 terms.t0,
                 terms.t1,
                 0
-            )
+            ),
+            reverseSwapId(terms.user, terms.makerKey)
         );
         reverseFunding[id] = ReverseFunding(terms.refundNote, uint64(block.number));
-        uint256 beforeBalance = IERC20(terms.token).balanceOf(address(this));
+        uint256 before = Token.balanceOf(terms.token, address(this));
         Token.transferFrom(terms.token, msg.sender, address(this), terms.amount);
-        if (IERC20(terms.token).balanceOf(address(this)) != beforeBalance + terms.amount) {
+        if (Token.balanceOf(terms.token, address(this)) != before + terms.amount) {
             revert InsufficientBalance();
         }
     }
@@ -493,6 +504,13 @@ contract ZecSwap {
     /// swap's id by opening under someone else's share.
     function swapId(address maker, uint256[2] memory userKey) public pure returns (bytes32) {
         return keccak256(abi.encode(maker, userKey));
+    }
+
+    /// @notice A reverse escrow's id, from the escrowing user and the maker's share. It is never a
+    /// forward swap's id: a maker opening the forward swap a user had verified as a reverse
+    /// escrow, under the same terms, would take away that user's claim after `t0`.
+    function reverseSwapId(address user, uint256[2] memory makerKey) public pure returns (bytes32) {
+        return keccak256(abi.encode(user, makerKey, true));
     }
 
     /// @notice What a swap commits to as its payout note.

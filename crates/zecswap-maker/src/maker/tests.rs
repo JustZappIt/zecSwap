@@ -22,6 +22,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
+        tokens: None,
         telegram: crate::telegram::Telegram::new(None, None).unwrap(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         monitoring: monitoring::Monitoring::new(None),
@@ -79,6 +80,7 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: 1000,
+        token: Address::repeat_byte(3),
         t0: 3700,
         t1: 7300,
         sweep: None,
@@ -471,6 +473,131 @@ async fn accept_rechecks_health_after_waiting_without_consuming_quote() {
     assert!(maker.store.take_quote(&id, unix_now()).unwrap().is_some());
 }
 
+/// With `[tokens]`, every accept takes a token, one a swap, and its refusal says where to get
+/// one; quotes and reads take none.
+#[tokio::test]
+async fn accepts_take_a_token_when_configured() {
+    let (dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    let issuer = zecswap_tokens::IssuerKey::generate().unwrap();
+    let gate = zecswap_tokens::server::Gate::open(&zecswap_tokens::server::Config {
+        issuer: "issuer.test".into(),
+        origin: "maker".into(),
+        keys: vec![issuer.token_key().to_base64()],
+        spent: dir.path().join("spent.sqlite"),
+    })
+    .unwrap();
+    maker.tokens = Some(Arc::new(gate));
+    let app = crate::api::router(Arc::new(maker));
+    let quote = B256::repeat_byte(1);
+    for path in [
+        format!("/v1/quote/{quote}/accept"),
+        format!("/v1/reverse/quote/{quote}/accept"),
+    ] {
+        let response = app.clone().oneshot(request(&path, ())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        let asked = response.headers()["www-authenticate"].to_str().unwrap();
+        let (_, key) = zecswap_tokens::read_www_authenticate(asked).unwrap();
+        assert_eq!(key.id(), issuer.token_key().id());
+    }
+    for path in ["/v1/quote", "/v1/reverse/quote"] {
+        let response = app.clone().oneshot(request(path, ())).await.unwrap();
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let info = Request::get("/v1/info").body(Body::empty()).unwrap();
+    assert_eq!(app.oneshot(info).await.unwrap().status(), StatusCode::OK);
+}
+
+/// At `max_awaiting_deposit` swaps waiting on their users, an accept is refused before it takes
+/// its quote; a swap whose deposit has been seen stops counting.
+#[tokio::test]
+async fn accepts_stop_while_too_many_swaps_await_deposits() {
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.config.max_awaiting_deposit = Some(1);
+    let deadline = unix_now() + 120;
+    for id in [[1; 32], [2; 32]] {
+        maker
+            .store
+            .insert_quote(id, Address::repeat_byte(1), None, 1, 1, deadline)
+            .unwrap();
+    }
+    let account = AccountUuid::from_uuid(uuid::Uuid::from_bytes([3; 16]));
+    let waiting = Swap {
+        id: B256::repeat_byte(3),
+        quote: maker
+            .store
+            .take_quote(&[1; 32], unix_now())
+            .unwrap()
+            .unwrap(),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
+        zcash_account: account,
+        opened_at: unix_now(),
+        token: Address::repeat_byte(4),
+        t0: unix_now() + 3600,
+        t1: unix_now() + 7200,
+        sweep: None,
+        settled: false,
+        refund_started: false,
+    };
+    maker.store.insert_swap(&waiting, None).unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+
+    let refused = maker.accept([2; 32].into(), acceptance()).await;
+    assert!(matches!(refused, Err(MakerError::Unavailable)));
+    assert!(maker.store.quote(&[2; 32], unix_now()).unwrap().is_some());
+    let deposited = WalletSnapshot {
+        funds: Funds {
+            total: 1,
+            spendable: 0,
+        },
+        sweep: None,
+    };
+    maker
+        .wallet_snapshots
+        .lock()
+        .unwrap()
+        .insert(account, deposited);
+    // Past the cap now, it fails on its forged proof instead.
+    let rejected = maker.accept([2; 32].into(), acceptance()).await;
+    assert!(matches!(rejected, Err(MakerError::Rejected(_))));
+}
+
+/// Whichever side an acceptance fails on, the quote stays for its user to accept again.
+#[tokio::test]
+async fn a_failed_accept_leaves_the_quote_live() {
+    let (_dir, maker) = maker();
+    let (id, payout) = ([1; 32], Address::repeat_byte(1));
+    let nonce = maker
+        .store
+        .insert_quote(id, payout, None, 1, 1, unix_now() + 120)
+        .unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+    let rejected = maker.accept(id.into(), acceptance()).await;
+    assert!(matches!(rejected, Err(MakerError::Rejected(_))));
+    // A sound acceptance, while the maker's EVM RPC is unreachable.
+    let user = SecretShare::random(UnwrapErr(SysRng));
+    let sound = Acceptance {
+        user_share: user.public(),
+        user_proof: maker.context(id).prove_user(
+            &maker.maker_share(nonce).unwrap().public(),
+            &user,
+            &Payout {
+                user: payout.into(),
+                note: None,
+            },
+            UnwrapErr(SysRng),
+        ),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+    };
+    let unreachable = maker.accept(id.into(), sound).await;
+    assert!(matches!(unreachable, Err(MakerError::Internal(_))));
+    assert!(maker.store.take_quote(&id, unix_now()).unwrap().is_some());
+}
+
 #[tokio::test]
 async fn sync_panic_reopens_wallet_and_next_sync_runs() {
     let (_dir, maker) = maker();
@@ -567,19 +694,26 @@ async fn anvil_rpc(url: &str, method: &str, params: serde_json::Value) -> serde_
     reply["result"].clone()
 }
 
-#[tokio::test]
-async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() {
+/// A maker on a local chain that has opened a forward swap; none without anvil or a contracts
+/// build.
+async fn opened_swap() -> Option<(
+    alloy::node_bindings::AnvilInstance,
+    TempDir,
+    Maker,
+    Swap,
+    Terms,
+)> {
     use alloy::node_bindings::Anvil;
     use zecswap_chain::evm::{U256, deploy};
 
     let Ok(anvil) = Anvil::new().try_spawn() else {
         eprintln!("skipped: anvil is not installed");
-        return;
+        return None;
     };
     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
     if !artifacts.join("ZecSwap.sol/ZecSwap.json").exists() {
         eprintln!("skipped: run forge build in contracts/");
-        return;
+        return None;
     }
     let creation = |name: &str| {
         let artifact: serde_json::Value = serde_json::from_slice(
@@ -594,7 +728,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         )
         .unwrap()
     };
-    let (_dir, maker) = maker();
+    let (dir, maker) = maker();
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
     let key = PrivateKeySigner::from(anvil.keys()[0].clone());
     let url = anvil.endpoint();
@@ -646,6 +780,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: now,
+        token,
         t0: now + 3600,
         t1: now + 7200,
         sweep: None,
@@ -655,6 +790,90 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     maker.store.insert_swap(&swap, None).unwrap();
     let terms = maker.terms(&swap).unwrap();
     maker.settlement.open(&terms).await.unwrap();
+    Some((anvil, dir, maker, swap, terms))
+}
+
+/// Restarted on another account, root secret or, with a reverse swap pending, token, a maker
+/// refuses to run rather than fail every call on its live swaps, cancels included.
+#[tokio::test]
+async fn a_maker_refuses_to_start_on_swaps_it_cannot_act_on() {
+    let Some((_anvil, _dir, mut maker, _, _)) = opened_swap().await else {
+        return;
+    };
+    maker.check_swaps().await.unwrap();
+    let root = maker.root.clone();
+    maker.root = Zeroizing::new([8; 32]);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(error.to_string().contains("MAKER_ROOT_SECRET"), "{error:#}");
+    maker.root = root;
+    let account = maker.account;
+    maker.account = Address::repeat_byte(0x55);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(
+        error.to_string().contains("another EVM account"),
+        "{error:#}"
+    );
+    maker.account = account;
+
+    let mut nonce = 0;
+    let quote = maker
+        .store
+        .insert_reverse_quote(|index| {
+            nonce = index;
+            let share = maker.maker_share(index)?;
+            Ok(zecswap_api::reverse::Quote {
+                terms: Quote {
+                    quote_id: B256::repeat_byte(2),
+                    maker: maker.account,
+                    maker_share: share.public(),
+                    maker_proof: maker
+                        .context([2; 32])
+                        .prove_maker(&share, UnwrapErr(SysRng)),
+                    chain_id: maker.chain_id,
+                    contract: maker.config.contract,
+                    token: maker.config.token,
+                    amount: 1,
+                    deposit_zat: 1,
+                    expires_at: unix_now() + 60,
+                },
+                user: Address::repeat_byte(2),
+                refund_note: B256::repeat_byte(3),
+                funding_deadline: unix_now() + 120,
+                ready_deadline: unix_now() + 3600,
+                refund_after: unix_now() + 7200,
+            })
+        })
+        .unwrap();
+    let reverse = crate::store::ReverseSwap {
+        id: B256::repeat_byte(6),
+        nonce,
+        quote,
+        acceptance: acceptance(),
+        account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        deposit: None,
+        sweep: None,
+        settled: false,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&reverse, unix_now(), None)
+        .unwrap();
+    maker.check_swaps().await.unwrap();
+    // Forward swaps keep the token they opened with; a pending reverse quote names its own.
+    maker.config.token = Address::repeat_byte(0x99);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(
+        error.to_string().contains("escrows another token"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() {
+    let Some((anvil, _dir, mut maker, swap, terms)) = opened_swap().await else {
+        return;
+    };
+    let (url, now) = (anvil.endpoint(), swap.opened_at);
     anvil_rpc(
         &url,
         "evm_setNextBlockTimestamp",
@@ -694,9 +913,11 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     assert!(maker.status(swap.id).unwrap().unwrap().settled);
     drop(busy);
 
-    // Reopen persisted state, then remove both the lock and the refund from the chain.
+    // Reopen persisted state, as a restart on a config that now names another token would,
+    // then remove both the lock and the refund from the chain.
     let store_path = _dir.path().join("maker.sqlite");
     maker.store = Store::open(&store_path).unwrap();
+    maker.config.token = Address::repeat_byte(0x99);
     assert_eq!(maker.store.watched_swaps().unwrap().len(), 1);
     assert!(maker.store.unsettled_swaps().unwrap().is_empty());
     assert_eq!(

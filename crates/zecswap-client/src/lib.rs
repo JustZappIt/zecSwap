@@ -2,8 +2,10 @@
 //! proposes; nothing is deposited until the contract shows what was promised.
 
 mod api;
+mod tokens;
 mod user;
 
 pub use api::{MakerApi, RelayerApi};
+pub use tokens::Tokens;
 pub use user::{CLAIM_MARGIN, MAX_TIME_TO_T0, MIN_TIME_TO_T0, Paid, Route, User, UserSwap};
 pub mod reverse;

@@ -50,9 +50,11 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures; never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker; never run by a maker |
+| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578): client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through |
+| `crates/zecswap-issuer` | Signs each device a day's tokens (one per swap), blind, behind a pluggable attestation check (`docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
-| `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers and relayer), `src/scenarios.rs` |
+| `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors` |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
 
@@ -95,13 +97,31 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- PR #8 review (2026-10-06), each fix with a test that fails without it:
+  - Contract: a reverse escrow's id is `reverseSwapId` (`keccak256(abi.encode(user, makerKey,
+    true))`), never a forward id, so a maker can't open a user's verified forward swap as a
+    reverse escrow and take away its claim after `t0`; `deposit` credits only what arrives;
+    an `open` paying into Railgun above uint120 is refused.
+  - Relayer: serves only its `token` and `maker`, on every route; refuses a payout whose fee
+    leaves nothing to shield; checks Railgun takes the payout before revealing in a claim.
+  - Maker: each swap stores its token (terms never follow the config); share indices come from
+    the clock, so a restored backup can't reissue one; `check_swaps` refuses to start on live
+    swaps opened under another key or root secret; settled swaps are re-read for a day, then
+    archived and their wallet accounts dropped; an accept reads its quote and the chain clock
+    before taking the quote or importing an account; `max_awaiting_deposit` caps swaps waiting
+    on users.
+  - Spam: with `[tokens]`, each accept spends a Privacy Pass token, so a device starts
+    `tokens_per_day` swaps a day (3, reset at 00:00 UTC; `docs/tokens.md`). Attestation is
+    `insecure-test` until the Zapp identity exists, so the limit binds only then; the cap is
+    what holds until then.
 - Terms hash (2026-10-06): the contract stores only `hashTerms(terms)` of each swap, so `open`
   writes three slots (about 106k gas, from 243k–264k). Every call on a swap takes its `Terms`
   after the id and reverts `WrongTerms` unless they hash to it; one loader (`_load`) does
   this and `test/ZecSwap.terms.t.sol` fails if a function skips it. `Opened` still emits the
   terms. Rust's one definition is `zecswap_core::Terms::hash`; `Settlement::swap(id, &terms)`
   errors `Error::WrongTerms` on a mismatch, and `swap_state` reads the slim state alone. The
-  maker persists `t0` and returns `t0`/`t1` in `Accepted`; relayer requests carry `terms`.
+  maker persists each swap's token and `t0` (its terms never follow the config) and returns
+  `t0`/`t1` in `Accepted`; relayer requests carry `terms`.
 - The contract stores the revealed share (`Swap.secret`); nothing reads event logs.
 - `claim` is a pull payment; the payout is withdrawn separately.
 - A lapsed lock gives the other side the next turn; there is no "one lock each" deadlock.
@@ -146,8 +166,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   alloy-primitives 1.6+ clashes with zcash_transparent's pre-release `digest`.
 - `zcash_client_sqlite` needs `transparent-inputs` because `zcash_client_backend/pczt` turns it on.
 - Don't reintroduce an orchard fork or SDK patch: signing goes through pczt's public Signer.
-- A maker store from before the terms hash has no `swaps.t0` and fails on its first read: a new
-  deployment's maker gets a fresh store and, with it, a new `MAKER_ROOT_SECRET`.
+- A maker store from an older maker lacks columns the swaps now need, and the maker refuses to
+  start on it: a new deployment's maker gets a fresh store. Maker share indices come from the
+  clock (`next_share_index`), so a fresh or restored store never reissues one.
 - Never sign EVM transactions through `ProviderBuilder::new()`'s default fillers: its nonce
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's

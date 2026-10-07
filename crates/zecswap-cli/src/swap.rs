@@ -25,6 +25,7 @@ pub(crate) struct SwapArgs {
     pub(crate) token: Address,
     pub(crate) units: u32,
     pub(crate) payee: Payee,
+    pub(crate) tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
 }
 
 /// Where the swap pays.
@@ -44,6 +45,14 @@ struct Run {
 }
 
 pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
+    let spending = |api: MakerApi| match &args.tokens {
+        Some(tokens) => api.with_tokens(tokens.clone()),
+        None => api,
+    };
+    let relaying = |api: RelayerApi| match &args.tokens {
+        Some(tokens) => api.with_tokens(tokens.clone()),
+        None => api,
+    };
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -52,13 +61,13 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         Payee::Railgun { relayer, max_fee } => (
             Settlement::read_only(&args.rpc, args.contract)?,
             Route::Railgun {
-                relayer: RelayerApi::new(relayer)?,
+                relayer: relaying(RelayerApi::new(relayer)?),
                 max_fee,
             },
         ),
     };
     let network = ctx.wallet.network().network_type();
-    let maker = MakerApi::new(args.maker)?;
+    let maker = spending(MakerApi::new(args.maker)?);
     let seed = ctx.store.seed()?;
     let user = User::new(&seed, &seed, network, settlement, maker, args.token, route);
 

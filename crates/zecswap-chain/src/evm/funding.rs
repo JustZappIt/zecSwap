@@ -9,7 +9,7 @@ use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_core::{Domain, ReverseOpen, signer};
 
-use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, share_from_words, swap_id};
+use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, reverse_swap_id, share_from_words};
 use crate::Error;
 
 pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
@@ -229,7 +229,7 @@ impl FundingPolicy {
             deadline: words.deadline,
         };
         require(
-            id == swap_id(words.user, &terms.maker_share),
+            id == reverse_swap_id(words.user, &terms.maker_share),
             "wrong reverse swap ID",
         )?;
         let signature = open

@@ -32,9 +32,12 @@ The escrow's terms keep the contract's original roles: `Terms.maker` is the USDC
 `Terms.user` is the ZEC side. For reverse swaps these are the user's auth address and the
 maker's address respectively; the shares are likewise reversed, and `payoutNote` is zero.
 `Quote::open(userShare).terms()` builds them. The reverse quote keeps the ordinary business
-meanings of maker and user. Its ID is `keccak256(abi.encode(userAuthAddress, makerShare))`.
-The contract stores only `hashTerms(terms)`, so every relayer request on the escrow carries
-`terms` (see [Terms hash](#terms-hash-2026-10-06)).
+meanings of maker and user. Its ID is `reverseSwapId`,
+`keccak256(abi.encode(userAuthAddress, makerShare, true))`, which is never a forward swap's
+`keccak256(abi.encode(maker, userShare))`: a maker can't open the forward swap a user verified
+as a reverse escrow, where that user would have no claim after `t0`. The contract stores only
+`hashTerms(terms)`, so every relayer request on the escrow carries `terms` (see
+[Terms hash](#terms-hash-2026-10-06)).
 
 ## Waiting, cancellation, and recovery
 

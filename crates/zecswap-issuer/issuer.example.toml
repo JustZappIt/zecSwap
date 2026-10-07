@@ -1,0 +1,16 @@
+# Signs each genuine device a day's Privacy Pass tokens, blind: it learns which devices fetch
+# tokens and how many, never which swaps they pay for. Run it apart from the maker, and keep no
+# request logs. `zecswap-issuer keygen <key>` writes the key and prints its public half, which
+# the maker's `[tokens]` lists.
+
+listen = "127.0.0.1:8789"
+# The issuer name every token's challenge carries; the maker's `[tokens] issuer` repeats it.
+name = "zecswap-issuer"
+key = "/etc/zecswap-issuer/key.pem"
+data_dir = "/var/lib/zecswap-issuer"
+# Each swap's accept spends one token, so this is how many swaps a device may start a day. It
+# resets at 00:00 UTC.
+tokens_per_day = 3
+# How a device proves it is a genuine install. Until the Zapp identity exists, only
+# "insecure-test", which takes the device's word for its id and so limits nothing.
+attestation = "insecure-test"

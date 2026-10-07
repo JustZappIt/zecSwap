@@ -295,7 +295,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         deadline: now + 600,
         refund_note: [6; 32],
     };
-    let id = swap_id(terms.user.into(), &terms.maker_share);
+    let id = reverse_swap_id(terms.user.into(), &terms.maker_share);
     let calls = reverse_funding_calls(contract, &terms, &keys.auth.sign(&d.open_reverse(&terms)));
     for (i, (to, data)) in calls.into_iter().enumerate() {
         relay._actionData.calls[i].to = to;
