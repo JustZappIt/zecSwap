@@ -99,16 +99,23 @@ impl ReverseUser {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
+            token_request: None,
         };
+        let quote_id = swap.quote.terms.quote_id;
         ensure!(
             self.maker
-                .accept_reverse(swap.quote.terms.quote_id, &acceptance)
+                .accept_reverse(quote_id, swap.swap_id, &acceptance)
                 .await?
                 .swap_id
                 == swap.swap_id,
             "maker reported a different reverse swap"
         );
         Ok(())
+    }
+
+    /// As `User::collect_token`: the token handed back once the escrow is funded.
+    pub async fn collect_token(&self, swap: &ReverseSwap) -> Result<bool> {
+        self.maker.collect_reverse_token(swap.swap_id).await
     }
 
     /// Import before funding and persist the account/birthday so an interrupted scan resumes.

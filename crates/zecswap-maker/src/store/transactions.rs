@@ -194,6 +194,8 @@ mod tests {
                     sweep: None,
                     settled: false,
                     refund_started: false,
+                    token_request: None,
+                    token_return: None,
                 },
                 None,
             )

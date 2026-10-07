@@ -7170,6 +7170,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "blake2b_simd",
  "chrono",
  "clap",

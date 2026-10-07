@@ -8,8 +8,9 @@ listen = "127.0.0.1:8789"
 name = "zecswap-issuer"
 key = "/etc/zecswap-issuer/key.pem"
 data_dir = "/var/lib/zecswap-issuer"
-# Each swap's accept spends one token, so this is how many swaps a device may start a day. It
-# resets at 00:00 UTC.
+# Each swap's accept spends one token, and the maker hands it back once the user pays in: this
+# is how many swaps a device may walk away from a day. Tokens are good on their UTC day only,
+# and the allowance resets at 00:00 UTC.
 tokens_per_day = 3
 # How a device proves it is a genuine install. Until the Zapp identity exists, only
 # "insecure-test", which takes the device's word for its id and so limits nothing.

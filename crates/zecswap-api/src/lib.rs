@@ -53,6 +53,11 @@ pub struct Acceptance {
     pub user_proof: ShareProof,
     #[serde(with = "bytes64")]
     pub viewing_keys: ViewingKeys,
+    /// Where the maker takes tokens, the one its accept spends asked back: an RFC 9578
+    /// `blinded_msg` (base64url, 256 bytes) under the maker's return key, for the maker's
+    /// challenge on the day of the accept. The maker signs it once the user pays in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_request: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +69,17 @@ pub struct Accepted {
     /// the wallet checks on-chain.
     pub t0: u64,
     pub t1: u64,
+}
+
+/// `GET /v1/swaps/{id}`: a forward swap as the maker has it. Everything else about it is
+/// read from the chain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub swap_id: B256,
+    /// The accept's token handed back, once the user has paid in: the RFC 9578 `blind_sig`
+    /// (base64url) of its `tokenRequest`. Only the blinding secret turns it into a token.
+    pub token_return: Option<String>,
 }
 
 /// A swap's terms as `open` committed to them, field for field the contract's `Terms`. The

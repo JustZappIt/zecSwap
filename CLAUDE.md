@@ -51,8 +51,8 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
 | `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker; never run by a maker |
-| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578): client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through |
-| `crates/zecswap-issuer` | Signs each device a day's tokens (one per swap), blind, behind a pluggable attestation check (`docs/tokens.md`) |
+| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
+| `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, behind a pluggable attestation check (`docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors` |
@@ -110,10 +110,19 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
     archived and their wallet accounts dropped; an accept reads its quote and the chain clock
     before taking the quote or importing an account; `max_awaiting_deposit` caps swaps waiting
     on users.
-  - Spam: with `[tokens]`, each accept spends a Privacy Pass token, so a device starts
-    `tokens_per_day` swaps a day (3, reset at 00:00 UTC; `docs/tokens.md`). Attestation is
-    `insecure-test` until the Zapp identity exists, so the limit binds only then; the cap is
-    what holds until then.
+  - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).
+    Attestation is `insecure-test` until the Zapp identity exists, so the limit binds only
+    then; the cap is what holds until then.
+- Tokens count walk-aways (2026-10-07): a device walks away from at most `tokens_per_day` swaps
+  a day (3) and makes as many as it pays into. The gate holds an accept's token while it runs
+  and keeps it only once the quote is taken (`Spend::keep`): a refused accept leaves it
+  spendable. The accept body's `tokenRequest`, blinded under the maker's `return_key` (in
+  `[tokens]`, required; `/v1/info` shows it, the app pins it), is signed once the user pays in
+  in full (forward, in the maker's wallet view) or the escrow is funded (reverse), or when a
+  forward `open` never landed; `GET /v1/swaps/{id}` (new) and `/v1/reverse/swaps/{id}` serve the
+  blind signature as `tokenReturn`. Challenges carry the UTC day in their redemption context,
+  so tokens die at midnight and the spent store keeps only today's. The client spends the
+  issuer's tokens before returned ones and drops earlier days'.
 - Terms hash (2026-10-06): the contract stores only `hashTerms(terms)` of each swap, so `open`
   writes three slots (about 106k gas, from 243k–264k). Every call on a swap takes its `Terms`
   after the id and reverts `WrongTerms` unless they hash to it; one loader (`_load`) does

@@ -95,4 +95,7 @@ pub struct Status {
     pub deposit_txid: Option<String>,
     pub ready_deadline: u64,
     pub refund_after: u64,
+    /// As the forward `Status` has it: the accept's token handed back once the escrow is
+    /// funded.
+    pub token_return: Option<String>,
 }

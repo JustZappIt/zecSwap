@@ -35,6 +35,10 @@ pub(crate) struct ReverseSwap {
     #[serde(with = "optional_txid")]
     pub sweep: Option<TxId>,
     pub settled: bool,
+    /// The blind signature handing the accept's token back (base64url), once the escrow is
+    /// funded.
+    #[serde(default)]
+    pub token_return: Option<String>,
 }
 
 impl ReverseSwap {
@@ -255,6 +259,7 @@ mod tests {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+            token_request: None,
         };
         let mut swap = ReverseSwap {
             id: reverse_swap_id(quote.user, &quote.terms.maker_share),
@@ -265,6 +270,7 @@ mod tests {
             deposit: None,
             sweep: None,
             settled: false,
+            token_return: None,
         };
         assert!(store.insert_reverse_swap(&swap, 200, None).is_err());
         store.conn().execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON notifications WHEN NEW.event_key = 'reject' BEGIN SELECT RAISE(FAIL, 'injected queue failure'); END;").unwrap();

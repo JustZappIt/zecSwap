@@ -1,4 +1,4 @@
-//! The token issuer: signs each genuine device up to a day's tokens, one per swap, blind
+//! The token issuer: signs each genuine device up to a day's tokens, one per accept, blind
 //! (`zecswap-tokens`). It learns which devices fetch tokens and how many, never which swaps they
 //! pay for. Run it apart from the maker, and log nothing of who fetched what.
 
@@ -25,9 +25,6 @@ use zecswap_tokens::IssuerKey;
 
 /// The most tokens one request signs, whatever the day's allowance.
 const MAX_BATCH: usize = 100;
-/// A blinded request's length: the 2048-bit key's modulus.
-const BLINDED: usize = 256;
-const DAY: u64 = 24 * 60 * 60;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,14 +154,17 @@ impl Issuer {
             .map(|blinded| URL_SAFE_NO_PAD.decode(blinded))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| invalid("a blinded request that is not base64url"))?;
+        // Checked before counting: one the key can't sign would cost the device its allowance.
         if !(1..=MAX_BATCH).contains(&blinded.len())
-            || blinded.iter().any(|blinded| blinded.len() != BLINDED)
+            || blinded
+                .iter()
+                .any(|blinded| self.key.token_key().check_request(blinded).is_err())
         {
             return Err(invalid(
                 "between 1 and 100 blinded requests of 256 bytes each",
             ));
         }
-        let day = now / DAY;
+        let day = zecswap_tokens::day(now);
         {
             let mut issued = self.issued.lock().unwrap();
             let tx = issued.transaction()?;
@@ -264,7 +264,7 @@ mod tests {
         })
         .unwrap();
         let token_key = Key::from_base64(&issuer.token_key().token_key).unwrap();
-        let maker = Challenge::new("issuer.test", "maker").unwrap();
+        let maker = Challenge::new("issuer.test", "maker", 20_000).unwrap();
         // How many of `count` tokens the device gets, each checked to spend at a service.
         let ask = |device: &str, count: usize, now: u64| {
             let (pending, blinded): (Vec<Pending>, Vec<String>) = (0..count)
@@ -287,6 +287,7 @@ mod tests {
                 granted
             })
         };
+        const DAY: u64 = 24 * 60 * 60;
         let today = 20_000 * DAY;
         assert_eq!(ask("phone a", 2, today).unwrap(), 2);
         assert_eq!(

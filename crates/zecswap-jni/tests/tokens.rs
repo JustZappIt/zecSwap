@@ -10,7 +10,7 @@ const BLINDED: usize = 256;
 #[test]
 fn a_token_round_trips_through_the_bindings_bytes() {
     let issuer = IssuerKey::generate().unwrap();
-    let maker = Challenge::new("issuer.test", "maker").unwrap();
+    let maker = Challenge::new("issuer.test", "maker", 20_000).unwrap();
     let [challenge, key, name] =
         read_challenge(&www_authenticate(&maker, issuer.token_key())).unwrap();
     assert_eq!(

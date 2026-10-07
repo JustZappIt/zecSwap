@@ -2,13 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
-use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
+use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
 
 use crate::tokens::Tokens;
 
@@ -24,7 +24,7 @@ impl MakerApi {
         Endpoint::new("maker", url).map(Self)
     }
 
-    /// Spends a token from `tokens` whenever the maker asks for one.
+    /// Pays for each accept with a token from `tokens` when the maker asks for one.
     pub fn with_tokens(mut self, tokens: Arc<Tokens>) -> Self {
         self.0.tokens = Some(tokens);
         self
@@ -41,18 +41,35 @@ impl MakerApi {
         self.0.post("/v1/reverse/quote", request).await
     }
 
+    /// Accepts the reverse quote that opens `swap_id`.
     pub async fn accept_reverse(
         &self,
         quote_id: B256,
+        swap_id: B256,
         acceptance: &Acceptance,
     ) -> Result<Accepted> {
-        self.0
-            .post(&format!("/v1/reverse/quote/{quote_id}/accept"), acceptance)
-            .await
+        let path = format!("/v1/reverse/quote/{quote_id}/accept");
+        self.0.accept(&path, swap_id, acceptance).await
     }
 
     pub async fn reverse_status(&self, swap_id: B256) -> Result<zecswap_api::reverse::Status> {
         self.0.get(&format!("/v1/reverse/swaps/{swap_id}")).await
+    }
+
+    /// Holds the token a forward swap hands back once paid into: whether it now holds it.
+    pub async fn collect_token(&self, swap_id: B256) -> Result<bool> {
+        let status: Status = self.0.get(&format!("/v1/swaps/{swap_id}")).await?;
+        self.0
+            .tokens()?
+            .collect(swap_id, status.token_return.as_deref())
+    }
+
+    /// As `collect_token`, for a reverse swap.
+    pub async fn collect_reverse_token(&self, swap_id: B256) -> Result<bool> {
+        let status = self.reverse_status(swap_id).await?;
+        self.0
+            .tokens()?
+            .collect(swap_id, status.token_return.as_deref())
     }
 
     pub(crate) async fn quote(
@@ -69,10 +86,15 @@ impl MakerApi {
         self.0.post("/v1/quote", &request).await
     }
 
-    pub(crate) async fn accept(&self, quote_id: B256, acceptance: &Acceptance) -> Result<Accepted> {
-        self.0
-            .post(&format!("/v1/quote/{quote_id}/accept"), acceptance)
-            .await
+    /// Accepts the quote that opens `swap_id`.
+    pub(crate) async fn accept(
+        &self,
+        quote_id: B256,
+        swap_id: B256,
+        acceptance: &Acceptance,
+    ) -> Result<Accepted> {
+        let path = format!("/v1/quote/{quote_id}/accept");
+        self.0.accept(&path, swap_id, acceptance).await
     }
 }
 
@@ -84,12 +106,6 @@ pub struct RelayerApi(Endpoint);
 impl RelayerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("relayer", url).map(Self)
-    }
-
-    /// Spends a token from `tokens` whenever the relayer asks for one.
-    pub fn with_tokens(mut self, tokens: Arc<Tokens>) -> Self {
-        self.0.tokens = Some(tokens);
-        self
     }
 
     /// Submit a persisted, locally proved funding transaction. Returned hashes are pending;
@@ -155,30 +171,63 @@ impl Endpoint {
         })
     }
 
+    /// Posts an accept: asked for a token, it pays with one and asks for it back.
+    async fn accept(&self, path: &str, swap_id: B256, acceptance: &Acceptance) -> Result<Accepted> {
+        let url = format!("{}{path}", self.url);
+        let mut response = self.http.post(&url).json(acceptance).send().await?;
+        if let Some(tokens) = &self.tokens {
+            // A token the maker refuses, spent after all or no longer good, gives way to the
+            // next.
+            for _ in 0..3 {
+                if response.status() != StatusCode::UNAUTHORIZED {
+                    break;
+                }
+                let Some(asked) = response.headers().get(WWW_AUTHENTICATE) else {
+                    break;
+                };
+                let payment = tokens.pay(asked.to_str()?).await?;
+                let paid = Acceptance {
+                    token_request: Some(payment.request.clone()),
+                    ..acceptance.clone()
+                };
+                let sent = self
+                    .http
+                    .post(&url)
+                    .header(AUTHORIZATION, payment.token.authorization())
+                    .json(&paid)
+                    .send()
+                    .await;
+                let status = sent.as_ref().ok().map(reqwest::Response::status);
+                tokens.settle(swap_id, payment, status);
+                response = sent?;
+            }
+        }
+        self.read(response).await
+    }
+
+    fn tokens(&self) -> Result<&Tokens> {
+        self.tokens
+            .as_deref()
+            .context("this client spends no tokens")
+    }
+
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.read(self.http.get(format!("{}{path}", self.url)))
+        self.read(self.http.get(format!("{}{path}", self.url)).send().await?)
             .await
     }
 
     async fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
-        self.read(self.http.post(format!("{}{path}", self.url)).json(body))
-            .await
+        self.read(
+            self.http
+                .post(format!("{}{path}", self.url))
+                .json(body)
+                .send()
+                .await?,
+        )
+        .await
     }
 
-    async fn read<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T> {
-        let again = request.try_clone();
-        let mut response = request.send().await?;
-        // Asked for a token: spend one and send the request once more.
-        if response.status() == StatusCode::UNAUTHORIZED
-            && let (Some(tokens), Some(again)) = (&self.tokens, again)
-            && let Some(asked) = response.headers().get(WWW_AUTHENTICATE)
-        {
-            let token = tokens.take(asked.to_str()?).await?;
-            response = again
-                .header(AUTHORIZATION, token.authorization())
-                .send()
-                .await?;
-        }
+    async fn read<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
         let status = response.status();
         if status.is_success() {
             Ok(response.json().await?)
@@ -189,75 +238,5 @@ impl Endpoint {
                 response.text().await?
             )
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use axum::Router;
-    use axum::middleware::from_fn_with_state;
-    use axum::routing::post;
-    use zecswap_issuer::{Attestation, Issuer};
-    use zecswap_tokens::IssuerKey;
-    use zecswap_tokens::server::{Config, Gate, require};
-
-    use super::*;
-
-    async fn serve(app: Router) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        url
-    }
-
-    /// Asked for a token, the client spends one held or fetches a batch, and sends the request
-    /// again, until the issuer's daily allowance for the device runs out, the last batch short.
-    /// A service that asks for tokens under a key its issuer does not publish gets none.
-    #[tokio::test]
-    async fn requests_spend_tokens_from_the_issuer_within_the_devices_allowance() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = IssuerKey::generate().unwrap();
-        let pem = dir.path().join("issuer.pem");
-        std::fs::write(&pem, key.to_pem().unwrap()).unwrap();
-        let issuer = Issuer::new(zecswap_issuer::Config {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            name: "issuer.test".into(),
-            key: pem,
-            data_dir: dir.path().into(),
-            tokens_per_day: 3,
-            attestation: Attestation::InsecureTest,
-        })
-        .unwrap();
-        let issuer = serve(zecswap_issuer::router(Arc::new(issuer))).await;
-        let service = |key: &IssuerKey, spent: &str| {
-            let gate = Gate::open(&Config {
-                issuer: "issuer.test".into(),
-                origin: "maker".into(),
-                keys: vec![key.token_key().to_base64()],
-                spent: dir.path().join(spent),
-            })
-            .unwrap();
-            Router::new()
-                .route("/v1/echo", post(|body: String| async move { body }))
-                .route_layer(from_fn_with_state(Arc::new(gate), require))
-        };
-        let tokens = Arc::new(Tokens::new(issuer, b"phone".to_vec(), 2).unwrap());
-        let endpoint = |url: String| Endpoint {
-            tokens: Some(tokens.clone()),
-            ..Endpoint::new("maker", url).unwrap()
-        };
-
-        let maker = endpoint(serve(service(&key, "maker.sqlite")).await);
-        for n in [1, 2, 3] {
-            assert_eq!(maker.post::<u32>("/v1/echo", &n).await.unwrap(), n);
-        }
-        let spent = maker.post::<u32>("/v1/echo", &4).await.unwrap_err();
-        assert!(spent.to_string().contains("429"), "{spent}");
-
-        let marking = IssuerKey::generate().unwrap();
-        let elsewhere = endpoint(serve(service(&marking, "elsewhere.sqlite")).await);
-        let refused = elsewhere.post::<u32>("/v1/echo", &1).await;
-        let refused = refused.unwrap_err().to_string();
-        assert!(refused.contains("does not sign"), "{refused}");
     }
 }

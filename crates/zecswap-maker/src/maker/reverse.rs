@@ -5,7 +5,7 @@ use zecswap_api::{Acceptance, Accepted, Quote};
 use zecswap_chain::evm::{B256, OnChainSwap, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
-use super::{Maker, MakerError, Zcash, unix_now};
+use super::{Maker, MakerError, Spend, Zcash, unix_now};
 use crate::store::ReverseSwap;
 
 impl Maker {
@@ -88,11 +88,14 @@ impl Maker {
         })?)
     }
 
+    /// With `[tokens]`, `spend` is the accept's token: kept spent once the quote is taken,
+    /// spendable again otherwise, a repeated accept of the same swap included.
     #[tracing::instrument(skip_all, fields(operation = "accept_reverse", quote_id = %id, swap_id = tracing::field::Empty), err(level = "warn"))]
     pub async fn accept_reverse(
         &self,
         id: B256,
         acceptance: Acceptance,
+        spend: Option<&Spend>,
     ) -> Result<Accepted, MakerError> {
         self.check_watchtower()?;
         let config = self
@@ -116,6 +119,7 @@ impl Maker {
                 &acceptance.user_proof,
             )
             .map_err(|_| MakerError::Rejected("user share proof does not verify".into()))?;
+        self.token_request(&acceptance)?;
         let swap_id = reverse_swap_id(quote.user, &quote.terms.maker_share);
         tracing::Span::current().record("swap_id", tracing::field::display(swap_id));
         let mut zcash = self.zcash.lock().await;
@@ -166,6 +170,7 @@ impl Maker {
             deposit: None,
             sweep: None,
             settled: false,
+            token_return: None,
         };
         let event = self.reverse_alert(
             &swap,
@@ -178,6 +183,9 @@ impl Maker {
         {
             wallet.forget(account)?;
             return Err(error.into());
+        }
+        if let Some(spend) = spend {
+            spend.keep()?;
         }
         tracing::info!(%swap_id, outcome = "accepted", "reverse swap accepted; awaiting escrow funding");
         Ok(Accepted {
@@ -254,6 +262,7 @@ impl Maker {
             deposit_txid: swap.deposit.map(|id| id.to_string()),
             ready_deadline: swap.quote.ready_deadline,
             refund_after: swap.quote.refund_after,
+            token_return: swap.token_return,
         }))
     }
 
@@ -329,6 +338,8 @@ impl Maker {
             }
             return Ok(());
         };
+        // The escrow holds the user's payment from `openReverse` on: the token goes back.
+        self.return_reverse_token(swap);
         if swap.settled {
             let confirmed = self
                 .settlement
@@ -554,6 +565,28 @@ impl Maker {
         self.store.save_reverse_swap(swap)?;
         wallet.broadcast(client, txid).await?;
         Ok(())
+    }
+
+    /// As `return_token` does for a forward swap.
+    fn return_reverse_token(&self, swap: &mut ReverseSwap) {
+        let (Some(gate), Some(request), None) = (
+            &self.tokens,
+            &swap.acceptance.token_request,
+            &swap.token_return,
+        ) else {
+            return;
+        };
+        let returned = gate
+            .read_return_request(request)
+            .and_then(|request| gate.sign_return(&request))
+            .and_then(|signature| {
+                swap.token_return = Some(signature);
+                self.store.save_reverse_swap(swap)
+            });
+        if let Err(e) = returned {
+            swap.token_return = None;
+            tracing::warn!(swap_id = %swap.id, "could not hand the token back: {e:#}");
+        }
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "finish_reverse"), err(level = "warn"))]

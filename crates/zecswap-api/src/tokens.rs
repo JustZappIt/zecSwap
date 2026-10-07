@@ -13,7 +13,8 @@ pub struct TokenKey {
     /// The key tokens are signed with, base64url SPKI (RFC 9578). Wallets pin it: an issuer
     /// that gave some devices another key would recognise their tokens.
     pub token_key: String,
-    /// One per swap: an accept spends one. Resets at 00:00 UTC.
+    /// An accept spends one, which the maker hands back once the user pays in: how many swaps
+    /// a device may walk away from a day. Resets at 00:00 UTC.
     pub tokens_per_day: u32,
 }
 
