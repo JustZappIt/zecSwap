@@ -1,6 +1,8 @@
+const ROUTES = ["/maker/", "/relayer/", "/issuer/"];
+
 export async function proxy(request: Request, origin: Pick<Fetcher, "fetch">): Promise<Response> {
   const url = new URL(request.url);
-  if (!url.pathname.startsWith("/maker/") && !url.pathname.startsWith("/relayer/")) {
+  if (!ROUTES.some((route) => url.pathname.startsWith(route))) {
     return failure(404, "notFound", "route not found");
   }
   url.protocol = "http:";

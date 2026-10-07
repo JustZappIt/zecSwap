@@ -42,6 +42,17 @@ test("an origin failure is reported without retrying a financial action", async 
   });
 });
 
+test("the token issuer's routes reach the origin unchanged", async () => {
+  const response = await proxy(new Request("https://example.workers.dev/issuer/v1/token-key"), {
+    async fetch(input) {
+      assert.ok(input instanceof Request);
+      assert.equal(input.url, "http://localhost:8080/issuer/v1/token-key");
+      return Response.json({ issuer: "zecswap-testnet-issuer" });
+    },
+  });
+  assert.equal(response.status, 200);
+});
+
 test("unknown routes never reach the origin", async () => {
   const response = await proxy(new Request("https://example.workers.dev/admin"), {
     async fetch() {
