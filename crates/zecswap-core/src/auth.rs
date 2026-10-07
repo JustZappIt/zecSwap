@@ -185,7 +185,7 @@ fn address_of(key: &VerifyingKey) -> [u8; 20] {
         .expect("20 bytes")
 }
 
-fn keccak(parts: &[&[u8]]) -> [u8; 32] {
+pub(crate) fn keccak(parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Keccak256::new();
     for part in parts {
         hasher.update(part);
@@ -193,13 +193,13 @@ fn keccak(parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn uint(value: u128) -> [u8; 32] {
+pub(crate) fn uint(value: u128) -> [u8; 32] {
     let mut word = [0; 32];
     word[16..].copy_from_slice(&value.to_be_bytes());
     word
 }
 
-fn address(value: &[u8; 20]) -> [u8; 32] {
+pub(crate) fn address(value: &[u8; 20]) -> [u8; 32] {
     let mut word = [0; 32];
     word[12..].copy_from_slice(value);
     word

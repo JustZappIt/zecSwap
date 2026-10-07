@@ -345,7 +345,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         chain.provider.get_transaction_count(sponsor).await.unwrap(),
         nonce
     );
-    assert!(chain.swap(id).await.unwrap().is_none());
+    assert!(chain.swap(id, &terms.terms()).await.unwrap().is_none());
     // A call that fails after the mocked unshield still rolls everything back in simulation.
     let mut short = relay.clone();
     short._transactions[0].unshieldPreimage.value = alloy::primitives::aliases::U120::from(1);
@@ -402,7 +402,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         .unwrap()
         .await
         .unwrap();
-    let swap = chain.swap(id).await.unwrap().unwrap();
+    let swap = chain.swap(id, &terms.terms()).await.unwrap().unwrap();
     assert_eq!(swap.maker, Address::from(terms.user));
     assert_eq!(swap.user, p.maker);
     assert_eq!(swap.amount, terms.amount);

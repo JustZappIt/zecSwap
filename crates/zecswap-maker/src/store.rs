@@ -38,6 +38,7 @@ const SCHEMA: &str = "
         viewing_keys BLOB NOT NULL,
         zcash_account TEXT NOT NULL,
         opened_at INTEGER NOT NULL,
+        t0 INTEGER NOT NULL,
         t1 INTEGER NOT NULL,
         sweep_txid BLOB,
         settled INTEGER NOT NULL DEFAULT 0,
@@ -47,7 +48,7 @@ const SCHEMA: &str = "
 
 const SWAP_COLUMNS: &str = "
     s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
-    q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat, s.refund_started
+    q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat, s.refund_started, s.t0
 ";
 
 #[derive(Clone, Debug)]
@@ -70,8 +71,9 @@ pub struct Swap {
     pub viewing: ViewingKeys,
     pub zcash_account: AccountUuid,
     pub opened_at: u64,
-    /// The `t1` sent with `open`. `open` fails from `t0` on, so by `t1` the swap is on-chain if
-    /// it ever will be.
+    /// The deadlines sent with `open`, part of the terms every later call supplies. `open`
+    /// fails from `t0` on, so by `t1` the swap is on-chain if it ever will be.
+    pub t0: u64,
     pub t1: u64,
     pub sweep: Option<TxId>,
     pub settled: bool,
@@ -148,8 +150,8 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t1)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t0, t1)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 swap.id.as_slice(),
                 swap.quote.id,
@@ -157,6 +159,7 @@ impl Store {
                 swap.viewing.to_bytes(),
                 swap.zcash_account.expose_uuid().to_string(),
                 swap.opened_at,
+                swap.t0,
                 swap.t1,
             ],
         )?;
@@ -259,6 +262,7 @@ fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
         viewing: ViewingKeys::from_bytes(&row.get(2)?).map_err(|e| invalid(2, Type::Blob, e))?,
         zcash_account: AccountUuid::from_uuid(account),
         opened_at: row.get(4)?,
+        t0: row.get(15)?,
         t1: row.get(5)?,
         sweep: row.get::<_, Option<[u8; 32]>>(6)?.map(TxId::from_bytes),
         settled: row.get(7)?,

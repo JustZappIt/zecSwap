@@ -153,9 +153,7 @@ impl Maker {
     pub(crate) async fn monitor_snapshot(&self) -> Result<MonitorSnapshot> {
         const LIMIT: usize = 50;
         let counts = self.store.monitor_counts()?;
-        let mut swaps = self
-            .store
-            .monitor_swaps(self.config.timing.t0_after, LIMIT)?;
+        let mut swaps = self.store.monitor_swaps(LIMIT)?;
         let runtime = self.monitoring.state.lock().unwrap().clone();
         for swap in &mut swaps {
             swap.last_pass_failed = runtime.failed_swap_ids.contains(&swap.id);
@@ -214,7 +212,7 @@ impl Maker {
                 .map(|id| async move {
                     (
                         id,
-                        timeout(Duration::from_secs(2), self.settlement.swap(id)).await,
+                        timeout(Duration::from_secs(2), self.settlement.swap_state(id)).await,
                     )
                 })
                 .buffer_unordered(4);
@@ -243,8 +241,6 @@ impl Maker {
                     .into(),
                 );
                 swap.paid_out = Some(chain.paid_out);
-                swap.ready_deadline = chain.t0;
-                swap.refund_after = chain.t1;
                 swap.claim_lock_until = Some(chain.claim_lock_until);
                 swap.refund_lock_until = Some(chain.refund_lock_until);
             }

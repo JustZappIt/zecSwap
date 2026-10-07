@@ -95,6 +95,13 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Terms hash (2026-10-06): the contract stores only `hashTerms(terms)` of each swap, so `open`
+  writes three slots (about 106k gas, from 243k–264k). Every call on a swap takes its `Terms`
+  after the id and reverts `WrongTerms` unless they hash to it; one loader (`_load`) does
+  this and `test/ZecSwap.terms.t.sol` fails if a function skips it. `Opened` still emits the
+  terms. Rust's one definition is `zecswap_core::Terms::hash`; `Settlement::swap(id, &terms)`
+  errors `Error::WrongTerms` on a mismatch, and `swap_state` reads the slim state alone. The
+  maker persists `t0` and returns `t0`/`t1` in `Accepted`; relayer requests carry `terms`.
 - The contract stores the revealed share (`Swap.secret`); nothing reads event logs.
 - `claim` is a pull payment; the payout is withdrawn separately.
 - A lapsed lock gives the other side the next turn; there is no "one lock each" deadlock.
@@ -139,6 +146,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   alloy-primitives 1.6+ clashes with zcash_transparent's pre-release `digest`.
 - `zcash_client_sqlite` needs `transparent-inputs` because `zcash_client_backend/pczt` turns it on.
 - Don't reintroduce an orchard fork or SDK patch: signing goes through pczt's public Signer.
+- A maker store from before the terms hash has no `swaps.t0` and fails on its first read: a new
+  deployment's maker gets a fresh store and, with it, a new `MAKER_ROOT_SECRET`.
 - Never sign EVM transactions through `ProviderBuilder::new()`'s default fillers: its nonce
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's

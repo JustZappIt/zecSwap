@@ -3,7 +3,7 @@
 
 use alloy_primitives::{Address, address};
 use zecswap_chain::evm::swap_id;
-use zecswap_core::{Domain, NetworkType, derive_maker_share, derive_user_keys};
+use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 use zecswap_railgun::{Keys, ShieldNote};
 
 const SEED: [u8; 64] = [7; 64];
@@ -11,6 +11,8 @@ const RAILGUN_SEED: [u8; 64] = [8; 64];
 const MAKER: Address = address!("09eD1F966745Be18C711C346242c0974DAd7c3e5");
 const CONTRACT: Address = address!("1111111111111111111111111111111111111111");
 const RELAYER: Address = address!("2222222222222222222222222222222222222222");
+const TOKEN: Address = address!("3333333333333333333333333333333333333333");
+const PAYEE: Address = address!("4444444444444444444444444444444444444444");
 const SEPOLIA: u64 = 11_155_111;
 
 fn hex(bytes: &[u8]) -> String {
@@ -103,6 +105,49 @@ fn main() {
         hex(&keys.auth.sign(&domain.open_reverse(&separate)))
     );
     println!("  Rescue {}", hex(&keys.auth.sign(&rescue)));
+
+    let pays_account = Terms {
+        maker: MAKER.into(),
+        token: TOKEN.into(),
+        amount: 150_000_000,
+        maker_share: maker_share.public(),
+        user_share: keys.share.public(),
+        user: PAYEE.into(),
+        t0: 1_790_003_600,
+        t1: 1_790_007_200,
+        payout_note: [0; 32],
+    };
+    let pays_railgun = Terms {
+        user: keys.auth.address(),
+        payout_note: railgun_note.commitment(),
+        ..pays_account.clone()
+    };
+    println!("terms hashes (`hashTerms`) of swap {id}, with the shares above");
+    print_terms("paid to an account", &pays_account);
+    print_terms("paid into the Railgun seed's wallet", &pays_railgun);
+    print_terms(
+        &format!("reverse {reverse_id}: openReverse's terms for the OpenReverse above"),
+        &reverse.terms(),
+    );
+}
+
+fn print_terms(name: &str, terms: &Terms) {
+    println!("  {name}");
+    println!("    maker      {}", hex(&terms.maker));
+    println!("    token      {}", hex(&terms.token));
+    println!("    amount     {}", terms.amount);
+    println!(
+        "    makerKey   {}",
+        hex(&terms.maker_share.to_affine_bytes())
+    );
+    println!(
+        "    userKey    {}",
+        hex(&terms.user_share.to_affine_bytes())
+    );
+    println!("    user       {}", hex(&terms.user));
+    println!("    t0, t1     {}, {}", terms.t0, terms.t1);
+    println!("    payoutNote {}", hex(&terms.payout_note));
+    println!("    hash       {}", hex(&terms.hash()));
 }
 
 /// Prints Railgun wallet 0 of `seed` and the note built from `entropy` that pays it.

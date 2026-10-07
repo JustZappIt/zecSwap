@@ -25,4 +25,5 @@ zecswap-railgun = { path = "../zecswap-railgun" }
 zeroize.workspace = true
 
 [dev-dependencies]
+alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 tower = { version = "0.5", features = ["util"] }

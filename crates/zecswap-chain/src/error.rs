@@ -16,6 +16,8 @@ pub enum Error {
     Wallet(String),
     #[error("settlement contract: {0}")]
     Contract(String),
+    #[error("swap {0} opened on other terms than these")]
+    WrongTerms(alloy::primitives::B256),
     #[error(transparent)]
     Swap(#[from] zecswap_core::Error),
 }

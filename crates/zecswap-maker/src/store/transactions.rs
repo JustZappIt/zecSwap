@@ -188,6 +188,7 @@ mod tests {
                     viewing: ViewingKeys::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng)),
                     zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
                     opened_at: 100,
+                    t0: 200,
                     t1: 300,
                     sweep: None,
                     settled: false,

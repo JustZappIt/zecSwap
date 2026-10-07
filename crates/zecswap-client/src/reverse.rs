@@ -7,7 +7,7 @@ use zecswap_api::{Acceptance, relayer};
 use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, swap_id};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Wallet};
 use zecswap_core::{
-    Domain, JointAccount, NetworkType, Payout, SpendKey, SwapContext, UserSwapKeys,
+    Domain, JointAccount, NetworkType, Payout, SpendKey, SwapContext, Terms, UserSwapKeys,
     derive_user_keys,
 };
 use zecswap_railgun::Keys as RailgunKeys;
@@ -132,7 +132,10 @@ impl ReverseUser {
     pub async fn funding_calls(&self, swap: &ReverseSwap) -> Result<[(Address, Vec<u8>); 2]> {
         self.verify_quote(swap).await?;
         ensure!(
-            self.settlement.swap(swap.swap_id).await?.is_none(),
+            self.settlement
+                .swap(swap.swap_id, &self.terms(swap)?)
+                .await?
+                .is_none(),
             "reverse escrow already exists"
         );
         let now = self.settlement.now().await?;
@@ -190,6 +193,7 @@ impl ReverseUser {
         self.relayer
             .ready_reverse(&Authorization {
                 swap_id: swap.swap_id,
+                terms: (&self.terms(swap)?).into(),
                 deadline,
                 signature: signature.into(),
             })
@@ -197,11 +201,13 @@ impl ReverseUser {
         Ok(())
     }
 
+    /// The escrow as the chain has it; an error unless it holds the quoted terms and refunds
+    /// to the quoted note.
     pub async fn state(&self, swap: &ReverseSwap) -> Result<OnChainSwap> {
         self.verify_quote(swap).await?;
         let chain = self
             .settlement
-            .swap(swap.swap_id)
+            .swap(swap.swap_id, &self.terms(swap)?)
             .await?
             .context("reverse escrow is not on-chain")?;
         let funding = self
@@ -209,21 +215,17 @@ impl ReverseUser {
             .reverse_funding(swap.swap_id)
             .await?
             .context("not a reverse escrow")?;
-        let keys = self.keys(swap.index)?;
         ensure!(
-            chain.maker == swap.quote.user
-                && chain.user == swap.quote.terms.maker
-                && chain.maker_share == keys.share.public()
-                && chain.user_share == swap.quote.terms.maker_share
-                && chain.token == self.token
-                && chain.amount == swap.quote.terms.amount
-                && chain.t0 == swap.quote.ready_deadline
-                && chain.t1 == swap.quote.refund_after
-                && chain.payout_note.is_none()
-                && funding.refund_note == swap.quote.refund_note,
-            "reverse escrow differs from the quote"
+            funding.refund_note == swap.quote.refund_note,
+            "reverse escrow refunds to another note"
         );
         Ok(chain)
+    }
+
+    /// What `openReverse` commits the escrow to, from the quote and our share.
+    pub fn terms(&self, swap: &ReverseSwap) -> Result<Terms> {
+        let keys = self.keys(swap.index)?;
+        Ok(swap.quote.open(keys.share.public()).terms())
     }
 
     pub async fn receive_key(&self, swap: &ReverseSwap) -> Result<SpendKey> {
@@ -264,8 +266,10 @@ impl ReverseUser {
         );
         let keys = self.keys(swap.index)?;
         let note = self.railgun.note(&keys.note_entropy)?;
+        let escrow = zecswap_api::Terms::from(&self.terms(swap)?);
         let payout = relayer::Payout {
             swap_id: swap.swap_id,
+            terms: escrow.clone(),
             note: (&note).into(),
             fee: terms.fee,
             signature: keys
@@ -287,6 +291,7 @@ impl ReverseUser {
             self.relayer
                 .lock_reverse_refund(&Authorization {
                     swap_id: swap.swap_id,
+                    terms: escrow,
                     deadline,
                     signature: keys
                         .auth
@@ -303,6 +308,7 @@ impl ReverseUser {
         self.relayer
             .refund_reverse(&Refund {
                 swap_id: swap.swap_id,
+                terms: escrow,
                 secret: keys.share.to_be_bytes().into(),
                 payout,
             })

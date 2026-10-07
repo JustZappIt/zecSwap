@@ -16,7 +16,7 @@ use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
-use zecswap_core::{PublicShare, ReverseOpen, SecretShare};
+use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
 use crate::Error;
@@ -48,7 +48,19 @@ sol! {
         bytes32 shieldKey;
     }
 
-    // `open` takes eight parameters, which the generated binding cannot shorten.
+    struct TermsWords {
+        address maker;
+        address token;
+        uint128 amount;
+        uint256[2] makerKey;
+        uint256[2] userKey;
+        address user;
+        uint64 t0;
+        uint64 t1;
+        bytes32 payoutNote;
+    }
+
+    // `open` and `rescue` take eight parameters, which the generated binding cannot shorten.
     #[allow(clippy::too_many_arguments)]
     #[sol(rpc)]
     interface IZecSwap {
@@ -61,41 +73,31 @@ sol! {
         event RefundLocked(bytes32 indexed id, uint64 until);
         event Refunded(bytes32 indexed id, uint256 makerSecret);
         struct Swap {
-            address maker;
-            uint64 t0;
+            bytes32 termsHash;
             uint8 stage;
             bool paidOut;
-            address user;
-            uint64 t1;
-            address token;
             uint64 claimLockUntil;
-            uint128 amount;
             uint64 refundLockUntil;
-            uint256 makerX;
-            uint256 makerY;
-            uint256 userX;
-            uint256 userY;
             uint256 secret;
-            bytes32 payoutNote;
         }
 
         function openReverse(ReverseOpenWords terms, bytes signature) external returns (bytes32);
         function reverseFunding(bytes32 id) external view returns (bytes32 refundNote, uint64 blockNumber);
-        function readyWithSig(bytes32 id, uint64 deadline, bytes signature) external;
-        function lockRefundWithSig(bytes32 id, uint64 deadline, bytes signature) external;
-        function refundPayout(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
+        function readyWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
+        function lockRefundWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
+        function refundPayout(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
         function deposit(address token, uint256 amount) external;
         function withdraw(address token, uint256 amount, address to) external;
         function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1, bytes32 payoutNote) external returns (bytes32 id);
-        function ready(bytes32 id) external;
-        function lockClaim(bytes32 id) external;
-        function lockClaimWithSig(bytes32 id, uint64 deadline, bytes signature) external;
-        function claim(bytes32 id, uint256 userSecret) external;
-        function payout(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
-        function rescue(bytes32 id, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint64 nonce, uint64 deadline, bytes signature) external;
+        function ready(bytes32 id, TermsWords terms) external;
+        function lockClaim(bytes32 id, TermsWords terms) external;
+        function lockClaimWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
+        function claim(bytes32 id, TermsWords terms, uint256 userSecret) external;
+        function payout(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
+        function rescue(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint64 nonce, uint64 deadline, bytes signature) external;
         function rescueNonces(bytes32 id) external view returns (uint64);
-        function lockRefund(bytes32 id) external;
-        function refund(bytes32 id, uint256 makerSecret) external;
+        function lockRefund(bytes32 id, TermsWords terms) external;
+        function refund(bytes32 id, TermsWords terms, uint256 makerSecret) external;
         function getSwap(bytes32 id) external view returns (Swap memory);
         function vaultOf(bytes32 id) external view returns (address);
         function balanceOf(address maker, address token) external view returns (uint256);
@@ -139,6 +141,7 @@ pub enum Stage {
     Refunded,
 }
 
+/// A swap as the contract and the terms it opened with describe it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnChainSwap {
     pub stage: Stage,
@@ -170,15 +173,16 @@ impl OnChainSwap {
     }
 }
 
-pub struct OpenRequest<'a> {
-    pub token: Address,
-    pub amount: u128,
-    pub maker_share: &'a PublicShare,
-    pub user_share: &'a PublicShare,
-    pub user: Address,
-    pub t0: u64,
-    pub t1: u64,
-    pub payout_note: Option<B256>,
+/// What the contract stores of a swap: its state, and only a hash of its terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwapState {
+    pub stage: Stage,
+    pub terms_hash: B256,
+    pub claim_lock_until: u64,
+    pub refund_lock_until: u64,
+    /// The share settlement revealed, big-endian; zero until then.
+    pub secret: [u8; 32],
+    pub paid_out: bool,
 }
 
 /// A note Railgun recorded shielding, as its `Shield` event reports it.
@@ -327,19 +331,28 @@ impl Settlement {
         u64::try_from(duration).map_err(Error::contract)
     }
 
-    pub async fn swap(&self, id: B256) -> Result<Option<OnChainSwap>, Error> {
+    /// The swap, read against the terms it should have opened with: none if it never opened,
+    /// `Error::WrongTerms` if it opened on others.
+    pub async fn swap(&self, id: B256, terms: &Terms) -> Result<Option<OnChainSwap>, Error> {
+        on_chain(id, self.swap_state(id).await?, terms)
+    }
+
+    /// What the contract stores of the swap; none if it never opened. Nothing in it says what
+    /// the swap pays whom: that takes its terms, and `swap`.
+    pub async fn swap_state(&self, id: B256) -> Result<Option<SwapState>, Error> {
         let swap = self
             .contract
             .getSwap(id)
             .call()
             .await
             .map_err(Error::contract)?;
-        decode_swap(swap)
+        decode_state(swap)
     }
 
     pub async fn confirmed_swap(
         &self,
         id: B256,
+        terms: &Terms,
         confirmations: u64,
     ) -> Result<Option<OnChainSwap>, Error> {
         if confirmations == 0 {
@@ -360,7 +373,7 @@ impl Settlement {
             .call()
             .await
             .map_err(Error::contract)?;
-        decode_swap(swap)
+        on_chain(id, decode_state(swap)?, terms)
     }
 
     /// Where a swap's Railgun payout leaves from, and where Railgun sends it back.
@@ -473,17 +486,23 @@ impl Settlement {
         Ok(self.submit(call).await?.transaction_hash)
     }
 
+    /// Opens a swap on `terms`, whose `maker` must be this account.
     #[tracing::instrument(skip_all, fields(operation = "open", chain = "evm"))]
-    pub async fn open(&self, request: &OpenRequest<'_>) -> Result<B256, Error> {
+    pub async fn open(&self, terms: &Terms) -> Result<B256, Error> {
+        if self.account != Some(terms.maker.into()) {
+            return Err(Error::Config(
+                "the terms name another account as the maker".into(),
+            ));
+        }
         let call = self.contract.open(
-            request.token,
-            request.amount,
-            share_words(request.maker_share),
-            share_words(request.user_share),
-            request.user,
-            request.t0,
-            request.t1,
-            request.payout_note.unwrap_or_default(),
+            terms.token.into(),
+            terms.amount,
+            share_words(&terms.maker_share),
+            share_words(&terms.user_share),
+            terms.user.into(),
+            terms.t0,
+            terms.t1,
+            terms.payout_note.into(),
         );
         Ok(self.submit(call).await?.transaction_hash)
     }
@@ -535,65 +554,63 @@ impl Settlement {
     pub async fn ready_with_sig(
         &self,
         id: B256,
+        terms: &Terms,
         deadline: u64,
         signature: &[u8; 65],
     ) -> Result<B256, Error> {
-        Ok(self
-            .submit(
-                self.contract
-                    .readyWithSig(id, deadline, signature.to_vec().into()),
-            )
-            .await?
-            .transaction_hash)
+        let call =
+            self.contract
+                .readyWithSig(id, terms_words(terms), deadline, signature.to_vec().into());
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund_with_sig", chain = "evm"))]
     pub async fn lock_refund_with_sig(
         &self,
         id: B256,
+        terms: &Terms,
         deadline: u64,
         signature: &[u8; 65],
     ) -> Result<B256, Error> {
-        Ok(self
-            .submit(
-                self.contract
-                    .lockRefundWithSig(id, deadline, signature.to_vec().into()),
-            )
-            .await?
-            .transaction_hash)
+        let call = self.contract.lockRefundWithSig(
+            id,
+            terms_words(terms),
+            deadline,
+            signature.to_vec().into(),
+        );
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund_payout", chain = "evm"))]
     pub async fn refund_payout(
         &self,
         id: B256,
+        terms: &Terms,
         note: &ShieldNote,
         fee: u128,
         signature: &[u8; 65],
     ) -> Result<B256, Error> {
-        Ok(self
-            .submit(self.contract.refundPayout(
-                id,
-                note.npk.into(),
-                ciphertext_words(&note.ciphertext),
-                fee,
-                signature.to_vec().into(),
-            ))
-            .await?
-            .transaction_hash)
+        let call = self.contract.refundPayout(
+            id,
+            terms_words(terms),
+            note.npk.into(),
+            ciphertext_words(&note.ciphertext),
+            fee,
+            signature.to_vec().into(),
+        );
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "ready", chain = "evm"))]
-    pub async fn ready(&self, id: B256) -> Result<B256, Error> {
-        Ok(self.submit(self.contract.ready(id)).await?.transaction_hash)
+    pub async fn ready(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
+        let call = self.contract.ready(id, terms_words(terms));
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_claim", chain = "evm"))]
-    pub async fn lock_claim(&self, id: B256) -> Result<B256, Error> {
-        Ok(self
-            .submit(self.contract.lockClaim(id))
-            .await?
-            .transaction_hash)
+    pub async fn lock_claim(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
+        let call = self.contract.lockClaim(id, terms_words(terms));
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     /// Takes the claim lock for the swap's `user`, which signed for it.
@@ -601,12 +618,16 @@ impl Settlement {
     pub async fn lock_claim_with_sig(
         &self,
         id: B256,
+        terms: &Terms,
         deadline: u64,
         signature: &[u8; 65],
     ) -> Result<B256, Error> {
-        let call = self
-            .contract
-            .lockClaimWithSig(id, deadline, signature.to_vec().into());
+        let call = self.contract.lockClaimWithSig(
+            id,
+            terms_words(terms),
+            deadline,
+            signature.to_vec().into(),
+        );
         Ok(self.submit(call).await?.transaction_hash)
     }
 
@@ -616,12 +637,14 @@ impl Settlement {
     pub async fn payout(
         &self,
         id: B256,
+        terms: &Terms,
         note: &ShieldNote,
         fee: u128,
         signature: &[u8; 65],
     ) -> Result<B256, Error> {
         let call = self.contract.payout(
             id,
+            terms_words(terms),
             note.npk.into(),
             ciphertext_words(&note.ciphertext),
             fee,
@@ -635,6 +658,7 @@ impl Settlement {
     pub async fn rescue(
         &self,
         id: B256,
+        terms: &Terms,
         note: &ShieldNote,
         fee: u128,
         signature: &[u8; 65],
@@ -642,6 +666,7 @@ impl Settlement {
     ) -> Result<B256, Error> {
         let call = self.contract.rescue(
             id,
+            terms_words(terms),
             note.npk.into(),
             ciphertext_words(&note.ciphertext),
             fee,
@@ -661,29 +686,33 @@ impl Settlement {
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "claim", chain = "evm"))]
-    pub async fn claim(&self, id: B256, user_secret: &SecretShare) -> Result<B256, Error> {
+    pub async fn claim(
+        &self,
+        id: B256,
+        terms: &Terms,
+        user_secret: &SecretShare,
+    ) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(user_secret.to_be_bytes());
-        Ok(self
-            .submit(self.contract.claim(id, secret))
-            .await?
-            .transaction_hash)
+        let call = self.contract.claim(id, terms_words(terms), secret);
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund", chain = "evm"))]
-    pub async fn lock_refund(&self, id: B256) -> Result<B256, Error> {
-        Ok(self
-            .submit(self.contract.lockRefund(id))
-            .await?
-            .transaction_hash)
+    pub async fn lock_refund(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
+        let call = self.contract.lockRefund(id, terms_words(terms));
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund", chain = "evm"))]
-    pub async fn refund(&self, id: B256, maker_secret: &SecretShare) -> Result<B256, Error> {
+    pub async fn refund(
+        &self,
+        id: B256,
+        terms: &Terms,
+        maker_secret: &SecretShare,
+    ) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(maker_secret.to_be_bytes());
-        Ok(self
-            .submit(self.contract.refund(id, secret))
-            .await?
-            .transaction_hash)
+        let call = self.contract.refund(id, terms_words(terms), secret);
+        Ok(self.submit(call).await?.transaction_hash)
     }
 
     /// Approves and adds `amount` of `token` to this account's inventory.
@@ -852,6 +881,20 @@ fn ciphertext_words(ciphertext: &ShieldCiphertext) -> ShieldCiphertextWords {
     }
 }
 
+fn terms_words(terms: &Terms) -> TermsWords {
+    TermsWords {
+        maker: terms.maker.into(),
+        token: terms.token.into(),
+        amount: terms.amount,
+        makerKey: share_words(&terms.maker_share),
+        userKey: share_words(&terms.user_share),
+        user: terms.user.into(),
+        t0: terms.t0,
+        t1: terms.t1,
+        payoutNote: terms.payout_note.into(),
+    }
+}
+
 fn share_words(share: &PublicShare) -> [U256; 2] {
     let bytes = share.to_affine_bytes();
     [
@@ -867,7 +910,7 @@ fn share_from_words(x: U256, y: U256) -> Result<PublicShare, Error> {
     Ok(PublicShare::from_affine_bytes(&bytes)?)
 }
 
-fn decode_swap(swap: IZecSwap::Swap) -> Result<Option<OnChainSwap>, Error> {
+fn decode_state(swap: IZecSwap::Swap) -> Result<Option<SwapState>, Error> {
     let stage = match swap.stage {
         0 => return Ok(None),
         1 => Stage::Open,
@@ -876,20 +919,41 @@ fn decode_swap(swap: IZecSwap::Swap) -> Result<Option<OnChainSwap>, Error> {
         4 => Stage::Refunded,
         other => return Err(Error::Contract(format!("unknown stage {other}"))),
     };
-    Ok(Some(OnChainSwap {
+    Ok(Some(SwapState {
         stage,
-        maker: swap.maker,
-        user: swap.user,
-        token: swap.token,
-        amount: swap.amount,
-        t0: swap.t0,
-        t1: swap.t1,
+        terms_hash: swap.termsHash,
         claim_lock_until: swap.claimLockUntil,
         refund_lock_until: swap.refundLockUntil,
-        maker_share: share_from_words(swap.makerX, swap.makerY)?,
-        user_share: share_from_words(swap.userX, swap.userY)?,
         secret: swap.secret.to_be_bytes(),
-        payout_note: (!swap.payoutNote.is_zero()).then_some(swap.payoutNote),
         paid_out: swap.paidOut,
+    }))
+}
+
+fn on_chain(
+    id: B256,
+    state: Option<SwapState>,
+    terms: &Terms,
+) -> Result<Option<OnChainSwap>, Error> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    if state.terms_hash != terms.hash() {
+        return Err(Error::WrongTerms(id));
+    }
+    Ok(Some(OnChainSwap {
+        stage: state.stage,
+        maker: terms.maker.into(),
+        user: terms.user.into(),
+        token: terms.token.into(),
+        amount: terms.amount,
+        t0: terms.t0,
+        t1: terms.t1,
+        claim_lock_until: state.claim_lock_until,
+        refund_lock_until: state.refund_lock_until,
+        maker_share: terms.maker_share,
+        user_share: terms.user_share,
+        secret: state.secret,
+        payout_note: (terms.payout_note != [0; 32]).then(|| terms.payout_note.into()),
+        paid_out: state.paid_out,
     }))
 }

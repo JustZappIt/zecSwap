@@ -259,7 +259,7 @@ impl Maker {
     async fn enrich_evm_history(&self) -> Result<()> {
         let scope = self.transaction_scope();
         let mut remaining = 25;
-        for swap in self.store.monitor_swaps(self.config.timing.t0_after, 500)? {
+        for swap in self.store.monitor_swaps(500)? {
             for transaction in self.store.evm_transactions(&scope, swap.id)? {
                 if transaction.uses_railgun.is_none() {
                     let uses_railgun = self

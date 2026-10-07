@@ -8,7 +8,7 @@ import {ZecSwapRailgunTest} from "./ZecSwap.railgun.t.sol";
 contract ZecSwapReverseTest is ZecSwapRailgunTest {
     function test_reverseRejectsShortTokenTransfersWithoutLeavingEscrow() public {
         ShortToken token = new ShortToken();
-        ZecSwap.ReverseOpen memory request = terms();
+        ZecSwap.ReverseOpen memory request = reverseOpen();
         request.token = address(token);
         bytes memory signature = openSig(request);
         vm.expectRevert(ZecSwap.InsufficientBalance.selector);
@@ -24,11 +24,11 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         bytes memory signature =
             sign(keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline)));
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockRefundWithSig(id, deadline, signature);
-        swaps.readyWithSig(id, deadline, signature);
+        swaps.lockRefundWithSig(id, reverseTerms(), deadline, signature);
+        swaps.readyWithSig(id, reverseTerms(), deadline, signature);
     }
 
-    function terms() internal view returns (ZecSwap.ReverseOpen memory) {
+    function reverseOpen() internal view returns (ZecSwap.ReverseOpen memory) {
         return ZecSwap.ReverseOpen(
             maker,
             auth,
@@ -41,6 +41,12 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
             commitment(),
             uint64(block.timestamp + 10 minutes)
         );
+    }
+
+    /// What `openReverse` stores: the escrowing user is the swap's maker, the ZEC side its user,
+    /// each with the other's share.
+    function reverseTerms() internal view returns (ZecSwap.Terms memory) {
+        return ZecSwap.Terms(auth, address(usdc), AMOUNT, [z.x, z.y], [e.x, e.y], maker, t0, t1, bytes32(0));
     }
 
     function openSig(ZecSwap.ReverseOpen memory request) internal view returns (bytes memory) {
@@ -66,7 +72,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
     }
 
     function funded() internal returns (bytes32) {
-        ZecSwap.ReverseOpen memory request = terms();
+        ZecSwap.ReverseOpen memory request = reverseOpen();
         usdc.mint(relayer, AMOUNT);
         vm.startPrank(relayer);
         usdc.approve(address(swaps), AMOUNT);
@@ -79,6 +85,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         uint64 deadline = uint64(block.timestamp + 5 minutes);
         swaps.readyWithSig(
             id,
+            reverseTerms(),
             deadline,
             sign(keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline)))
         );
@@ -88,6 +95,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         uint64 deadline = uint64(block.timestamp + 5 minutes);
         swaps.lockRefundWithSig(
             id,
+            reverseTerms(),
             deadline,
             sign(keccak256(abi.encode(keccak256("LockRefund(bytes32 id,uint64 deadline)"), id, deadline)))
         );
@@ -95,7 +103,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
 
     function refundReverse(bytes32 id) internal {
         lockReverse(id);
-        swaps.refund(id, z.k);
+        swaps.refund(id, reverseTerms(), z.k);
     }
 
     function refundPayoutSig(bytes32 id) internal view returns (bytes memory) {
@@ -110,11 +118,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
 
     function test_reverseFundingIsAtomicAndRolesAreReversed() public {
         bytes32 id = funded();
-        ZecSwap.Swap memory swap = swaps.getSwap(id);
-        assertEq(swap.maker, auth);
-        assertEq(swap.user, maker);
-        assertEq(swap.makerX, z.x);
-        assertEq(swap.userX, e.x);
+        assertEq(swaps.getSwap(id).termsHash, swaps.hashTerms(reverseTerms()));
         assertEq(swaps.balanceOf(auth, address(usdc)), 0);
         assertEq(usdc.balanceOf(relayer), 0);
         (bytes32 note, uint64 height) = swaps.reverseFunding(id);
@@ -122,12 +126,12 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(height, block.number);
         vm.prank(maker);
         vm.expectRevert(ZecSwap.Unauthorized.selector);
-        swaps.ready(id);
+        swaps.ready(id, reverseTerms());
         readyReverse(id);
         vm.prank(maker);
-        swaps.lockClaim(id);
+        swaps.lockClaim(id, reverseTerms());
         usdc.setPaused(true);
-        swaps.claim(id, e.k);
+        swaps.claim(id, reverseTerms(), e.k);
         assertEq(swaps.getSwap(id).secret, e.k);
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY + AMOUNT);
     }
@@ -137,7 +141,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.warp(t1 + 30 days);
         vm.prank(maker);
         vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaim(id);
+        swaps.lockClaim(id, reverseTerms());
         vm.expectRevert(ZecSwap.Expired.selector);
         readyReverse(id);
         refundReverse(id);
@@ -153,38 +157,38 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         bytes memory sig = refundPayoutSig(id);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.WrongNote.selector);
-        swaps.refundPayout(id, bytes32(uint256(7)), ciphertext, FEE, sig);
+        swaps.refundPayout(id, reverseTerms(), bytes32(uint256(7)), ciphertext, FEE, sig);
         railgun.setPaused(true);
         vm.prank(relayer);
         vm.expectRevert();
-        swaps.refundPayout(id, npk, ciphertext, FEE, sig);
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, sig);
         assertFalse(swaps.getSwap(id).paidOut);
         railgun.setPaused(false);
         vm.prank(relayer);
-        swaps.refundPayout(id, npk, ciphertext, FEE, sig);
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, sig);
         assertTrue(swaps.getSwap(id).paidOut);
         assertEq(railgun.last().npk, npk);
         assertEq(usdc.balanceOf(relayer), FEE);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.refundPayout(id, npk, ciphertext, FEE, sig);
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, sig);
     }
 
     function test_reverseOpenSignatureBindsAllTermsAndCannotReplay() public {
-        ZecSwap.ReverseOpen memory request = terms();
+        ZecSwap.ReverseOpen memory request = reverseOpen();
         bytes memory sig = openSig(request);
         request.amount += 1;
         vm.expectRevert(ZecSwap.BadSignature.selector);
         swaps.openReverse(request, sig);
-        request = terms();
+        request = reverseOpen();
         request.maker = address(0xbad);
         vm.expectRevert(ZecSwap.BadSignature.selector);
         swaps.openReverse(request, sig);
-        request = terms();
+        request = reverseOpen();
         request.refundNote = bytes32(uint256(123));
         vm.expectRevert(ZecSwap.BadSignature.selector);
         swaps.openReverse(request, sig);
-        request = terms();
+        request = reverseOpen();
         vm.expectRevert(Token.TransferFailed.selector);
         swaps.openReverse(request, sig);
         bytes32 id = swaps.swapId(auth, [e.x, e.y]);
@@ -201,7 +205,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         readyReverse(id);
         vm.prank(maker);
         vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaim(id);
+        swaps.lockClaim(id, reverseTerms());
     }
 
     function test_reverseReadyProtectsMakerUntilRefundDeadline() public {
@@ -218,10 +222,10 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         bytes32 id = funded();
         refundReverse(id);
         vm.prank(relayer);
-        swaps.refundPayout(id, npk, ciphertext, FEE, refundPayoutSig(id));
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, refundPayoutSig(id));
         usdc.mint(swaps.vaultOf(id), AMOUNT);
         vm.prank(relayer);
-        swaps.rescue(id, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, npk, ciphertext, relayer, FEE));
+        swaps.rescue(id, reverseTerms(), npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, npk, ciphertext, relayer, FEE));
         assertEq(railgun.count(), 2);
     }
 }

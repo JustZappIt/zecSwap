@@ -104,12 +104,12 @@ impl Store {
         )?)
     }
 
-    pub(crate) fn monitor_swaps(&self, t0_after: u64, limit: usize) -> Result<Vec<MonitorSwap>> {
+    pub(crate) fn monitor_swaps(&self, limit: usize) -> Result<Vec<MonitorSwap>> {
         let conn = self.conn();
         let mut statement = conn.prepare(
             "SELECT * FROM (
                 SELECT s.id, 'forward' AS direction, q.amount, cast(q.deposit_zat AS TEXT),
-                    s.settled, NULL, s.opened_at + ?1, s.t1, NULL,
+                    s.settled, NULL, s.t0, s.t1, NULL,
                     CASE WHEN s.sweep_txid IS NULL THEN NULL ELSE lower(hex(s.sweep_txid)) END,
                     q.nonce, s.zcash_account
                 FROM swaps s JOIN quotes q USING (quote_id)
@@ -121,10 +121,10 @@ impl Store {
                     json_extract(s.data, '$.account')
                 FROM reverse_swaps s JOIN quotes q USING (quote_id)
                     JOIN reverse_quotes r USING (quote_id)
-            ) ORDER BY settled ASC, nonce DESC LIMIT ?2",
+            ) ORDER BY settled ASC, nonce DESC LIMIT ?1",
         )?;
         Ok(statement
-            .query_map(params![t0_after, limit as u64], |row| {
+            .query_map(params![limit as u64], |row| {
                 Ok(MonitorSwap {
                     id: B256::from(row.get::<_, [u8; 32]>(0)?),
                     direction: row.get(1)?,
@@ -187,7 +187,7 @@ mod tests {
         let counts = store.monitor_counts().unwrap();
         assert_eq!(counts.quotes, 0);
         assert_eq!(counts.active_forward + counts.active_reverse, 0);
-        assert!(store.monitor_swaps(2700, 50).unwrap().is_empty());
+        assert!(store.monitor_swaps(50).unwrap().is_empty());
     }
 
     #[test]
@@ -204,12 +204,12 @@ mod tests {
                 )
                 .unwrap();
             store.conn().execute(
-                "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t1, sweep_txid, settled)
-                 VALUES (?1, ?1, X'1234', X'5678', 'private-account', 100, 700, NULL, ?2)",
+                "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, t0, t1, sweep_txid, settled)
+                 VALUES (?1, ?1, X'1234', X'5678', 'private-account', 100, 300, 700, NULL, ?2)",
                 params![[id; 32], settled],
             ).unwrap();
         }
-        let rows = store.monitor_swaps(200, 2).unwrap();
+        let rows = store.monitor_swaps(2).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, B256::repeat_byte(1));
         assert_eq!(rows[1].id, B256::repeat_byte(3));

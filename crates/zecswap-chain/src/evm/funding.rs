@@ -339,22 +339,19 @@ impl Settlement {
             .ok_or_else(|| Error::Config("read-only funding connection".into()))?;
         let _sending = self.sending.lock().await;
         let terms = &request.terms;
-        if let Some(swap) = self.swap(request.id).await? {
-            let funding = self.reverse_funding(request.id).await?;
-            require(
-                swap.maker == Address::from(terms.user)
-                    && swap.user == Address::from(terms.maker)
-                    && swap.token == Address::from(terms.token)
-                    && swap.amount == terms.amount
-                    && swap.maker_share == terms.user_share
-                    && swap.user_share == terms.maker_share
-                    && swap.t0 == terms.t0
-                    && swap.t1 == terms.t1
-                    && swap.payout_note.is_none()
-                    && funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
-                "existing escrow does not match funding authorization",
-            )?;
-            return Ok(None);
+        let mismatch = "existing escrow does not match funding authorization";
+        match self.swap(request.id, &terms.terms()).await {
+            Ok(Some(_)) => {
+                let funding = self.reverse_funding(request.id).await?;
+                require(
+                    funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
+                    mismatch,
+                )?;
+                return Ok(None);
+            }
+            Ok(None) => {}
+            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),
+            Err(e) => return Err(e.into()),
         }
         require(
             self.now().await? < terms.deadline,
