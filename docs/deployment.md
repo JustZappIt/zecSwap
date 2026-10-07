@@ -1,6 +1,6 @@
 # Public testnet services
 
-The maker and relayer run on the DigitalOcean Droplet at `147.182.158.187`. A Cloudflare Worker
+The maker, relayer and token issuer run on the DigitalOcean Droplet at `147.182.158.187`. A Cloudflare Worker
 at `https://zecswap-testnet.pepeman931.workers.dev` forwards requests through a private Workers
 VPC Service and a named Cloudflare Tunnel. The phone needs neither USB forwarding nor a
 running development Mac. The databases remain on the Droplet's persistent disk.
@@ -9,6 +9,7 @@ running development Mac. The databases remain on the Droplet's persistent disk.
 | --- | --- |
 | Maker | `https://zecswap-testnet.pepeman931.workers.dev/maker` |
 | Relayer | `https://zecswap-testnet.pepeman931.workers.dev/relayer` |
+| Token issuer | `https://zecswap-testnet.pepeman931.workers.dev/issuer` |
 
 Both services are on the same host for this testnet deployment, under separate Unix users
 and signing keys. This does not provide independent operators: the production relayer must
@@ -18,9 +19,9 @@ Both hosted services use the Sepolia contract
 [`0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c`](https://sepolia.etherscan.io/address/0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c),
 which stores only a hash of each swap's terms ([October 7](#october-7-terms-hash-contract)).
 [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records the transaction,
-block, test token, Railgun proxy, lock duration and the services' release. The Android app
-still pins the October 2 contract, whose calls differ, so installed builds cannot swap against
-these services until the app is updated.
+block, test token, Railgun proxy, lock duration and the services' release. Since 19:02 UTC that
+day the maker takes Privacy Pass tokens ([October 7 tokens](#october-7-tokens)): Android builds
+that pin this contract and both token keys can swap; earlier builds cannot.
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -196,6 +197,36 @@ configs, the retired `maker.sqlite`, `previous-current`, and copies of `wallet.s
 than the symlink: move the inventory back the same way, and restore both configs and the retired
 store. Never restore the wallet copies over the live wallets.
 
+## October 7 tokens
+
+At 19:02 UTC the maker began taking Privacy Pass tokens ([tokens.md](tokens.md)). Both services
+moved to `/opt/zecswap/releases/20261007-tokens-9b52dfc`, now `/opt/zecswap/current`: the maker and
+the new `zecswap-issuer` are built from `9b52dfc` (its crates are `c8b6f8a`'s), and the relayer binary
+is `9459be3`'s, unchanged and not restarted. The issuer runs as the `zecswap-issuer` service on
+`127.0.0.1:8789` (`/etc/zecswap-issuer/config.toml`): name `zecswap-testnet-issuer`, three tokens a
+day, attestation `insecure-test`. `deploy/nginx.conf` routes `/issuer/` to it, and the gateway worker
+(version `1e82ab5d`) forwards `/issuer/`. The issuer's key is `/etc/zecswap-issuer/key.pem`, the
+maker's return key `/etc/zecswap-maker/return-key.pem`;
+[sepolia-tokens.json](../deployments/sepolia-tokens.json) lists both public halves, which the app
+pins. The maker config gained `[tokens]`, spent tokens in
+`/var/lib/zecswap-maker/spent-tokens.sqlite`, and the maker started on a fresh store: the build
+refuses one from before tokens were handed back, and the previous store held no swap.
+
+Public maker info shows `tokenReturnKey`, the issuer serves its key, and an accept without a token
+answers `401` with a challenge for the day (20733). The owner's phone, on zapp-android `b9e77d165`
+with the NU7 SDK branch, then ran a forward swap (`0xb709c357…`) on a token it fetched from the
+issuer over Tor, which the maker handed back after the deposit and the phone collected with one
+status read, and a reverse swap (`0x464e937b…`) on a token it held, handed back once the escrow was
+funded. No returned token has been spent yet: that waits until a device's three issued tokens for
+the day are gone.
+
+Rollback files are in `/var/backups/zecswap/20261007-tokens-9b52dfc` (root-only): the maker config,
+the previous `maker.sqlite`, the nginx site, `previous-current`, and the two public keys. Disable and
+stop `zecswap-issuer`, restore the config as `root:zecswap-maker` `0640` and the store, point
+`/opt/zecswap/current` back at the previous release, restart the maker, and restore and reload nginx.
+Builds that pin the keys still swap with a maker that takes no tokens: they send a token only when
+asked for one.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
@@ -226,8 +257,8 @@ store. Never restore the wallet copies over the live wallets.
    `zecswap-issuer serve --config <issuer-config>`, `zecswap-maker --config <maker-config> serve`
    and `zecswap-relayer --config <relayer-config>` under host process supervision.
 4. Configure a [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/get-started/)
-   for a remotely managed tunnel to the host. `deploy/nginx.conf` routes `/maker/` and
-   `/relayer/` to loopback listeners. `deploy/worker/` supplies the stable `workers.dev`
+   for a remotely managed tunnel to the host. `deploy/nginx.conf` routes `/maker/`,
+   `/relayer/` and `/issuer/` to loopback listeners. `deploy/worker/` supplies the stable `workers.dev`
    hostname; a custom domain is optional. Keep tunnel credentials and service secrets
    outside version control.
 5. Validate the public endpoints below before updating the app's pinned deployment.
@@ -244,10 +275,10 @@ directory, then switch `/opt/zecswap/current` and restart the services. Retain t
 release for rollback; do not replace or roll back wallet databases during a binary rollback.
 
 The systemd units are in `deploy/systemd/`. The deployed services are `zecswap-maker`,
-`zecswap-relayer`, and `zecswap-tunnel`, all enabled at boot. The maker uses one proving
+`zecswap-relayer`, `zecswap-issuer` and `zecswap-tunnel`, all enabled at boot. The maker uses one proving
 thread and two async workers so proving does not occupy the only API worker. Its state lives
 in `/var/lib/zecswap-maker`; configs and root-readable environment
-files live in `/etc/zecswap-maker` and `/etc/zecswap-relayer`. The tunnel uses a systemd
+files live in `/etc/zecswap-maker`, `/etc/zecswap-relayer` and `/etc/zecswap-issuer`. The tunnel uses a systemd
 credential loaded from `/etc/zecswap-tunnel/token`. API listeners are loopback-only; the
 firewall permits inbound SSH. The host has 1 GB RAM, a 25 GB disk and a 1 GB swap file.
 
