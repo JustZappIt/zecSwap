@@ -157,11 +157,28 @@ Rollback files are in `/var/backups/zecswap/20261006-fundfee-a53d6f2` (root-only
 `relayer-config.toml` and `previous-current`. Restore the config as `root:zecswap-relayer`, `0640`,
 point `/opt/zecswap/current` back at the previous release, and restart only the relayer.
 
+## October 7 terms-hash contract
+
+At 04:15 UTC `0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c` was deployed on Ethereum Sepolia from
+`59b7d21` (#8), with Railgun's Sepolia proxy and a 600-second lock, paying in the existing test
+token; [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records it. A smoke test
+deposited, opened, lock-refunded and refunded a swap on it. The testnet maker and relayer still
+serve the October 2 contract until they are switched to this one.
+
+Sepolia now prices new state far higher than it did on October 2: the deployment used 30.2M gas
+(4.2M then), and on it `open` takes 360k, `deposit` 249k and `refund` 308k. `forge script`
+simulates with the repository's `cancun` rules, so its gas limit falls short: its first attempt
+(`0xa62e35f8…`) ran out at 5.5M and deployed nothing. Deploy with the node's own estimate instead:
+`cast send --gas-limit <estimate plus a margin> --create <bytecode ‖ constructor arguments>`.
+The anvil fork the live suite runs on keeps the older prices, so check gas limits against Sepolia
+itself, such as the relayer's funding sponsorship `max_gas_limit` (4M).
+
 ## Deployment sequence
 
-1. Deploy the updated `contracts/script/Deploy.s.sol` on the chosen EVM testnet with the
-   correct `RAILGUN` proxy. Record the chain ID, contract, token, deployment transaction and
-   block. Existing deployed contracts cannot gain reverse methods.
+1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
+   Sepolia with `cast send --create` and the node's gas estimate; see October 7). Record the
+   chain ID, contract, token, deployment transaction and block. Existing deployed contracts
+   cannot gain reverse methods.
 2. Configure maker and independent relayer for that exact deployment. Use a separate data
    directory for a new maker deployment; keep existing services and their pending swaps
    running until settled. A contract that stores only the terms' hash (October 6) needs a

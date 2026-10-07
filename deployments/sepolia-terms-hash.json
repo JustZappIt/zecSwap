@@ -1,0 +1,24 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "token": "0x5764D0044bef5AA839E0dDafE2073421101B9Ed8",
+  "railgun": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
+  "lockDurationSeconds": 600,
+  "deploymentTransaction": "0x33f4b3930a0394c342c2e412b94a9bedbb04cade8702b5691af0840e23e0de09",
+  "deploymentBlock": 11860526,
+  "deploymentGasUsed": 30219578,
+  "zcashNetwork": "testnet",
+  "deployer": "0x09eD1F966745Be18C711C346242c0974DAd7c3e5",
+  "sourceCommit": "59b7d212824bed6843bc438480885bd5d11e6620",
+  "terms": "each call on a swap passes its Terms; the contract stores keccak256(abi.encode(terms))",
+  "reverseSwapId": "keccak256(abi.encode(user, makerKey, true))",
+  "smokeTestGas": {
+    "deposit": 248950,
+    "open": 359963,
+    "lockRefund": 39832,
+    "refund": 307943
+  },
+  "deployedAt": "2026-10-07",
+  "status": "deployed; the testnet maker and relayer still serve 0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
+  "replaces": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc"
+}
