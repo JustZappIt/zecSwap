@@ -14,13 +14,13 @@ Both services are on the same host for this testnet deployment, under separate U
 and signing keys. This does not provide independent operators: the production relayer must
 remain independent of the maker, as the protocol requires.
 
-The reverse-capable Sepolia contract is deployed at
-[`0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc`](https://sepolia.etherscan.io/address/0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc).
-[sepolia-reverse.json](../deployments/sepolia-reverse.json) records the transaction, block,
-test token, Railgun proxy and lock duration. Its runtime code was checked against the build,
-and its lock, Railgun proxy and reverse-funding getter were checked on-chain. Both hosted
-services use this deployment. The Android hosted testnet pin is updated on
-`feature/private-usd-ui` in commit `b17a2e8f6`; installed builds still need an update.
+Both hosted services use the Sepolia contract
+[`0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c`](https://sepolia.etherscan.io/address/0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c),
+which stores only a hash of each swap's terms ([October 7](#october-7-terms-hash-contract)).
+[sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records the transaction,
+block, test token, Railgun proxy, lock duration and the services' release. The Android app
+still pins the October 2 contract, whose calls differ, so installed builds cannot swap against
+these services until the app is updated.
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -162,8 +162,7 @@ point `/opt/zecswap/current` back at the previous release, and restart only the 
 At 04:15 UTC `0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c` was deployed on Ethereum Sepolia from
 `59b7d21` (#8), with Railgun's Sepolia proxy and a 600-second lock, paying in the existing test
 token; [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records it. A smoke test
-deposited, opened, lock-refunded and refunded a swap on it. The testnet maker and relayer still
-serve the October 2 contract until they are switched to this one.
+deposited, opened, lock-refunded and refunded a swap on it.
 
 Sepolia now prices new state far higher than it did on October 2: the deployment used 30.2M gas
 (4.2M then), and on it `open` takes 360k, `deposit` 249k and `refund` 308k. `forge script`
@@ -171,7 +170,31 @@ simulates with the repository's `cancun` rules, so its gas limit falls short: it
 (`0xa62e35f8…`) ran out at 5.5M and deployed nothing. Deploy with the node's own estimate instead:
 `cast send --gas-limit <estimate plus a margin> --create <bytecode ‖ constructor arguments>`.
 The anvil fork the live suite runs on keeps the older prices, so check gas limits against Sepolia
-itself, such as the relayer's funding sponsorship `max_gas_limit` (4M).
+itself, such as the relayer's funding sponsorship `max_gas_limit` (4M). The last sponsored funding
+on the October 2 contract, after the repricing (`0xfcb85880…`, October 6 23:06 UTC), was
+estimated at 3.13M and used 2.67M; the new contract's `openReverse` stores less, so the limit
+stays.
+
+At 04:42 UTC both hosted services switched to this contract, running binaries built from
+`9459be3` in `/opt/zecswap/releases/20261007-terms-hash-9459be3`, now `/opt/zecswap/current`.
+Every swap on the October 2 contract had settled, and its token balance was the maker's
+inventory alone, so it held no user funds. With both services stopped, the maker withdrew its
+74.495565 test USDC from it (`withdraw-inventory`) and deposited them into the new contract
+(`add-inventory`). The maker started on a fresh store, keeping its `MAKER_ROOT_SECRET`, ETH key,
+Zcash seed and wallet databases; its config gained `max_awaiting_deposit = 20`, and `[tokens]`
+stays off until the app spends tokens. The relayer's `token` and `maker` moved to the top level,
+where they bound every swap it sends. The October 2 manifest is in `deployments/retired/`.
+
+Local and public maker info and relayer terms report the new contract, maker health returns 204,
+a forward and a reverse quote came back through the gateway, and neither service restarted. No
+swap has run on the new contract yet. The dashboard's `BRIDGE_TESTNET_CONTRACT` still selects
+the October 2 contract until it is changed and the dashboard redeployed.
+
+Rollback files are in `/var/backups/zecswap/20261007-terms-hash-9459be3` (root-only): both
+configs, the retired `maker.sqlite`, `previous-current`, and copies of `wallet.sqlite` and
+`flow-wallet.sqlite` taken with the maker stopped. Returning to the October 2 contract takes more
+than the symlink: move the inventory back the same way, and restore both configs and the retired
+store. Never restore the wallet copies over the live wallets.
 
 ## Deployment sequence
 
@@ -190,8 +213,9 @@ itself, such as the relayer's funding sponsorship `max_gas_limit` (4M).
    `MAKER_ZCASH_SEED` alongside the existing maker secrets through the process environment.
    The relayer serves one token and one maker: set its `token` and `maker`.
 3. Run `zecswap-maker --config <maker-config> zec-inventory` to obtain the seed-derived ZEC
-   inventory address and balance. Fund the test inventory and the services' EVM gas accounts.
-   Write the token issuer's key with `zecswap-issuer keygen <key>`, and once the app spends
+   inventory address and balance. Fund the test inventory and the services' EVM gas accounts;
+   to move the inventory from a retired contract, run `withdraw-inventory <amount>` under the old
+   config and `add-inventory <amount>` under the new one. Write the token issuer's key with `zecswap-issuer keygen <key>`, and once the app spends
    tokens give the maker a `[tokens]` table with its public half ([tokens.md](tokens.md)). Run
    `zecswap-issuer serve --config <issuer-config>`, `zecswap-maker --config <maker-config> serve`
    and `zecswap-relayer --config <relayer-config>` under host process supervision.

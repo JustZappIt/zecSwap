@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     }
     let seed = Zeroizing::new(fs::read(seed_path)?);
     let deployment: Deployment =
-        serde_json::from_slice(&fs::read("deployments/sepolia-reverse.json")?)?;
+        serde_json::from_slice(&fs::read("deployments/sepolia-terms-hash.json")?)?;
     let settlement =
         Settlement::read_only(&std::env::var("ETH_SEPOLIA_RPC_URL")?, deployment.contract)?;
     ensure!(
