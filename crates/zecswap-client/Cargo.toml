@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 alloy-primitives = { version = "~1.5", features = ["serde"] }
 anyhow = "1"
+base64 = "0.22"
 rand.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
@@ -18,7 +19,13 @@ zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }
+zecswap-tokens = { path = "../zecswap-tokens" }
 zeroize.workspace = true
 
 [dev-dependencies]
+axum = "0.8"
 hex = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+zecswap-issuer = { path = "../zecswap-issuer" }
+zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }

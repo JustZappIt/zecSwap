@@ -31,6 +31,10 @@ pub struct Config {
     pub evm_rpc: String,
     /// The ZecSwap settlement contract.
     pub contract: Address,
+    /// The one token whose swaps it sends for, in whose base units it takes its fees.
+    pub token: Address,
+    /// The one maker whose swaps it sends for.
+    pub maker: Address,
     pub listen: SocketAddr,
     /// Token base units kept from each payout, for the gas of the lock, the claim and the
     /// payout.
@@ -48,26 +52,10 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct ReverseFundingConfig {
     pub relay_adapt: Address,
-    pub token: Address,
-    pub maker: Address,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
     /// Escrow-token base units each funding pays this relayer for its gas.
     pub fee: u64,
-}
-
-impl ReverseFundingConfig {
-    fn policy(&self, account: Address) -> FundingPolicy {
-        FundingPolicy {
-            relay_adapt: self.relay_adapt,
-            token: self.token,
-            maker: self.maker,
-            max_gas_limit: self.max_gas_limit,
-            max_gas_price_wei: self.max_gas_price_wei.into(),
-            fee: self.fee.into(),
-            fee_recipient: account,
-        }
-    }
 }
 
 impl Config {
@@ -75,6 +63,19 @@ impl Config {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// The funding sponsorship's policy, if enabled, for the relayer's own token and maker.
+    fn funding_policy(&self, account: Address) -> Option<FundingPolicy> {
+        self.reverse_funding.as_ref().map(|funding| FundingPolicy {
+            relay_adapt: funding.relay_adapt,
+            token: self.token,
+            maker: self.maker,
+            max_gas_limit: funding.max_gas_limit,
+            max_gas_price_wei: funding.max_gas_price_wei.into(),
+            fee: funding.fee.into(),
+            fee_recipient: account,
+        })
     }
 }
 
@@ -109,13 +110,9 @@ impl Relayer {
             chain_id: settlement.chain_id().await?,
             contract: config.contract.into(),
         };
-        if let Some(funding) = &config.reverse_funding {
-            funding
-                .policy(account)
-                .validate_config(domain.chain_id, account)?;
-            settlement
-                .check_funding_adapter(funding.relay_adapt)
-                .await?;
+        if let Some(policy) = config.funding_policy(account) {
+            policy.validate_config(domain.chain_id, account)?;
+            settlement.check_funding_adapter(policy.relay_adapt).await?;
         }
         Ok(Self {
             config,
@@ -138,8 +135,8 @@ impl Relayer {
             reverse_funding: self.config.reverse_funding.as_ref().map(|funding| {
                 zecswap_api::relayer::ReverseFundingTerms {
                     relay_adapt: funding.relay_adapt,
-                    token: funding.token,
-                    maker: funding.maker,
+                    token: self.config.token,
+                    maker: self.config.maker,
                     max_gas_limit: funding.max_gas_limit,
                     max_gas_price_wei: funding.max_gas_price_wei.into(),
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
@@ -190,6 +187,11 @@ impl Relayer {
         if swap.claim_lock_until < now + self.config.claim_margin {
             return Err(RelayerError::Rejected(
                 "no claim lock with enough time left to reveal under".into(),
+            ));
+        }
+        if !self.settlement.railgun_accepts(swap.token).await? {
+            return Err(RelayerError::Rejected(
+                "Railgun is not accepting payouts now".into(),
             ));
         }
         let secret = SecretShare::from_be_bytes(&request.secret.0)
@@ -286,8 +288,8 @@ impl Relayer {
         Ok(tx)
     }
 
-    /// A payout the contract will take: to the committed note, for at least the relayer's fee,
-    /// signed by the swap's user for this relayer.
+    /// A payout that can land: to the committed note, for at least the relayer's fee and less
+    /// than the amount, signed by the swap's user for this relayer.
     fn check_payout(&self, swap: &OnChainSwap, request: &Payout) -> Result<ShieldNote> {
         let note = ShieldNote::from(&request.note);
         if swap.payout_note != Some(note.commitment().into()) {
@@ -296,6 +298,12 @@ impl Relayer {
             ));
         }
         self.check_fee(request.fee)?;
+        if request.fee >= swap.amount {
+            return Err(RelayerError::Rejected(format!(
+                "a fee of {} leaves nothing to shield",
+                request.fee
+            )));
+        }
         let digest = self
             .domain
             .payout(&request.swap_id, &self.account.into(), request.fee);
@@ -334,6 +342,7 @@ impl Relayer {
         terms: &zecswap_api::Terms,
     ) -> Result<(OnChainSwap, zecswap_core::Terms)> {
         let terms = zecswap_core::Terms::from(terms);
+        self.admit(terms.token, terms.maker)?;
         let swap = self.swap(id, &terms).await?;
         if swap.payout_note.is_none() {
             return Err(RelayerError::Rejected(
@@ -341,6 +350,17 @@ impl Relayer {
             ));
         }
         Ok((swap, terms))
+    }
+
+    /// Only swaps of this relayer's token and maker: its fee in any other token could be
+    /// worthless, and another maker's swaps aren't its gas to spend.
+    fn admit(&self, token: [u8; 20], maker: [u8; 20]) -> Result<()> {
+        if Address::from(token) != self.config.token || Address::from(maker) != self.config.maker {
+            return Err(RelayerError::Rejected(
+                "this relayer serves another token or maker".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The swap as the chain has it, if `terms` are the ones it opened with. Checked before

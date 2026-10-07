@@ -2,7 +2,7 @@
 //!   cargo run -p zecswap-client --example vectors
 
 use alloy_primitives::{Address, address};
-use zecswap_chain::evm::swap_id;
+use zecswap_chain::evm::{reverse_swap_id, swap_id};
 use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 use zecswap_railgun::{Keys, ShieldNote};
 
@@ -60,7 +60,7 @@ fn main() {
     println!("    digest     {}", hex(&payout));
     println!("    signature  {}", hex(&keys.auth.sign(&payout)));
 
-    let reverse_id = swap_id(keys.auth.address().into(), &maker_share.public());
+    let reverse_id = reverse_swap_id(keys.auth.address().into(), &maker_share.public());
     let reverse = zecswap_core::ReverseOpen {
         maker: MAKER.into(),
         user: keys.auth.address(),

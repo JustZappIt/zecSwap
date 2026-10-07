@@ -6,6 +6,9 @@
 
 evm_rpc = "https://ethereum-sepolia-rpc.publicnode.com"
 contract = "0x0000000000000000000000000000000000000000"
+# The one token (USDC) and maker whose swaps it sends for; it refuses every other swap.
+token = "0x0000000000000000000000000000000000000000"
+maker = "0x0000000000000000000000000000000000000000"
 listen = "127.0.0.1:8788"
 # Token base units kept from each payout (1 USDC).
 fee = 1000000
@@ -17,8 +20,6 @@ claim_margin = 300
 # Pin the V2 Relay Adapt address for this Railgun deployment (not the Railgun proxy).
 # [reverse_funding]
 # relay_adapt = "0x7e3d929ebd5bdc84d02bd3205c777578f33a214d"
-# token = "0x5764d0044bef5aa839e0ddafe2073421101b9ed8"
-# maker = "0x2bac02b5032e9092493814c705f156b49e288922"
 # max_gas_limit = 4000000
 # max_gas_price_wei = 20000000000
 # fee = 250000

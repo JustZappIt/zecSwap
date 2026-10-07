@@ -10,13 +10,12 @@ impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "fund_reverse"), err(level = "warn"))]
     pub async fn fund_reverse(&self, request: zecswap_api::reverse::Funding) -> Result<Sent> {
         use zecswap_chain::evm::funding::FundingError;
-        let funding = self.config.reverse_funding.as_ref().ok_or_else(|| {
+        let policy = self.config.funding_policy(self.account).ok_or_else(|| {
             RelayerError::Rejected("initial reverse funding sponsorship is disabled".into())
         })?;
         if request.chain_id != self.domain.chain_id {
             return Err(RelayerError::Rejected("wrong funding chain".into()));
         }
-        let policy = funding.policy(self.account);
         let map_error = |error| match error {
             FundingError::Rejected(reason) => RelayerError::Rejected(reason.into()),
             // Upstream RPC errors can contain request bytes. Do not log them.
@@ -268,6 +267,8 @@ impl Relayer {
         terms: &zecswap_api::Terms,
     ) -> Result<(OnChainSwap, Terms, B256)> {
         let terms = Terms::from(terms);
+        // The escrow's ZEC side, its terms' user, is the maker.
+        self.admit(terms.token, terms.user)?;
         let swap = self.swap(id, &terms).await?;
         let funding = self
             .settlement

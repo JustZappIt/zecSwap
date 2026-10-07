@@ -42,6 +42,14 @@ pub struct Config {
     /// Optional native-gas alerts using the existing Telegram delivery queue.
     #[serde(default)]
     pub gas_alerts: Option<GasAlerts>,
+    /// The most swaps, of both directions, waiting on their users to pay in at once: past it,
+    /// accepts are refused, so spam can tie up only so much inventory and gas. No limit if absent.
+    #[serde(default)]
+    pub max_awaiting_deposit: Option<usize>,
+    /// A Privacy Pass token each accept spends, so a device does only as many swaps a day as
+    /// the issuer gives it tokens, without the maker learning which device asked.
+    #[serde(default)]
+    pub tokens: Option<zecswap_tokens::server::Config>,
 }
 
 #[derive(Clone, Deserialize)]

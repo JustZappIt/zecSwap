@@ -19,6 +19,8 @@ sweep_to = "utest1..."
 evm_confirmations = 12
 data_dir = "maker-data"
 listen = "127.0.0.1:8787"
+# Accepts are refused while this many swaps, of both directions, wait on their users to pay in.
+# max_awaiting_deposit = 20
 
 [pricing]
 # Token base units (6 decimals for USDC) per whole ZEC, before the spread.
@@ -55,3 +57,13 @@ tick = 15
 # refund_after = 10800
 # deposit_margin = 1800
 # fee_reserve_zat = 20000
+
+# A Privacy Pass token per accept, from the issuer `zecswap-issuer` runs: a device starts only as
+# many swaps a day as it has tokens, and the maker never learns which device asked. `keys` lists
+# the issuer's public keys (base64url SPKI, as `zecswap-issuer keygen` prints), the current one
+# first. Turn it on only once the app spends tokens.
+# [tokens]
+# issuer = "zecswap-issuer"
+# origin = "maker"
+# keys = ["..."]
+# spent = "maker-data/spent-tokens.sqlite"

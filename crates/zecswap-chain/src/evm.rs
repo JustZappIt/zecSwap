@@ -203,6 +203,16 @@ pub fn swap_id(maker: Address, user_share: &PublicShare) -> B256 {
     keccak256(preimage)
 }
 
+/// `reverseSwapId`: a reverse escrow's key, from the escrowing user and the maker's share, and
+/// never a forward swap's.
+pub fn reverse_swap_id(user: Address, maker_share: &PublicShare) -> B256 {
+    let mut preimage = [0; 128];
+    preimage[12..32].copy_from_slice(user.as_slice());
+    preimage[32..96].copy_from_slice(&maker_share.to_affine_bytes());
+    preimage[127] = 1;
+    keccak256(preimage)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReverseFunding {
     pub refund_note: B256,

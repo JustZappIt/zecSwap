@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_api::reverse::{self, Phase};
 use zecswap_api::{Acceptance, Accepted, Quote};
-use zecswap_chain::evm::{B256, OnChainSwap, Stage, swap_id};
+use zecswap_chain::evm::{B256, OnChainSwap, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
 use super::{Maker, MakerError, Zcash, unix_now};
@@ -116,7 +116,7 @@ impl Maker {
                 &acceptance.user_proof,
             )
             .map_err(|_| MakerError::Rejected("user share proof does not verify".into()))?;
-        let swap_id = swap_id(quote.user, &quote.terms.maker_share);
+        let swap_id = reverse_swap_id(quote.user, &quote.terms.maker_share);
         tracing::Span::current().record("swap_id", tracing::field::display(swap_id));
         let mut zcash = self.zcash.lock().await;
         self.check_watchtower()?;
@@ -137,6 +137,7 @@ impl Maker {
         if unix_now() >= quote.terms.expires_at {
             return Err(MakerError::UnknownQuote);
         }
+        self.admit_another()?;
         let reserved = self.reverse_reserved()?;
         let Zcash { wallet, client } = &mut *zcash;
         let wallet = wallet.as_mut().ok_or(MakerError::WatchtowerUnavailable)?;
@@ -259,15 +260,8 @@ impl Maker {
     /// The escrow, whose terms reading it checked, is for this maker on this deployment and
     /// refunds to the quoted note.
     async fn verify_reverse(&self, swap: &ReverseSwap) -> Result<()> {
+        self.check_reverse(swap)?;
         let terms = &swap.quote;
-        ensure!(
-            terms.terms.chain_id == self.chain_id
-                && terms.terms.contract == self.settlement.contract()
-                && terms.terms.maker == self.account
-                && terms.terms.token == self.config.token
-                && terms.terms.maker_share == self.maker_share(swap.nonce)?.public(),
-            "reverse swap belongs to another deployment or maker root"
-        );
         let funding = self
             .settlement
             .reverse_funding(swap.id)
@@ -276,6 +270,34 @@ impl Maker {
         ensure!(
             funding.refund_note == terms.refund_note,
             "reverse refund note differs from the quote"
+        );
+        Ok(())
+    }
+
+    /// The swap was quoted by this maker, on this deployment and under this root secret.
+    pub(super) fn check_reverse(&self, swap: &ReverseSwap) -> Result<()> {
+        let quote = &swap.quote.terms;
+        ensure!(
+            quote.chain_id == self.chain_id && quote.contract == self.settlement.contract(),
+            "reverse swap {} is on another deployment",
+            swap.id
+        );
+        ensure!(
+            quote.maker == self.account,
+            "reverse swap {} was quoted from another EVM account than {}",
+            swap.id,
+            self.account
+        );
+        ensure!(
+            quote.token == self.config.token,
+            "reverse swap {} escrows another token than {}",
+            swap.id,
+            self.config.token
+        );
+        ensure!(
+            quote.maker_share == self.maker_share(swap.nonce)?.public(),
+            "reverse swap {} was quoted under another MAKER_ROOT_SECRET",
+            swap.id
         );
         Ok(())
     }

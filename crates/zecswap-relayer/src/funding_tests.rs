@@ -10,13 +10,13 @@ fn relayer(enabled: bool) -> Relayer {
         config: Config {
             evm_rpc: "http://127.0.0.1:1".into(),
             contract,
+            token: Address::repeat_byte(3),
+            maker: Address::repeat_byte(4),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
             claim_margin: 30,
             reverse_funding: enabled.then_some(ReverseFundingConfig {
                 relay_adapt: Address::repeat_byte(2),
-                token: Address::repeat_byte(3),
-                maker: Address::repeat_byte(4),
                 max_gas_limit: 4_000_000,
                 max_gas_price_wei: 20_000_000_000,
                 fee: 250_000,

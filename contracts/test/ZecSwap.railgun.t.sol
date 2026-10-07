@@ -288,7 +288,16 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.expectEmit(address(swaps));
         emit ZecSwap.Rescued(id, relayer, FEE);
         vm.prank(relayer);
-        swaps.rescue(id, terms(), freshNpk, fresh, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, freshNpk, fresh, relayer, FEE));
+        swaps.rescue(
+            id,
+            terms(),
+            freshNpk,
+            fresh,
+            FEE,
+            0,
+            uint64(block.timestamp + 5 minutes),
+            rescueSig(id, freshNpk, fresh, relayer, FEE)
+        );
 
         MockRailgun.Shielded memory note = railgun.last();
         assertEq(note.from, vault);
@@ -310,7 +319,16 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         usdc.mint(swaps.vaultOf(id), AMOUNT);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.rescue(id, terms(), keccak256("the relayer's own npk"), ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
+        swaps.rescue(
+            id,
+            terms(),
+            keccak256("the relayer's own npk"),
+            ciphertext,
+            FEE,
+            0,
+            uint64(block.timestamp + 5 minutes),
+            sig
+        );
     }
 
     function test_vault_takesOrdersOnlyFromTheEscrow() public {
@@ -335,7 +353,8 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.rescue(id, terms(), npk, ciphertext, FEE, 0, deadline, sig);
         assertEq(usdc.balanceOf(relayer), before);
         bytes32 note = keccak256(abi.encode(npk, ciphertext));
-        bytes memory fresh = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(1), deadline)));
+        bytes memory fresh =
+            sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(1), deadline)));
         vm.prank(relayer);
         swaps.rescue(id, terms(), npk, ciphertext, FEE, 1, deadline, fresh);
         assertEq(swaps.rescueNonces(id), 2);
@@ -388,19 +407,34 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
 
     // The same fixed vector as the Rust/JNI/Kotlin signer tests, decoded independently here.
     function testRescueTypedDataMatchesNativeSignerVector() public pure {
-        bytes32 domain = keccak256(abi.encode(
-            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-            keccak256("ZecSwap"), keccak256("1"), uint256(11155111), address(0x1111111111111111111111111111111111111111)
-        ));
-        bytes32 typed = keccak256(abi.encode(
-            RESCUE_TYPEHASH,
-            bytes32(0xf222c5c748f566811318f3e2851848301cf248bb706b32a98278936350465ed7),
-            bytes32(0x5af6901ba7cb01f49785a29c4a2e57e31af3e53382ce3dd2e35678897515ffc1),
-            address(0x2222222222222222222222222222222222222222), uint128(20000), uint64(0), uint64(1790000000)
-        ));
-        address recovered = ecrecover(keccak256(abi.encodePacked("\x19\x01", domain, typed)), 27,
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256("ZecSwap"),
+                keccak256("1"),
+                uint256(11155111),
+                address(0x1111111111111111111111111111111111111111)
+            )
+        );
+        bytes32 typed = keccak256(
+            abi.encode(
+                RESCUE_TYPEHASH,
+                bytes32(0xf222c5c748f566811318f3e2851848301cf248bb706b32a98278936350465ed7),
+                bytes32(0x5af6901ba7cb01f49785a29c4a2e57e31af3e53382ce3dd2e35678897515ffc1),
+                address(0x2222222222222222222222222222222222222222),
+                uint128(20000),
+                uint64(0),
+                uint64(1790000000)
+            )
+        );
+        address recovered = ecrecover(
+            keccak256(abi.encodePacked("\x19\x01", domain, typed)),
+            27,
             0x91eab39afaafa2c37bfd18b4b64436386a8e2d19bb04e866f5178cc8f1878894,
-            0x4999e9a2c9fabac3cda546d0fd22ad9faa53ca75759637ab6a42975f33278bea);
+            0x4999e9a2c9fabac3cda546d0fd22ad9faa53ca75759637ab6a42975f33278bea
+        );
         assertEq(recovered, address(0x757De38c2d9880E44AB59827D1622403fBF88Ff5));
     }
 
@@ -508,7 +542,11 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         uint128 fee
     ) internal view returns (bytes memory) {
         bytes32 note = keccak256(abi.encode(noteNpk, noteCiphertext));
-        return sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, by, fee, uint64(0), uint64(block.timestamp + 5 minutes))));
+        return sign(
+            keccak256(
+                abi.encode(RESCUE_TYPEHASH, id, note, by, fee, uint64(0), uint64(block.timestamp + 5 minutes))
+            )
+        );
     }
 
     function sign(bytes32 structHash) internal view returns (bytes memory) {

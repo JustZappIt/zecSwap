@@ -30,6 +30,7 @@ uuid = "1"
 zcash_address.workspace = true
 zecswap-api = { path = "../zecswap-api", features = ["server"] }
 zecswap-chain = { path = "../zecswap-chain" }
+zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }
 zecswap-core = { path = "../zecswap-core" }
 zeroize.workspace = true
 

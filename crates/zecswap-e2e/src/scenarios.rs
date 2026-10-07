@@ -216,7 +216,8 @@ enum Step<T> {
 
 impl Player {
     async fn join(env: Arc<Env>, name: &'static str, silent_maker: bool) -> Result<Self> {
-        let maker = MakerApi::new(node(&env, silent_maker).url().await)?;
+        let maker =
+            MakerApi::new(node(&env, silent_maker).url().await)?.with_tokens(env.tokens.clone());
         let (settlement, route) = if pays_into_railgun(name) {
             let route = Route::Railgun {
                 relayer: RelayerApi::new(env.relayer_url.clone())?,

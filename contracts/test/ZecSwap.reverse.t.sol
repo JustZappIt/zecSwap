@@ -13,9 +13,52 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         bytes memory signature = openSig(request);
         vm.expectRevert(ZecSwap.InsufficientBalance.selector);
         swaps.openReverse(request, signature);
-        bytes32 id = swaps.swapId(auth, [e.x, e.y]);
+        bytes32 id = swaps.reverseSwapId(auth, [e.x, e.y]);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.None));
         assertEq(token.balanceOf(address(swaps)), 0);
+    }
+
+    /// A maker that opens the forward swap a user verified as a reverse escrow instead, signing
+    /// as its own escrowing user with that swap's shares and terms, would leave the user no claim
+    /// after `t0`. The escrow takes an id of its own: the forward id the user reads stays empty.
+    function test_reverseEscrowCannotStandInForAForwardSwap() public {
+        (address evil, uint256 evilKey) = makeAddrAndKey("evil");
+        address victim = makeAddr("victim");
+        usdc.mint(evil, AMOUNT);
+        vm.prank(evil);
+        usdc.approve(address(swaps), AMOUNT);
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        (request.maker, request.user) = (victim, evil);
+        (request.makerKey, request.userKey) = ([z.x, z.y], [e.x, e.y]);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(evilKey, digestOf(openHash(request)));
+        vm.prank(evil);
+        bytes32 id = swaps.openReverse(request, abi.encodePacked(r, s, v));
+
+        ZecSwap.Terms memory forward =
+            ZecSwap.Terms(evil, address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], victim, t0, t1, bytes32(0));
+        assertEq(swaps.getSwap(id).termsHash, swaps.hashTerms(forward));
+        assertEq(id, swaps.reverseSwapId(evil, [z.x, z.y]));
+        assertEq(uint8(swaps.getSwap(swaps.swapId(evil, [z.x, z.y])).stage), uint8(ZecSwap.Stage.None));
+    }
+
+    /// A deposit of a token that delivers less than it was asked for credits nothing.
+    function test_depositRejectsShortTokenTransfers() public {
+        ShortToken token = new ShortToken();
+        vm.expectRevert(ZecSwap.InsufficientBalance.selector);
+        swaps.deposit(address(token), AMOUNT);
+        assertEq(swaps.balanceOf(address(this), address(token)), 0);
+    }
+
+    /// More than a Railgun note holds could never leave after the claim, so it never opens.
+    function test_openRefusesRailgunPayoutsANoteCannotHold() public {
+        uint128 amount = uint128(type(uint120).max) + 1;
+        usdc.mint(maker, amount);
+        vm.startPrank(maker);
+        usdc.approve(address(swaps), amount);
+        swaps.deposit(address(usdc), amount);
+        vm.expectRevert(ZecSwap.InvalidAmount.selector);
+        swaps.open(address(usdc), amount, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        vm.stopPrank();
     }
 
     function test_reverseReadySignatureCannotAuthorizeRefundLock() public {
@@ -50,23 +93,25 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
     }
 
     function openSig(ZecSwap.ReverseOpen memory request) internal view returns (bytes memory) {
-        return sign(
-            keccak256(
-                abi.encode(
-                    keccak256(
-                        "OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)"
-                    ),
-                    request.maker,
-                    request.user,
-                    request.token,
-                    request.amount,
-                    keccak256(abi.encode(request.makerKey)),
-                    keccak256(abi.encode(request.userKey)),
-                    request.t0,
-                    request.t1,
-                    request.refundNote,
-                    request.deadline
-                )
+        return sign(openHash(request));
+    }
+
+    function openHash(ZecSwap.ReverseOpen memory request) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256(
+                    "OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)"
+                ),
+                request.maker,
+                request.user,
+                request.token,
+                request.amount,
+                keccak256(abi.encode(request.makerKey)),
+                keccak256(abi.encode(request.userKey)),
+                request.t0,
+                request.t1,
+                request.refundNote,
+                request.deadline
             )
         );
     }
@@ -191,7 +236,7 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         request = reverseOpen();
         vm.expectRevert(Token.TransferFailed.selector);
         swaps.openReverse(request, sig);
-        bytes32 id = swaps.swapId(auth, [e.x, e.y]);
+        bytes32 id = swaps.reverseSwapId(auth, [e.x, e.y]);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.None));
         funded();
         vm.expectRevert(ZecSwap.KeyReused.selector);
@@ -225,7 +270,16 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, refundPayoutSig(id));
         usdc.mint(swaps.vaultOf(id), AMOUNT);
         vm.prank(relayer);
-        swaps.rescue(id, reverseTerms(), npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), rescueSig(id, npk, ciphertext, relayer, FEE));
+        swaps.rescue(
+            id,
+            reverseTerms(),
+            npk,
+            ciphertext,
+            FEE,
+            0,
+            uint64(block.timestamp + 5 minutes),
+            rescueSig(id, npk, ciphertext, relayer, FEE)
+        );
         assertEq(railgun.count(), 2);
     }
 }
