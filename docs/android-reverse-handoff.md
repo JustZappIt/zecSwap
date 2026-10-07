@@ -9,7 +9,7 @@ The server, contract, Rust reference client and JNI/Kotlin library are in the si
 `zecSwap` repository on `feature/android`. Read these before implementing:
 
 - `docs/reverse-flow.md` and `docs/deployment.md`
-- `deployments/sepolia-reverse.json`
+- `deployments/sepolia-terms-hash.json`
 - `crates/zecswap-api/src/reverse.rs` and `service.rs`
 - `crates/zecswap-client/src/reverse.rs`
 - `android/src/main/java/xyz/justzappit/atomicswap/ReverseAtomicSwap.kt`
@@ -17,9 +17,11 @@ The server, contract, Rust reference client and JNI/Kotlin library are in the si
 
 Use the deployed testnet maker at `https://zecswap-testnet.pepeman931.workers.dev/maker`
 and relayer at `https://zecswap-testnet.pepeman931.workers.dev/relayer`. Pin Sepolia chain ID
-11155111, contract `0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc`, and test token
+11155111, contract `0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c`, and test token
 `0x5764d0044bef5aa839e0ddafe2073421101b9ed8` from the deployment manifest. Verify `/v1/info`
-against these pins. The manifest contains the other public deployment addresses. Never ship
+against these pins. This contract (October 7) stores only a hash of each swap's terms: every
+call on a swap passes the terms after its id, and a reverse swap's id is `reverseSwapId`
+([reverse-flow.md](reverse-flow.md)). The manifest contains the other public deployment addresses. Never ship
 server keys, seeds, tunnel credentials or private RPC credentials. Keep existing pending swaps
 bound to their original deployment; do not silently migrate them to the new contract.
 
