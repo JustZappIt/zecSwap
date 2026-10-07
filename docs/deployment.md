@@ -79,7 +79,7 @@ At 18:48 UTC, relayer source `e831bda0c9423f8d5cfcb68989d8df2f0d7d13d1` was depl
 [October 6 NU7 maker upgrade](#october-6-nu7-maker-upgrade).
 The release retains the exact previous maker binary; only the relayer was restarted.
 The maker remained running with its existing state, and both services retained their keys.
-[sepolia-relayer-funding.json](../deployments/sepolia-relayer-funding.json) records the
+[sepolia-relayer-funding.json](../deployments/retired/sepolia-relayer-funding.json) records the
 binary checksum, configuration and public API verification.
 
 `POST /relayer/v1/reverse/fund` is enabled on the public testnet gateway.
@@ -118,7 +118,7 @@ the librustzcash NU7 pre-releases and includes the gas alert code, inert without
 `[gas_alerts]`. The relayer binary is unchanged from `e831bda`, and only the maker was
 restarted. A build of `5f86999` ran from 04:18 to 04:27 UTC. It did not recognise already
 imported joint accounts, which stopped the dashboard's flow observer, and `bb7fb0a` fixed
-that. [sepolia-nu7-maker.json](../deployments/sepolia-nu7-maker.json) records the checksums
+that. [sepolia-nu7-maker.json](../deployments/retired/sepolia-nu7-maker.json) records the checksums
 and checks.
 
 Its first start applied three schema migrations to `wallet.sqlite` and `flow-wallet.sqlite`
@@ -147,7 +147,7 @@ carries the exact `bb7fb0a` maker binary, and the maker was not restarted. The r
 `fee = 250000` under `[reverse_funding]`, so sponsored reverse funding now has to transfer 0.25 test
 tokens to the relayer in the same Relay Adapt action, and `GET /relayer/v1/terms` advertises
 `reverseFunding.fee`. Clients that send the earlier three-call funding are rejected.
-[sepolia-relayer-funding-fee.json](../deployments/sepolia-relayer-funding-fee.json) records the
+[sepolia-relayer-funding-fee.json](../deployments/retired/sepolia-relayer-funding-fee.json) records the
 checksums and checks. The relayer gas account was topped up by 0.02 Sepolia ETH beforehand.
 
 A first attempt at 04:44 UTC created the release directory with mode `0700`, so systemd could not
