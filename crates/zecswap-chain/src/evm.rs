@@ -386,15 +386,6 @@ impl Settlement {
         on_chain(id, decode_state(swap)?, terms)
     }
 
-    /// Where a swap's Railgun payout leaves from, and where Railgun sends it back.
-    pub async fn vault_of(&self, id: B256) -> Result<Address, Error> {
-        self.contract
-            .vaultOf(id)
-            .call()
-            .await
-            .map_err(Error::contract)
-    }
-
     /// Railgun's proxy, which payouts shield into; zero where the contract pays accounts only.
     pub async fn railgun(&self) -> Result<Address, Error> {
         self.contract
