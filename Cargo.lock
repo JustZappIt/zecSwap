@@ -7014,6 +7014,7 @@ dependencies = [
 name = "zecswap-relayer"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-primitives",
  "anyhow",
  "axum",

@@ -1,7 +1,7 @@
 use zecswap_api::relayer::{Payout, Sent};
 use zecswap_api::reverse::{Authorization, Refund};
 use zecswap_chain::evm::{B256, OnChainSwap, Stage};
-use zecswap_core::{SecretShare, signer};
+use zecswap_core::{SecretShare, Terms, signer};
 use zecswap_railgun::ShieldNote;
 
 use crate::{Relayer, RelayerError, Result};
@@ -45,7 +45,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "ready_reverse"), err(level = "warn"))]
     pub async fn ready_reverse(&self, request: Authorization) -> Result<Sent> {
-        let (swap, _) = self.reverse_swap(request.swap_id).await?;
+        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
         self.check_reverse_signature(
             &swap,
             &self.domain.ready(&request.swap_id, request.deadline),
@@ -59,7 +59,12 @@ impl Relayer {
         Ok(Sent {
             transactions: vec![
                 self.settlement
-                    .ready_with_sig(request.swap_id, request.deadline, &request.signature.0)
+                    .ready_with_sig(
+                        request.swap_id,
+                        &terms,
+                        request.deadline,
+                        &request.signature.0,
+                    )
                     .await?,
             ],
         })
@@ -67,7 +72,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_reverse_refund"), err(level = "warn"))]
     pub async fn lock_reverse_refund(&self, request: Authorization) -> Result<Sent> {
-        let (swap, _) = self.reverse_swap(request.swap_id).await?;
+        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
         self.check_reverse_signature(
             &swap,
             &self.domain.lock_refund(&request.swap_id, request.deadline),
@@ -84,7 +89,12 @@ impl Relayer {
         Ok(Sent {
             transactions: vec![
                 self.settlement
-                    .lock_refund_with_sig(request.swap_id, request.deadline, &request.signature.0)
+                    .lock_refund_with_sig(
+                        request.swap_id,
+                        &terms,
+                        request.deadline,
+                        &request.signature.0,
+                    )
                     .await?,
             ],
         })
@@ -92,12 +102,12 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "refund_reverse"), err(level = "warn"))]
     pub async fn refund_reverse(&self, request: Refund) -> Result<Sent> {
-        if request.swap_id != request.payout.swap_id {
+        if request.swap_id != request.payout.swap_id || request.terms != request.payout.terms {
             return Err(RelayerError::Rejected(
-                "refund and payout name different swaps".into(),
+                "refund and payout name different swaps or terms".into(),
             ));
         }
-        let (swap, commitment) = self.reverse_swap(request.swap_id).await?;
+        let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
         let note = self.check_reverse_payout(&swap, commitment, &request.payout)?;
         if swap.stage == Stage::Refunded {
             return self.reverse_refund_payout(request.payout).await;
@@ -122,12 +132,16 @@ impl Relayer {
                 "Railgun is not accepting refunds now".into(),
             ));
         }
-        let tx = self.settlement.refund(request.swap_id, &secret).await?;
+        let tx = self
+            .settlement
+            .refund(request.swap_id, &terms, &secret)
+            .await?;
         let mut transactions = vec![tx];
         match self
             .settlement
             .refund_payout(
                 request.swap_id,
+                &terms,
                 &note,
                 request.payout.fee,
                 &request.payout.signature.0,
@@ -142,7 +156,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "reverse_refund_payout"), err(level = "warn"))]
     pub async fn reverse_refund_payout(&self, request: Payout) -> Result<Sent> {
-        let (swap, commitment) = self.reverse_swap(request.swap_id).await?;
+        let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
         let note = self.check_reverse_payout(&swap, commitment, &request)?;
         if swap.stage != Stage::Refunded {
             return Err(RelayerError::Rejected("swap has not refunded".into()));
@@ -155,7 +169,13 @@ impl Relayer {
         Ok(Sent {
             transactions: vec![
                 self.settlement
-                    .refund_payout(request.swap_id, &note, request.fee, &request.signature.0)
+                    .refund_payout(
+                        request.swap_id,
+                        &terms,
+                        &note,
+                        request.fee,
+                        &request.signature.0,
+                    )
                     .await?,
             ],
         })
@@ -163,7 +183,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue_reverse"), err(level = "warn"))]
     pub async fn rescue_reverse(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
-        let (swap, _) = self.reverse_swap(request.swap_id).await?;
+        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
         if !swap.paid_out {
             return Err(RelayerError::Rejected("refund has not paid out".into()));
         }
@@ -196,6 +216,7 @@ impl Relayer {
                 self.settlement
                     .rescue(
                         request.swap_id,
+                        &terms,
                         &note,
                         request.fee,
                         &request.signature.0,
@@ -241,17 +262,18 @@ impl Relayer {
         Ok(())
     }
 
-    async fn reverse_swap(&self, id: B256) -> Result<(OnChainSwap, B256)> {
-        let swap = self
-            .settlement
-            .swap(id)
-            .await?
-            .ok_or_else(|| RelayerError::Rejected("no such swap".into()))?;
+    async fn reverse_swap(
+        &self,
+        id: B256,
+        terms: &zecswap_api::Terms,
+    ) -> Result<(OnChainSwap, Terms, B256)> {
+        let terms = Terms::from(terms);
+        let swap = self.swap(id, &terms).await?;
         let funding = self
             .settlement
             .reverse_funding(id)
             .await?
             .ok_or_else(|| RelayerError::Rejected("not a reverse swap".into()))?;
-        Ok((swap, funding.refund_note))
+        Ok((swap, terms, funding.refund_note))
     }
 }

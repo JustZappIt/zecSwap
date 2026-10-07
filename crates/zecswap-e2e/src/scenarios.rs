@@ -346,7 +346,8 @@ impl Player {
         let network = self.env.network.network_type();
         let z = derive_user_keys(&self.env.seed, network, 0, swap.index)?.share;
         let maker = self.env.attentive.maker().await;
-        let tx = maker.settlement().claim(swap.swap_id, &z).await?;
+        let terms = self.user.terms(swap)?;
+        let tx = maker.settlement().claim(swap.swap_id, &terms, &z).await?;
         self.log(format!("revealed the share alone in {tx}"));
         Ok(())
     }

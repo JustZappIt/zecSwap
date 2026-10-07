@@ -164,7 +164,10 @@ point `/opt/zecswap/current` back at the previous release, and restart only the 
    block. Existing deployed contracts cannot gain reverse methods.
 2. Configure maker and independent relayer for that exact deployment. Use a separate data
    directory for a new maker deployment; keep existing services and their pending swaps
-   running until settled. Enable `[reverse]` using the example maker config and supply
+   running until settled. A contract that stores only the terms' hash (October 6) needs a
+   maker store created for it: an older `maker.sqlite` lacks each swap's `t0`. A fresh store
+   restarts quote nonces, so give it a new `MAKER_ROOT_SECRET`, as at the October 2
+   replacement, or earlier swaps' revealed maker shares would be reused. Enable `[reverse]` using the example maker config and supply
    `MAKER_ZCASH_SEED` alongside the existing maker secrets through the process environment.
 3. Run `zecswap-maker --config <maker-config> zec-inventory` to obtain the seed-derived ZEC
    inventory address and balance. Fund the test inventory and the services' EVM gas accounts.

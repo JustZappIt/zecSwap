@@ -128,7 +128,11 @@ impl Maker {
                     "quote was accepted with other keys".into(),
                 ));
             }
-            return Ok(Accepted { swap_id });
+            return Ok(Accepted {
+                swap_id,
+                t0: quote.ready_deadline,
+                t1: quote.refund_after,
+            });
         }
         if unix_now() >= quote.terms.expires_at {
             return Err(MakerError::UnknownQuote);
@@ -175,7 +179,11 @@ impl Maker {
             return Err(error.into());
         }
         tracing::info!(%swap_id, outcome = "accepted", "reverse swap accepted; awaiting escrow funding");
-        Ok(Accepted { swap_id })
+        Ok(Accepted {
+            swap_id,
+            t0: swap.quote.ready_deadline,
+            t1: swap.quote.refund_after,
+        })
     }
 
     pub(super) fn reverse_reserved(&self) -> Result<u64> {
@@ -199,13 +207,13 @@ impl Maker {
         let Some(swap) = self.store.reverse_swap(id)? else {
             return Ok(None);
         };
-        let chain = self.settlement.swap(id).await?;
+        let chain = self.settlement.swap(id, &swap.terms()).await?;
         let now = self.settlement.now().await?;
         let phase = match chain {
             None if swap.settled => Phase::Expired,
             None => Phase::AwaitingFunding,
             Some(chain) => {
-                self.verify_reverse(&swap, &chain).await?;
+                self.verify_reverse(&swap).await?;
                 match chain.stage {
                     Stage::Claimed => Phase::ZecAvailable,
                     Stage::Refunded if chain.paid_out => Phase::Refunded,
@@ -248,25 +256,17 @@ impl Maker {
         }))
     }
 
-    async fn verify_reverse(&self, swap: &ReverseSwap, chain: &OnChainSwap) -> Result<()> {
+    /// The escrow, whose terms reading it checked, is for this maker on this deployment and
+    /// refunds to the quoted note.
+    async fn verify_reverse(&self, swap: &ReverseSwap) -> Result<()> {
         let terms = &swap.quote;
         ensure!(
             terms.terms.chain_id == self.chain_id
                 && terms.terms.contract == self.settlement.contract()
+                && terms.terms.maker == self.account
+                && terms.terms.token == self.config.token
                 && terms.terms.maker_share == self.maker_share(swap.nonce)?.public(),
             "reverse swap belongs to another deployment or maker root"
-        );
-        ensure!(
-            chain.maker == terms.user
-                && chain.user == self.account
-                && chain.maker_share == swap.acceptance.user_share
-                && chain.user_share == terms.terms.maker_share
-                && chain.token == self.config.token
-                && chain.amount == terms.terms.amount
-                && chain.t0 == terms.ready_deadline
-                && chain.t1 == terms.refund_after
-                && chain.payout_note.is_none(),
-            "reverse escrow differs from the accepted quote"
         );
         let funding = self
             .settlement
@@ -287,7 +287,8 @@ impl Maker {
             .reverse
             .as_ref()
             .context("reverse swaps disabled")?;
-        let Some(chain) = self.settlement.swap(swap.id).await? else {
+        let terms = swap.terms();
+        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
             if !swap.settled
                 && swap.deposit.is_none()
                 && self
@@ -297,7 +298,7 @@ impl Maker {
                     > swap.quote.funding_deadline
                 && self
                     .settlement
-                    .confirmed_swap(swap.id, config.evm_confirmations.get().into())
+                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
                     .await?
                     .is_none()
             {
@@ -309,7 +310,7 @@ impl Maker {
         if swap.settled {
             let confirmed = self
                 .settlement
-                .confirmed_swap(swap.id, config.evm_confirmations.get().into())
+                .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
                 .await?;
             if confirmed.as_ref().is_some_and(|confirmed| {
                 confirmed.stage == chain.stage && confirmed.secret == chain.secret
@@ -344,12 +345,12 @@ impl Maker {
             .await?;
             return Ok(());
         }
-        self.verify_reverse(swap, &chain).await?;
+        self.verify_reverse(swap).await?;
         match chain.stage {
             Stage::Claimed | Stage::Refunded => {
                 let confirmed = self
                     .settlement
-                    .confirmed_swap(swap.id, config.evm_confirmations.get().into())
+                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
                     .await?;
                 if !confirmed.is_some_and(|confirmed| confirmed == chain) {
                     return Ok(());
@@ -383,7 +384,7 @@ impl Maker {
                 );
                 if self
                     .settlement
-                    .confirmed_swap(swap.id, config.evm_confirmations.get().into())
+                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
                     .await?
                     .as_ref()
                     != Some(&chain)
@@ -405,24 +406,25 @@ impl Maker {
         if snapshot.funds.spendable < swap.quote.terms.deposit_zat {
             return Ok(());
         }
-        let Some(chain) = self.settlement.swap(swap.id).await? else {
+        let terms = swap.terms();
+        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
             return Ok(());
         };
         if chain.stage != Stage::Ready {
             return Ok(());
         }
-        self.verify_reverse(swap, &chain).await?;
+        self.verify_reverse(swap).await?;
         let now = self.settlement.now().await?;
         if now.saturating_add(self.config.timing.reveal_margin) < chain.claim_lock_until {
             self.settlement
-                .claim(swap.id, &self.maker_share(swap.nonce)?)
+                .claim(swap.id, &terms, &self.maker_share(swap.nonce)?)
                 .await?;
         } else if now >= chain.claim_lock_until
             && now >= chain.refund_lock_until
             && !(chain.claim_lock_until > chain.refund_lock_until
                 && now < chain.claim_lock_until.saturating_add(self.lock_duration))
         {
-            self.settlement.lock_claim(swap.id).await?;
+            self.settlement.lock_claim(swap.id, &terms).await?;
         }
         Ok(())
     }

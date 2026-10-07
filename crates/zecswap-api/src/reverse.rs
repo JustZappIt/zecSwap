@@ -42,6 +42,8 @@ impl Quote {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authorization {
     pub swap_id: B256,
+    /// What `openReverse` stored: `Quote::open(..).terms()`.
+    pub terms: crate::Terms,
     pub deadline: u64,
     pub signature: FixedBytes<65>,
 }
@@ -59,10 +61,12 @@ pub struct Funding {
     pub value: u128,
 }
 
+/// Names the same swap and terms as its payout.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Refund {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub secret: B256,
     pub payout: crate::relayer::Payout,
 }

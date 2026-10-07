@@ -58,6 +58,65 @@ pub struct Acceptance {
 #[serde(rename_all = "camelCase")]
 pub struct Accepted {
     pub swap_id: B256,
+    /// The deadlines the swap opens with, which the maker picks: from `t0` the user may claim
+    /// without `ready`, from `t1` the maker may refund a `Ready` swap. They complete the terms
+    /// the wallet checks on-chain.
+    pub t0: u64,
+    pub t1: u64,
+}
+
+/// A swap's terms as `open` committed to them, field for field the contract's `Terms`. The
+/// contract stores only their hash, so every request that acts on a swap carries them, and
+/// the contract refuses terms that don't hash to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Terms {
+    pub maker: Address,
+    pub token: Address,
+    /// Token base units, as a decimal string.
+    #[serde(with = "decimal")]
+    pub amount: u128,
+    #[serde(with = "bytes64")]
+    pub maker_key: PublicShare,
+    #[serde(with = "bytes64")]
+    pub user_key: PublicShare,
+    pub user: Address,
+    pub t0: u64,
+    pub t1: u64,
+    /// Zero for a swap that pays `user`'s balance rather than a Railgun note.
+    pub payout_note: B256,
+}
+
+impl From<&zecswap_core::Terms> for Terms {
+    fn from(terms: &zecswap_core::Terms) -> Self {
+        Self {
+            maker: terms.maker.into(),
+            token: terms.token.into(),
+            amount: terms.amount,
+            maker_key: terms.maker_share,
+            user_key: terms.user_share,
+            user: terms.user.into(),
+            t0: terms.t0,
+            t1: terms.t1,
+            payout_note: terms.payout_note.into(),
+        }
+    }
+}
+
+impl From<&Terms> for zecswap_core::Terms {
+    fn from(terms: &Terms) -> Self {
+        Self {
+            maker: terms.maker.into(),
+            token: terms.token.into(),
+            amount: terms.amount,
+            maker_share: terms.maker_key,
+            user_share: terms.user_key,
+            user: terms.user.into(),
+            t0: terms.t0,
+            t1: terms.t1,
+            payout_note: terms.payout_note.0,
+        }
+    }
 }
 
 /// 64-byte values as `0x` hex, parsed into their checked types.

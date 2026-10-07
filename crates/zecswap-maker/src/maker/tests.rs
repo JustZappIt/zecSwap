@@ -79,6 +79,7 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: 1000,
+        t0: 3700,
         t1: 7300,
         sweep: None,
         settled: false,
@@ -645,26 +646,15 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: now,
+        t0: now + 3600,
         t1: now + 7200,
         sweep: None,
         settled: false,
         refund_started: false,
     };
     maker.store.insert_swap(&swap, None).unwrap();
-    maker
-        .settlement
-        .open(&OpenRequest {
-            token,
-            amount: swap.quote.amount,
-            maker_share: &maker.maker_share(swap.quote.nonce).unwrap().public(),
-            user_share: &swap.user_share,
-            user: swap.quote.payout,
-            t0: now + 3600,
-            t1: swap.t1,
-            payout_note: None,
-        })
-        .await
-        .unwrap();
+    let terms = maker.terms(&swap).unwrap();
+    maker.settlement.open(&terms).await.unwrap();
     anvil_rpc(
         &url,
         "evm_setNextBlockTimestamp",
@@ -684,7 +674,13 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
             .unwrap();
     }
     assert_eq!(
-        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        maker
+            .settlement
+            .swap(swap.id, &terms)
+            .await
+            .unwrap()
+            .unwrap()
+            .stage,
         Stage::Refunded
     );
     maker.tick().await.unwrap();
@@ -716,7 +712,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     assert!(
         maker
             .settlement
-            .swap(swap.id)
+            .swap(swap.id, &terms)
             .await
             .unwrap()
             .unwrap()
@@ -728,7 +724,13 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         .unwrap()
         .unwrap();
     assert_eq!(
-        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        maker
+            .settlement
+            .swap(swap.id, &terms)
+            .await
+            .unwrap()
+            .unwrap()
+            .stage,
         Stage::Refunded
     );
     drop(busy);

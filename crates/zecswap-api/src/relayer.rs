@@ -1,6 +1,7 @@
 //! The relayer's API. A relayer sends the transactions of users with no account on the chain:
 //! each is authorized by the swap's own key or carries the revealed share, so a relayer can
-//! delay a swap but never redirect it.
+//! delay a swap but never redirect it. Each request that acts on a swap carries its terms
+//! (`crate::Terms`), which the relayer checks against the chain before sending anything.
 
 use alloy_primitives::{Address, B256, FixedBytes};
 use serde::{Deserialize, Serialize};
@@ -44,16 +45,19 @@ pub struct ReverseFundingTerms {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockClaim {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub deadline: u64,
     pub signature: FixedBytes<65>,
 }
 
 /// `POST /v1/claim`: reveals the user share under the held claim lock, then pays out. The
-/// payout comes first so that the relayer is sure of its fee before it reveals anything.
+/// payout comes first so that the relayer is sure of its fee before it reveals anything. It
+/// names the same swap and terms as the claim.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Claim {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     /// The user share, big-endian.
     pub secret: B256,
     pub payout: Payout,
@@ -64,6 +68,7 @@ pub struct Claim {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Payout {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub note: Note,
     #[serde(with = "decimal")]
     pub fee: u128,
@@ -75,6 +80,7 @@ pub struct Payout {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rescue {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub note: Note,
     #[serde(with = "decimal")]
     pub fee: u128,

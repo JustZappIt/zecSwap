@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use zecswap_api::{Acceptance, reverse::Quote};
 use zecswap_chain::evm::B256;
 use zecswap_chain::zcash::{AccountUuid, TxId};
+use zecswap_core::Terms;
 
 use super::Store;
 
@@ -32,6 +33,13 @@ pub(crate) struct ReverseSwap {
     #[serde(with = "optional_txid")]
     pub sweep: Option<TxId>,
     pub settled: bool,
+}
+
+impl ReverseSwap {
+    /// What `openReverse` commits the escrow to, which every call on it supplies again.
+    pub(crate) fn terms(&self) -> Terms {
+        self.quote.open(self.acceptance.user_share).terms()
+    }
 }
 
 mod optional_txid {
@@ -278,7 +286,7 @@ mod tests {
             swap.acceptance.viewing_keys.to_bytes()
         );
         assert_eq!(store.pending_reverse_swaps().unwrap().len(), 1);
-        let rows = store.monitor_swaps(2700, 50).unwrap();
+        let rows = store.monitor_swaps(50).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].direction, "reverse");
         assert_eq!(rows[0].funding_deadline, Some(300));

@@ -69,7 +69,7 @@ contract RailgunForkTest is SpendAuthVectors {
     }
 
     function test_aClaimedSwapShieldsIntoRailgun() public {
-        (bytes32 id, uint256 shieldGas) = claimAndPayOut();
+        (bytes32 id,, uint256 shieldGas) = claimAndPayOut();
         uint120 value = uint120(AMOUNT - FEE);
         uint120 railgunFee = value * IRailgunTree(RAILGUN).shieldFee() / 10_000;
 
@@ -92,7 +92,7 @@ contract RailgunForkTest is SpendAuthVectors {
     }
 
     function test_rescueShieldsWhatCameBackAgain() public {
-        (bytes32 id,) = claimAndPayOut();
+        (bytes32 id, ZecSwap.Terms memory swapTerms,) = claimAndPayOut();
         address vault = swaps.vaultOf(id);
         deal(USDC, vault, 400e6);
 
@@ -100,43 +100,51 @@ contract RailgunForkTest is SpendAuthVectors {
         bytes memory sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, commitment, relayer, FEE, uint64(0), uint64(block.timestamp + 5 minutes))));
         vm.recordLogs();
         vm.prank(relayer);
-        swaps.rescue(id, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
+        swaps.rescue(id, swapTerms, npk, ciphertext, FEE, 0, uint64(block.timestamp + 5 minutes), sig);
         (IRailgun.CommitmentPreimage[] memory notes,,) = shieldEvent();
         assertEq(notes[0].npk, npk);
         assertEq(leafCount(), leaves + 1);
         assertEq(IERC20(USDC).balanceOf(vault), 0);
     }
 
-    function claimAndPayOut() internal returns (bytes32 id, uint256 payoutGas) {
-        Vector memory e = randomVector(0);
-        Vector memory z = randomVector(1);
-        uint64 t0 = uint64(block.timestamp + 45 minutes);
-
+    function claimAndPayOut() internal returns (bytes32 id, ZecSwap.Terms memory t, uint256 payoutGas) {
+        t = terms();
         vm.startPrank(maker);
         uint256 gas = gasleft();
-        id = swaps.open(USDC, AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t0 + 1 hours, commitment);
+        id = swaps.open(t.token, t.amount, t.makerKey, t.userKey, t.user, t.t0, t.t1, t.payoutNote);
         console.log("open gas", gas - gasleft());
-        swaps.ready(id);
+        gas = gasleft();
+        swaps.ready(id, t);
+        console.log("ready gas", gas - gasleft());
         vm.stopPrank();
 
         uint64 deadline = uint64(block.timestamp + 5 minutes);
         bytes memory lockSig = sign(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
+        uint256 userSecret = randomVector(1).k;
         vm.startPrank(relayer);
         gas = gasleft();
-        swaps.lockClaimWithSig(id, deadline, lockSig);
+        swaps.lockClaimWithSig(id, t, deadline, lockSig);
         console.log("lockClaimWithSig gas", gas - gasleft());
         gas = gasleft();
-        swaps.claim(id, z.k);
+        swaps.claim(id, t, userSecret);
         console.log("claim gas", gas - gasleft());
 
         uint256 leaves = leafCount();
         bytes memory payoutSig = sign(keccak256(abi.encode(PAYOUT_TYPEHASH, id, relayer, FEE)));
         vm.recordLogs();
         gas = gasleft();
-        swaps.payout(id, npk, ciphertext, FEE, payoutSig);
+        swaps.payout(id, t, npk, ciphertext, FEE, payoutSig);
         payoutGas = gas - gasleft();
         vm.stopPrank();
         assertEq(leafCount(), leaves + 1);
+    }
+
+    /// A swap paying the note in `vectors/railgun_note.json`, between shares 0 and 1.
+    function terms() internal view returns (ZecSwap.Terms memory) {
+        Vector memory e = randomVector(0);
+        Vector memory z = randomVector(1);
+        uint64 t0 = uint64(block.timestamp + 45 minutes);
+        return ZecSwap.Terms(maker, USDC, AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t0 + 1 hours, commitment);
     }
 
     /// The one `Shield` Railgun emitted since `vm.recordLogs`.

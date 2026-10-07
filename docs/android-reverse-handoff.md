@@ -53,8 +53,9 @@ Implement this normal flow with two user authorizations:
 Use typed DTOs and explicit states, integer base-unit amounts, decimal-string API amounts,
 and validated fixed-length hex fields. Never use floating point for money or error text for
 branching. Keep the existing native API conventions; the three packaged Android ABIs already
-include reverse signing methods. Reverse storage roles differ from business names: the
-contract's stored maker is the USDC user, and its stored user is the ZEC maker.
+include reverse signing methods. Reverse roles in the escrow's terms differ from business
+names: `Terms.maker` is the USDC user, and `Terms.user` is the ZEC maker. The contract stores
+only their hash, so relayer requests carry them (`docs/reverse-flow.md`, "Terms hash").
 
 Persist the quote, consumed index, imported account/birthday, funding transaction, authorized
 pending actions and receive transaction before submission. Recover after process death,

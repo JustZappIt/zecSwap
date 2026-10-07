@@ -18,11 +18,11 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
-use zecswap_chain::evm::{Address, B256, OnChainSwap, OpenRequest, Settlement, Stage, swap_id};
+use zecswap_chain::evm::{Address, B256, OnChainSwap, Settlement, Stage, swap_id};
 use zecswap_chain::zcash::{
     AccountUuid, Funds, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect_lazy,
 };
-use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, derive_maker_share};
+use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, Terms, derive_maker_share};
 use zeroize::Zeroizing;
 
 use crate::config::{Config, Secrets};
@@ -39,7 +39,7 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
         Some(Error::Rejected { .. }) => "transaction_rejected",
         Some(Error::Database(_) | Error::Wallet(_)) => "zcash_wallet",
         Some(Error::Contract(_)) => "evm_rpc_or_contract",
-        Some(Error::Swap(_)) => "swap_validation",
+        Some(Error::Swap(_) | Error::WrongTerms(_)) => "swap_validation",
         None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
         None => "operation_failed",
     }
@@ -373,6 +373,7 @@ impl Maker {
             viewing: viewing_keys,
             zcash_account,
             opened_at: now,
+            t0: now + timing.t0_after,
             t1: now + timing.t1_after,
             sweep: None,
             settled: false,
@@ -389,25 +390,17 @@ impl Maker {
             self.forget(zcash_account).await;
             return Err(e.into());
         }
-        let transaction_hash = self
-            .settlement
-            .open(&OpenRequest {
-                token: self.config.token,
-                amount: swap.quote.amount,
-                maker_share: &maker_share,
-                user_share: &user_share,
-                user: swap.quote.payout,
-                t0: now + timing.t0_after,
-                t1: swap.t1,
-                payout_note: swap.quote.payout_note,
-            })
-            .await?;
+        let transaction_hash = self.settlement.open(&self.terms(&swap)?).await?;
         // The user can only deposit once it sees the swap, which on a slow chain can be minutes
         // after `now` when opens queue behind each other; `cancel_after` counts from here.
         self.store
             .set_opened_at(&id, self.settlement.now().await?)?;
         info!(swap_id = %id, %transaction_hash, outcome = "mined", amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
-        Ok(Accepted { swap_id: id })
+        Ok(Accepted {
+            swap_id: id,
+            t0: swap.t0,
+            t1: swap.t1,
+        })
     }
 
     pub fn status(&self, id: B256) -> Result<Option<Status>> {
@@ -585,13 +578,14 @@ impl Maker {
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance"), err(level = "warn"))]
     async fn advance(&self, swap: &Swap, now: u64) -> Result<()> {
         let confirmations = u64::from(self.config.evm_confirmations.get());
-        let Some(chain) = self.settlement.swap(swap.id).await? else {
+        let terms = self.terms(swap)?;
+        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
             if !swap.settled
                 && now >= swap.t1
                 && self.settlement.confirmed_now(confirmations).await? >= swap.t1
                 && self
                     .settlement
-                    .confirmed_swap(swap.id, confirmations)
+                    .confirmed_swap(swap.id, &terms, confirmations)
                     .await?
                     .is_none()
             {
@@ -606,7 +600,7 @@ impl Maker {
         let (funds, sweep_confirmed, synced) = self.wallet_observation(swap);
         let chain_confirmed = if matches!(chain.stage, Stage::Claimed | Stage::Refunded) {
             self.settlement
-                .confirmed_swap(swap.id, confirmations)
+                .confirmed_swap(swap.id, &terms, confirmations)
                 .await?
                 .is_some_and(|confirmed| {
                     confirmed.stage == chain.stage && confirmed.secret == chain.secret
@@ -652,16 +646,16 @@ impl Maker {
         match action {
             Action::Wait => {}
             Action::MarkReady => {
-                self.settlement.ready(swap.id).await?;
+                self.settlement.ready(swap.id, &terms).await?;
             }
             Action::LockRefund => {
                 self.store.start_refund(&swap.id)?;
-                self.settlement.lock_refund(swap.id).await?;
+                self.settlement.lock_refund(swap.id, &terms).await?;
             }
             Action::Refund => {
                 self.store.start_refund(&swap.id)?;
                 let e = self.maker_share(swap.quote.nonce)?;
-                self.settlement.refund(swap.id, &e).await?;
+                self.settlement.refund(swap.id, &terms, &e).await?;
             }
             Action::Sweep => {} // The Zcash worker builds and broadcasts sweeps.
             Action::Settle => self.settle(swap, Some(&observation.chain))?,
@@ -687,7 +681,7 @@ impl Maker {
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_sweep"), err(level = "warn"))]
     async fn advance_sweep(&self, swap: &Swap) -> Result<()> {
-        if let Some(chain) = self.settlement.swap(swap.id).await?
+        if let Some(chain) = self.settlement.swap(swap.id, &self.terms(swap)?).await?
             && chain.stage == Stage::Claimed
         {
             self.sweep(swap, &chain).await?;
@@ -745,6 +739,21 @@ impl Maker {
 
     fn maker_share(&self, nonce: u64) -> Result<SecretShare> {
         Ok(derive_maker_share(&self.root, nonce)?)
+    }
+
+    /// The terms `open` committed the swap to, which every call on it supplies again.
+    fn terms(&self, swap: &Swap) -> Result<Terms> {
+        Ok(Terms {
+            maker: self.account.into(),
+            token: self.config.token.into(),
+            amount: swap.quote.amount,
+            maker_share: self.maker_share(swap.quote.nonce)?.public(),
+            user_share: swap.user_share,
+            user: swap.quote.payout.into(),
+            t0: swap.t0,
+            t1: swap.t1,
+            payout_note: swap.quote.payout_note.unwrap_or_default().0,
+        })
     }
 
     fn context(&self, quote_id: [u8; 32]) -> SwapContext {

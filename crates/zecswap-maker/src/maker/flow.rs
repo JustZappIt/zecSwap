@@ -133,7 +133,7 @@ impl Maker {
         let original = readonly(&self.config.data_dir.join("wallet.sqlite"))?;
         let mut accounts = Vec::new();
         // Include completed swaps: final recovery often happens after the maker's job ends.
-        for record in self.store.monitor_swaps(self.config.timing.t0_after, 500)? {
+        for record in self.store.monitor_swaps(500)? {
             let after = if record.direction == "reverse" {
                 self.config
                     .reverse

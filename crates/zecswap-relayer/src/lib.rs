@@ -9,6 +9,8 @@ mod funding_tests;
 #[cfg(test)]
 mod logging_tests;
 mod reverse;
+#[cfg(test)]
+mod terms_tests;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -149,12 +151,17 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_claim"), err(level = "warn"))]
     pub async fn lock_claim(&self, request: LockClaim) -> Result<Sent> {
-        let swap = self.railgun_swap(request.swap_id).await?;
+        let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
         let digest = self.domain.lock_claim(&request.swap_id, request.deadline);
         self.check_signed(&swap, &digest, &request.signature.0)?;
         let tx = self
             .settlement
-            .lock_claim_with_sig(request.swap_id, request.deadline, &request.signature.0)
+            .lock_claim_with_sig(
+                request.swap_id,
+                &terms,
+                request.deadline,
+                &request.signature.0,
+            )
             .await?;
         info!(id = %request.swap_id, %tx, "took the claim lock");
         Ok(Sent {
@@ -166,7 +173,12 @@ impl Relayer {
     /// reveal; if the payout still fails, the swap stays claimed and `payout` can be retried.
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "claim"), err(level = "warn"))]
     pub async fn claim(&self, request: Claim) -> Result<Sent> {
-        let swap = self.railgun_swap(request.swap_id).await?;
+        if request.payout.swap_id != request.swap_id || request.payout.terms != request.terms {
+            return Err(RelayerError::Rejected(
+                "the claim and its payout name different swaps or terms".into(),
+            ));
+        }
+        let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
         if !matches!(swap.stage, Stage::Open | Stage::Ready) {
             return Err(RelayerError::Rejected(format!(
                 "the swap is {:?}",
@@ -182,10 +194,13 @@ impl Relayer {
         }
         let secret = SecretShare::from_be_bytes(&request.secret.0)
             .map_err(|e| RelayerError::Rejected(e.to_string()))?;
-        let claim = self.settlement.claim(request.swap_id, &secret).await?;
+        let claim = self
+            .settlement
+            .claim(request.swap_id, &terms, &secret)
+            .await?;
         info!(id = %request.swap_id, tx = %claim, "claimed");
         let mut transactions = vec![claim];
-        match self.send_payout(&request.payout, &note).await {
+        match self.send_payout(&request.payout, &terms, &note).await {
             Ok(tx) => transactions.push(tx),
             Err(e) => warn!(id = %request.swap_id, "the payout after the claim failed: {e:#}"),
         }
@@ -194,7 +209,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "payout"), err(level = "warn"))]
     pub async fn payout(&self, request: Payout) -> Result<Sent> {
-        let swap = self.railgun_swap(request.swap_id).await?;
+        let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
         if swap.stage != Stage::Claimed || swap.paid_out {
             return Err(RelayerError::Rejected(
                 "nothing is waiting to be paid out".into(),
@@ -202,14 +217,14 @@ impl Relayer {
         }
         let note = self.check_payout(&swap, &request)?;
         Ok(Sent {
-            transactions: vec![self.send_payout(&request, &note).await?],
+            transactions: vec![self.send_payout(&request, &terms, &note).await?],
         })
     }
 
     /// Shields what Railgun sent back to a swap's vault to the note the user signed for.
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue"), err(level = "warn"))]
     pub async fn rescue(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
-        let swap = self.railgun_swap(request.swap_id).await?;
+        let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
         if !swap.paid_out {
             return Err(RelayerError::Rejected("the swap has not paid out".into()));
         }
@@ -238,6 +253,7 @@ impl Relayer {
             .settlement
             .rescue(
                 request.swap_id,
+                &terms,
                 &note,
                 request.fee,
                 &request.signature.0,
@@ -250,10 +266,21 @@ impl Relayer {
         })
     }
 
-    async fn send_payout(&self, request: &Payout, note: &ShieldNote) -> Result<B256> {
+    async fn send_payout(
+        &self,
+        request: &Payout,
+        terms: &zecswap_core::Terms,
+        note: &ShieldNote,
+    ) -> Result<B256> {
         let tx = self
             .settlement
-            .payout(request.swap_id, note, request.fee, &request.signature.0)
+            .payout(
+                request.swap_id,
+                terms,
+                note,
+                request.fee,
+                &request.signature.0,
+            )
             .await?;
         info!(id = %request.swap_id, %tx, fee = request.fee, "paid out into Railgun");
         Ok(tx)
@@ -301,17 +328,31 @@ impl Relayer {
     }
 
     /// Only swaps that pay into Railgun, whose payout is the relayer's fee.
-    async fn railgun_swap(&self, id: B256) -> Result<OnChainSwap> {
-        let swap = self
-            .settlement
-            .swap(id)
-            .await?
-            .ok_or_else(|| RelayerError::Rejected("no such swap".into()))?;
+    async fn railgun_swap(
+        &self,
+        id: B256,
+        terms: &zecswap_api::Terms,
+    ) -> Result<(OnChainSwap, zecswap_core::Terms)> {
+        let terms = zecswap_core::Terms::from(terms);
+        let swap = self.swap(id, &terms).await?;
         if swap.payout_note.is_none() {
             return Err(RelayerError::Rejected(
                 "the swap pays an account, not Railgun".into(),
             ));
         }
-        Ok(swap)
+        Ok((swap, terms))
+    }
+
+    /// The swap as the chain has it, if `terms` are the ones it opened with. Checked before
+    /// anything is sent: the contract would revert a call carrying other terms, at our expense.
+    async fn swap(&self, id: B256, terms: &zecswap_core::Terms) -> Result<OnChainSwap> {
+        match self.settlement.swap(id, terms).await {
+            Ok(Some(swap)) => Ok(swap),
+            Ok(None) => Err(RelayerError::Rejected("no such swap".into())),
+            Err(zecswap_chain::Error::WrongTerms(_)) => Err(RelayerError::Rejected(
+                "the swap opened on other terms".into(),
+            )),
+            Err(e) => Err(e.into()),
+        }
     }
 }
