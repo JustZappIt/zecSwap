@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tracing::info;
 
+use zecswap_chain::evm::Settlement;
 use zecswap_maker::{Config, Maker, Secrets, api};
 
 #[derive(Parser)]
@@ -32,6 +33,9 @@ enum Command {
         #[arg(long)]
         mint: bool,
     },
+    /// Moves `amount` base units of the payout token from the contract inventory to the maker's
+    /// account.
+    WithdrawInventory { amount: u128 },
 }
 
 #[tokio::main]
@@ -44,14 +48,18 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let config = Config::load(&cli.config)?;
-    if matches!(cli.command, Command::TelegramTest) {
-        return Maker::telegram_test(&config).await;
+    match cli.command {
+        Command::TelegramTest => return Maker::telegram_test(&config).await,
+        // Needs only the EVM key, so it also empties a retired deployment, whose store a newer
+        // build may refuse.
+        Command::WithdrawInventory { amount } => return withdraw_inventory(&config, amount).await,
+        _ => {}
     }
     let token = config.token;
     let maker = Arc::new(Maker::new(config, Secrets::from_env()?).await?);
 
     match cli.command {
-        Command::TelegramTest => unreachable!(),
+        Command::TelegramTest | Command::WithdrawInventory { .. } => unreachable!(),
         Command::ZecInventory => {
             let (address, funds) = maker.reverse_inventory().await?;
             println!(
@@ -84,6 +92,16 @@ async fn main() -> Result<()> {
             info!("inventory is now {inventory}");
         }
     }
+    Ok(())
+}
+
+async fn withdraw_inventory(config: &Config, amount: u128) -> Result<()> {
+    let key = Secrets::from_env()?.evm_key;
+    let account = key.address();
+    let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
+    settlement.withdraw(config.token, amount, account).await?;
+    let inventory = settlement.balance_of(account, config.token).await?;
+    info!("inventory is now {inventory}");
     Ok(())
 }
 
