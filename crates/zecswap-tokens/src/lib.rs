@@ -12,8 +12,8 @@ use anyhow::{Result, anyhow, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use blind_rsa_signatures::{
-    BlindSignature, BlindingResult, DefaultRng, KeyPairSha384PSSDeterministic,
-    PublicKeySha384PSSDeterministic, SecretKeySha384PSSDeterministic, Signature,
+    BlindMessage, BlindSignature, BlindingResult, DefaultRng, KeyPairSha384PSSDeterministic,
+    PublicKeySha384PSSDeterministic, Secret, SecretKeySha384PSSDeterministic, Signature,
 };
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use sha2::{Digest, Sha256};
@@ -183,6 +183,40 @@ impl Pending {
             .map_err(|e| anyhow!("{e}"))?;
         let blinded = blinding.blind_message.0.clone();
         Ok((Self { input, blinding }, blinded))
+    }
+
+    /// `token_input ‖ blinding secret ‖ blinded message`, for a client that keeps no state between
+    /// calls. Whoever holds them can tie the token to its request, so they never leave the device.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        [
+            &self.input[..],
+            &self.blinding.secret.0,
+            &self.blinding.blind_message.0,
+        ]
+        .concat()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() == INPUT + 2 * NK,
+            "a pending token of {} bytes",
+            bytes.len()
+        );
+        ensure!(
+            bytes[..2] == TOKEN_TYPE.to_be_bytes(),
+            "a pending token of another type"
+        );
+        let (input, rest) = bytes.split_at(INPUT);
+        let (secret, blinded) = rest.split_at(NK);
+        Ok(Self {
+            input: input.try_into().expect("the input's length"),
+            // The deterministic variant has no message randomizer.
+            blinding: BlindingResult {
+                blind_message: BlindMessage(blinded.to_vec()),
+                secret: Secret(secret.to_vec()),
+                msg_randomizer: None,
+            },
+        })
     }
 
     /// The token, once the issuer's blind signature unblinds to a valid one under `key`.
