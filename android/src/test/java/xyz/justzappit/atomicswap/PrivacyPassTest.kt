@@ -20,11 +20,13 @@ class PrivacyPassTest {
         val issuer = keys.private as RSAPrivateCrtKey
         // RFC 9578's RSASSA-PSS SubjectPublicKeyInfo around the modulus, as its test vectors encode a 2048-bit key.
         val spki = SPKI_HEAD.bytes() + issuer.modulus.fixed() + "0203010001".bytes()
-        val challenge = "0002000b6973737565722e7465737400" + "00056d616b6572"
+        // The redemption context is 32 bytes ending in the UTC day, here day 20 000.
+        val challenge = "0002000b6973737565722e74657374" + "20" + "00".repeat(24) + "0000000000004e20" + "00056d616b6572"
         val header = "PrivateToken challenge=\"${challenge.bytes().base64Url()}\", token-key=\"${spki.base64Url()}\""
 
         val asked = PrivacyPass.readChallenge(header)
         assertEquals("issuer.test", asked.issuer)
+        assertTrue(asked.challenge.contentEquals(challenge.bytes()))
         assertTrue(asked.tokenKey.contentEquals(spki))
         val request = PrivacyPass.blind(asked.challenge, asked.tokenKey)
         val signature = BigInteger(1, request.blinded).modPow(issuer.privateExponent, issuer.modulus)
