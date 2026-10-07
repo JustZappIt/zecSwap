@@ -148,6 +148,10 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Gotchas
 
+- Sepolia repriced new state in early October 2026: deploying ZecSwap takes ~30M gas (4.2M
+  before) and `open` ~360k (108k on a local fork). `forge script` simulates the old prices and
+  runs out of gas: deploy with `cast send --create` and the node's estimate. The anvil fork the
+  live suite uses keeps the old prices.
 - Alchemy's free tier caps `eth_getLogs` at 10 blocks. Load-balanced RPCs read a block behind.
   Railgun's wallet SDK scans logs, so `balance.cjs` needs an RPC without that cap;
   `https://ethereum-sepolia-rpc.publicnode.com` works.
