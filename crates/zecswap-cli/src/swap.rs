@@ -49,10 +49,6 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         Some(tokens) => api.with_tokens(tokens.clone()),
         None => api,
     };
-    let relaying = |api: RelayerApi| match &args.tokens {
-        Some(tokens) => api.with_tokens(tokens.clone()),
-        None => api,
-    };
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -61,7 +57,7 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         Payee::Railgun { relayer, max_fee } => (
             Settlement::read_only(&args.rpc, args.contract)?,
             Route::Railgun {
-                relayer: relaying(RelayerApi::new(relayer)?),
+                relayer: RelayerApi::new(relayer)?,
                 max_fee,
             },
         ),

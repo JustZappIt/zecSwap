@@ -23,6 +23,7 @@ use zecswap_chain::zcash::{
     AccountUuid, Funds, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect_lazy,
 };
 use zecswap_core::{JointAccount, Payout, SecretShare, SwapContext, Terms, derive_maker_share};
+use zecswap_tokens::server::{Gate, Spend};
 use zeroize::Zeroizing;
 
 use crate::config::{Config, Secrets};
@@ -63,7 +64,7 @@ pub struct Maker {
     monitoring: monitoring::Monitoring,
     prices: crate::market::PriceBook,
     telegram: crate::telegram::Telegram,
-    tokens: Option<std::sync::Arc<zecswap_tokens::server::Gate>>,
+    tokens: Option<Arc<Gate>>,
 }
 
 #[derive(Clone, Copy)]
@@ -206,10 +207,10 @@ impl Maker {
         let tokens = config
             .tokens
             .as_ref()
-            .map(zecswap_tokens::server::Gate::open)
+            .map(Gate::open)
             .transpose()
             .context("[tokens]")?
-            .map(std::sync::Arc::new);
+            .map(Arc::new);
         let maker = Self {
             tokens,
             telegram,
@@ -268,8 +269,8 @@ impl Maker {
         self.account
     }
 
-    /// What quotes and accepts spend tokens through, if they must.
-    pub(crate) fn tokens(&self) -> Option<std::sync::Arc<zecswap_tokens::server::Gate>> {
+    /// What accepts spend tokens through, if they must.
+    pub(crate) fn tokens(&self) -> Option<Arc<Gate>> {
         self.tokens.clone()
     }
 
@@ -324,6 +325,10 @@ impl Maker {
                 Chain::Testnet => ZcashNetwork::Testnet,
             },
             reverse_enabled: self.inventory.is_some(),
+            token_return_key: self
+                .tokens
+                .as_ref()
+                .map(|gate| gate.return_key().to_base64()),
         }
     }
 
@@ -393,11 +398,14 @@ impl Maker {
         })
     }
 
+    /// With `[tokens]`, `spend` is the accept's token: kept spent once the quote is taken,
+    /// spendable again after any refusal before.
     #[tracing::instrument(skip_all, fields(operation = "accept", %quote_id, swap_id = tracing::field::Empty), err(level = "warn"))]
     pub async fn accept(
         &self,
         quote_id: B256,
         acceptance: Acceptance,
+        spend: Option<&Spend>,
     ) -> Result<Accepted, MakerError> {
         self.check_watchtower()?;
         self.admit_another()?;
@@ -418,10 +426,12 @@ impl Maker {
             user: quote.payout.into(),
             note: quote.payout_note.map(|note| note.0),
         };
+        let token_request = self.token_request(&acceptance)?;
         let Acceptance {
             user_share,
             user_proof,
             viewing_keys,
+            ..
         } = acceptance;
         self.context(quote.id)
             .verify_user(&maker_share, &user_share, &payout, &user_proof)
@@ -434,6 +444,9 @@ impl Maker {
         let now = self.settlement.now().await?;
         if self.store.take_quote(&quote_id.0, unix_now())?.is_none() {
             return Err(MakerError::UnknownQuote);
+        }
+        if let Some(spend) = spend {
+            spend.keep()?;
         }
 
         // Watch the deposit address before the user can learn it from the chain.
@@ -459,6 +472,8 @@ impl Maker {
             sweep: None,
             settled: false,
             refund_started: false,
+            token_request,
+            token_return: None,
         };
         // Recorded before `open`, whose outcome can be unknown: the watchtower then settles
         // the swap from what the chain shows.
@@ -489,6 +504,48 @@ impl Maker {
             sweep: swap.sweep,
             settled: swap.settled,
         }))
+    }
+
+    /// What `GET /v1/swaps/{id}` shows of a forward swap.
+    pub fn swap_status(&self, id: B256) -> Result<Option<zecswap_api::Status>> {
+        Ok(self.store.swap(&id)?.map(|swap| zecswap_api::Status {
+            swap_id: id,
+            token_return: swap.token_return,
+        }))
+    }
+
+    /// The accept's request for its token back: required where accepts take tokens, refused
+    /// where they don't, and one the return key can sign.
+    pub(crate) fn token_request(
+        &self,
+        acceptance: &Acceptance,
+    ) -> Result<Option<Vec<u8>>, MakerError> {
+        let rejected = |why: &str| MakerError::Rejected(why.into());
+        match (&self.tokens, &acceptance.token_request) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err(rejected("this maker hands back no tokens")),
+            (Some(_), None) => Err(rejected("an accept asks for its token back")),
+            (Some(gate), Some(request)) => gate
+                .read_return_request(request)
+                .map(Some)
+                .map_err(|e| rejected(&e.to_string())),
+        }
+    }
+
+    /// Hands the swap's token back, once, now the user has paid in or the swap never opened.
+    /// Failing here never holds up the swap itself.
+    fn return_token(&self, swap: &Swap) {
+        let (Some(gate), Some(request), None) =
+            (&self.tokens, &swap.token_request, &swap.token_return)
+        else {
+            return;
+        };
+        let returned = gate
+            .sign_return(request)
+            .and_then(|signature| self.store.return_token(&swap.id, &signature));
+        if let Err(e) = returned {
+            warn!(swap_id = %swap.id, "could not hand the token back: {e:#}");
+        }
     }
 
     /// EVM deadlines run independently of wallet I/O and CPU-heavy scanning/proving.
@@ -681,6 +738,7 @@ impl Maker {
                     .is_none()
             {
                 info!(id = %swap.id, "the swap never opened");
+                self.return_token(swap);
                 self.settle(swap, None)?;
             }
             return Ok(());
@@ -725,6 +783,11 @@ impl Maker {
             sweep_confirmed,
             lock_duration: self.lock_duration,
         };
+        // Paid in full, if not yet confirmed: the accept's token goes back. An underpaid swap
+        // is cancelled like one never paid into.
+        if synced && funds.total >= swap.quote.deposit_zat {
+            self.return_token(swap);
+        }
         if synced && funds.total > 0 {
             self.queue_alert(self.forward_alert(swap, "funded", &format!(
                 "User ZEC deposit observed: {} zat total; {} zat spendable. Confirmation and escrow checks continue.", funds.total, funds.spendable

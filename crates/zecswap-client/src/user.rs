@@ -145,9 +145,13 @@ impl User {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
+            token_request: None,
         };
-        let accepted = self.maker.accept(quote.quote_id, &acceptance).await?;
         let swap_id = swap_id(quote.maker, &acceptance.user_share);
+        let accepted = self
+            .maker
+            .accept(quote.quote_id, swap_id, &acceptance)
+            .await?;
         ensure!(
             accepted.swap_id == swap_id,
             "the maker reported another swap"
@@ -159,6 +163,13 @@ impl User {
             t0: accepted.t0,
             t1: accepted.t1,
         })
+    }
+
+    /// Holds the token the swap hands back once paid into, where the maker takes tokens:
+    /// whether it now holds it. Spend it later, not right away: a spend just after it comes
+    /// back could be tied to this swap.
+    pub async fn collect_token(&self, swap: &UserSwap) -> Result<bool> {
+        self.maker.collect_token(swap.swap_id).await
     }
 
     /// Checks the swap as the contract records it and derives the deposit account from the

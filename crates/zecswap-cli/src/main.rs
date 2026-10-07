@@ -77,7 +77,7 @@ enum Command {
         /// The most the relayer may keep, in token base units.
         #[arg(long, default_value_t = 2_000_000)]
         max_fee: u128,
-        /// Spend Privacy Pass tokens from this issuer where the maker and relayer take them.
+        /// Spend Privacy Pass tokens from this issuer where the maker takes them.
         #[arg(long, env = "ZECSWAP_ISSUER_URL")]
         issuer: Option<String>,
         /// This device's attestation for the issuer: its id, in the issuer's insecure-test mode.
@@ -178,10 +178,16 @@ async fn main() -> Result<()> {
                         .context("USER_PRIVATE_KEY")?,
                 ),
             };
-            let tokens = issuer
-                .map(|issuer| zecswap_client::Tokens::new(issuer, device.into_bytes(), 5))
-                .transpose()?
-                .map(std::sync::Arc::new);
+            let tokens = match issuer {
+                Some(issuer) => {
+                    // A test tool takes the return key the maker publishes; an app pins it.
+                    let info = zecswap_client::MakerApi::new(maker.clone())?.info().await?;
+                    let key = info.token_return_key.context("the maker takes no tokens")?;
+                    let tokens = zecswap_client::Tokens::new(issuer, device.into_bytes(), 5, &key)?;
+                    Some(std::sync::Arc::new(tokens))
+                }
+                None => None,
+            };
             let args = swap::SwapArgs {
                 maker,
                 rpc,

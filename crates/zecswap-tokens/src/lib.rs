@@ -21,21 +21,38 @@ use sha2::{Digest, Sha256};
 /// RFC 9578's publicly verifiable token type: RSABSSA-SHA384-PSS-Deterministic, 2048-bit keys.
 pub const TOKEN_TYPE: u16 = 0x0002;
 const KEY_BITS: usize = 2048;
-/// An authenticator's length: the modulus's.
+/// An authenticator's length, and a blinded request's: the modulus's.
 const NK: usize = KEY_BITS / 8;
 /// What the issuer signs: `token_type`, `nonce`, `challenge_digest` and `token_key_id`.
 const INPUT: usize = 2 + 32 + 32 + 32;
+const DAY: u64 = 24 * 60 * 60;
 
-/// Who issues tokens and where they are spent: RFC 9577's `TokenChallenge`, without a
-/// redemption context, so a token can be fetched long before, and apart from, its use.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The UTC day `unix` (seconds) falls on, counted from the Unix epoch: what a challenge's
+/// redemption context names.
+pub fn day(unix: u64) -> u64 {
+    unix / DAY
+}
+
+/// The UTC day it is now.
+pub fn today() -> u64 {
+    day(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock is after 1970")
+        .as_secs())
+}
+
+/// Who issues tokens, where they are spent and on which UTC day: RFC 9577's `TokenChallenge`.
+/// Its redemption context is the day, so a token is good only on the day it is for, and the
+/// same for everyone that day, so it says nothing of who fetched it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Challenge {
     issuer: String,
     origin: String,
+    day: u64,
 }
 
 impl Challenge {
-    pub fn new(issuer: &str, origin: &str) -> Result<Self> {
+    pub fn new(issuer: &str, origin: &str, day: u64) -> Result<Self> {
         ensure!(
             (1..=usize::from(u16::MAX)).contains(&issuer.len())
                 && origin.len() <= usize::from(u16::MAX),
@@ -44,6 +61,7 @@ impl Challenge {
         Ok(Self {
             issuer: issuer.into(),
             origin: origin.into(),
+            day,
         })
     }
 
@@ -51,16 +69,34 @@ impl Challenge {
         &self.issuer
     }
 
+    pub fn day(&self) -> u64 {
+        self.day
+    }
+
+    /// The same issuer and service on another day.
+    pub fn on(&self, day: u64) -> Self {
+        Self {
+            day,
+            ..self.clone()
+        }
+    }
+
+    /// The redemption context is 32 bytes: the day as a big-endian `u64` in the last 8, zeros
+    /// before it.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = TOKEN_TYPE.to_be_bytes().to_vec();
         out.extend((self.issuer.len() as u16).to_be_bytes());
         out.extend(self.issuer.as_bytes());
-        out.push(0); // the empty redemption context
+        out.push(32);
+        out.extend([0; 24]);
+        out.extend(self.day.to_be_bytes());
         out.extend((self.origin.len() as u16).to_be_bytes());
         out.extend(self.origin.as_bytes());
         out
     }
 
+    /// Refuses any redemption context but a day: another would let a service tell apart the
+    /// clients it gave different ones.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut rest = bytes;
         ensure!(
@@ -69,12 +105,13 @@ impl Challenge {
         );
         let issuer = name(&mut rest)?;
         ensure!(
-            split(&mut rest, 1)? == [0],
-            "a challenge with a redemption context"
+            split(&mut rest, 1)? == [32] && split(&mut rest, 24)? == [0; 24],
+            "a challenge whose redemption context is not a day"
         );
+        let day = u64::from_be_bytes(split(&mut rest, 8)?.try_into().expect("8 bytes"));
         let origin = name(&mut rest)?;
         ensure!(rest.is_empty(), "a token challenge with trailing bytes");
-        Self::new(&issuer, &origin)
+        Self::new(&issuer, &origin, day)
     }
 
     fn digest(&self) -> [u8; 32] {
@@ -118,6 +155,16 @@ impl TokenKey {
     /// `token_key_id`.
     pub fn id(&self) -> [u8; 32] {
         Sha256::digest(&self.spki).into()
+    }
+
+    /// Refuses a blinded request this key can't sign: one of another length, or not below the
+    /// modulus.
+    pub fn check_request(&self, blinded: &[u8]) -> Result<()> {
+        ensure!(
+            blinded.len() == NK && blinded < self.key.components().n().as_slice(),
+            "a blinded token request this key cannot sign"
+        );
+        Ok(())
     }
 }
 
@@ -276,9 +323,13 @@ impl Token {
 
     /// Whether `key` signed this token for `challenge`.
     pub fn verify(&self, key: &TokenKey, challenge: &Challenge) -> Result<()> {
+        self.verify_digest(key, &challenge.digest())
+    }
+
+    fn verify_digest(&self, key: &TokenKey, challenge: &[u8; 32]) -> Result<()> {
         ensure!(
-            self.input[34..66] == challenge.digest(),
-            "a token for another service"
+            self.input[34..66] == challenge[..],
+            "a token for another service or day"
         );
         ensure!(self.key_id() == key.id(), "a token under another key");
         key.key
@@ -376,7 +427,8 @@ mod tests {
     use super::*;
 
     /// RFC 9578, appendix A.2, test vector 2: a token another implementation issued verifies
-    /// here, and its challenge encodes as ours do.
+    /// here. Its challenge has no redemption context, which ours always do, so it is checked by
+    /// its digest.
     #[test]
     fn verifies_the_rfcs_token() {
         let key = TokenKey::from_spki(
@@ -394,11 +446,11 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let challenge = Challenge::new("issuer.example", "origin.example").unwrap();
-        assert_eq!(
-            hex::encode(challenge.encode()),
-            "0002000e6973737565722e6578616d706c6500000e6f726967696e2e6578616d706c65"
-        );
+        let challenge = Sha256::digest(
+            hex::decode("0002000e6973737565722e6578616d706c6500000e6f726967696e2e6578616d706c65")
+                .unwrap(),
+        )
+        .into();
         let token = Token::decode(
             &hex::decode(concat!(
                 "000298c1345ff38a554b429b428b0f206cfe4f3892f8041995f2c24873d90e84488d11e15c91a7c2",
@@ -414,31 +466,58 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        token.verify(&key, &challenge).unwrap();
+        token.verify_digest(&key, &challenge).unwrap();
         assert_eq!(
             hex::encode(token.nonce()),
             "98c1345ff38a554b429b428b0f206cfe4f3892f8041995f2c24873d90e84488d"
         );
-        let elsewhere = Challenge::new("issuer.example", "elsewhere.example").unwrap();
+        let elsewhere = Challenge::new("issuer.example", "origin.example", 0).unwrap();
         assert!(token.verify(&key, &elsewhere).is_err());
     }
 
-    /// A token issued blind verifies for its own service and key, and nowhere else; the headers
-    /// carry it intact, and a client takes no signature but its own request's.
+    /// The day sits in RFC 9577's 32-byte redemption context, big-endian in its last 8 bytes,
+    /// as ports must encode it; a challenge with any other context, or none, is refused.
+    #[test]
+    fn challenges_name_their_day_and_nothing_else() {
+        let challenge = Challenge::new("issuer.example", "origin.example", 20_000).unwrap();
+        let encoded = challenge.encode();
+        assert_eq!(
+            hex::encode(&encoded),
+            concat!(
+                "0002000e6973737565722e6578616d706c6520",
+                "0000000000000000000000000000000000000000000000000000000000004e20",
+                "000e6f726967696e2e6578616d706c65"
+            )
+        );
+        assert_eq!(Challenge::decode(&encoded).unwrap(), challenge);
+        let mut marked = encoded.clone();
+        marked[25] = 1;
+        assert!(Challenge::decode(&marked).is_err());
+        let none =
+            hex::decode("0002000e6973737565722e6578616d706c6500000e6f726967696e2e6578616d706c65");
+        assert!(Challenge::decode(&none.unwrap()).is_err());
+        assert_eq!(day(20_000 * 86_400 + 86_399), 20_000);
+    }
+
+    /// A token issued blind verifies for its own service, day and key, and nowhere else; the
+    /// headers carry it intact, and a client takes no signature but its own request's.
     #[test]
     fn issued_tokens_verify_only_where_they_were_meant() {
         let issuer = IssuerKey::generate().unwrap();
         let key = issuer.token_key();
-        let maker = Challenge::new("issuer.test", "maker").unwrap();
+        let maker = Challenge::new("issuer.test", "maker", 20_000).unwrap();
         let (pending, blinded) = Pending::new(key, &maker).unwrap();
+        key.check_request(&blinded).unwrap();
         let token = pending
             .finalize(key, &issuer.sign(&blinded).unwrap())
             .unwrap();
         let spent = Token::from_authorization(&token.authorization()).unwrap();
         spent.verify(key, &maker).unwrap();
 
-        let relayer = Challenge::new("issuer.test", "relayer").unwrap();
+        let relayer = Challenge::new("issuer.test", "relayer", 20_000).unwrap();
         assert!(spent.verify(key, &relayer).is_err());
+        let tomorrow = Challenge::new("issuer.test", "maker", 20_001).unwrap();
+        assert!(spent.verify(key, &tomorrow).is_err());
         let other = IssuerKey::generate().unwrap();
         assert!(spent.verify(other.token_key(), &maker).is_err());
         let mut forged = spent.encode();
@@ -452,5 +531,7 @@ mod tests {
             .sign(&Pending::new(key, &relayer).unwrap().1)
             .unwrap();
         assert!(pending.finalize(key, &wrong).is_err());
+        assert!(key.check_request(&[0xff; NK]).is_err());
+        assert!(key.check_request(&blinded[1..]).is_err());
     }
 }

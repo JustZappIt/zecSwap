@@ -46,7 +46,9 @@ const SCHEMA: &str = "
         settled INTEGER NOT NULL DEFAULT 0,
         refund_started INTEGER NOT NULL DEFAULT 0,
         settled_at INTEGER,
-        archived INTEGER NOT NULL DEFAULT 0
+        archived INTEGER NOT NULL DEFAULT 0,
+        token_request BLOB,
+        token_return TEXT
     );
 ";
 
@@ -65,7 +67,7 @@ const LIVE_QUOTE: &str = "quote_id = ?1 AND accepted = 0 AND expires_at > ?2
 const SWAP_COLUMNS: &str = "
     s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
     q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat, s.refund_started, s.t0,
-    s.token
+    s.token, s.token_request, s.token_return
 ";
 
 #[derive(Clone, Debug)]
@@ -99,6 +101,10 @@ pub struct Swap {
     pub settled: bool,
     /// Persisted before cancellation sends; a reorg must not make a revealed share safe again.
     pub refund_started: bool,
+    /// The accept's request for its token back, where accepts take tokens.
+    pub token_request: Option<Vec<u8>>,
+    /// Its blind signature (base64url), once the user has paid in.
+    pub token_return: Option<String>,
 }
 
 pub struct Store(Mutex<Connection>);
@@ -112,7 +118,7 @@ impl Store {
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         anyhow::ensure!(
-            columns.iter().any(|column| column == "archived"),
+            columns.iter().any(|column| column == "token_return"),
             "{} was made by an older maker; a new deployment needs a new store",
             path.display()
         );
@@ -181,8 +187,8 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, token, t0, t1)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO swaps (id, quote_id, user_share, viewing_keys, zcash_account, opened_at, token, t0, t1, token_request)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 swap.id.as_slice(),
                 swap.quote.id,
@@ -193,6 +199,7 @@ impl Store {
                 swap.token.as_slice(),
                 swap.t0,
                 swap.t1,
+                swap.token_request,
             ],
         )?;
         notifications::insert(&tx, event)?;
@@ -311,6 +318,15 @@ impl Store {
         Ok(())
     }
 
+    /// Records the swap's token handed back; the first signature stands.
+    pub fn return_token(&self, id: &B256, signature: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET token_return = ?2 WHERE id = ?1 AND token_return IS NULL",
+            params![id.as_slice(), signature],
+        )?;
+        Ok(())
+    }
+
     pub fn start_refund(&self, id: &B256) -> Result<()> {
         self.conn().execute(
             "UPDATE swaps SET refund_started = 1 WHERE id = ?1",
@@ -342,6 +358,8 @@ fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
         sweep: row.get::<_, Option<[u8; 32]>>(6)?.map(TxId::from_bytes),
         settled: row.get(7)?,
         refund_started: row.get(14)?,
+        token_request: row.get(17)?,
+        token_return: row.get(18)?,
         quote: quote_at(row, 8)?,
     })
 }
@@ -418,6 +436,8 @@ mod tests {
                 sweep: None,
                 settled: false,
                 refund_started: false,
+                token_request: None,
+                token_return: None,
             };
             store.insert_swap(&swap, None).unwrap();
             store.settle(&swap.id, None).unwrap();

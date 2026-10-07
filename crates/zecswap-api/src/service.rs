@@ -41,4 +41,7 @@ pub struct MakerInfo {
     pub token: Address,
     pub zcash_network: ZcashNetwork,
     pub reverse_enabled: bool,
+    /// Where accepts take tokens, the key the maker hands them back under (base64url SPKI):
+    /// one for everyone, which wallets pin.
+    pub token_return_key: Option<String>,
 }

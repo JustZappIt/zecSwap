@@ -206,7 +206,9 @@ store. Never restore the wallet copies over the live wallets.
    directory for a new maker deployment; keep existing services and their pending swaps
    running until settled. A contract that stores only the terms' hash (October 6) needs a
    maker store created for it: an older `maker.sqlite` lacks each swap's token and `t0`, and
-   the maker refuses to start on one. A fresh store numbers maker shares from the clock, above
+   the maker refuses to start on one. So does a store from before tokens were handed back
+   (October 7), which lacks each swap's request for its token: let its swaps settle under the
+   build that made it, then start the new build on a fresh store. A fresh store numbers maker shares from the clock, above
    any an earlier store handed out, so it may keep the same `MAKER_ROOT_SECRET`; the maker
    refuses to start if its secret or key is not the one its live swaps opened under. Enable
    `[reverse]` using the example maker config and supply
@@ -215,8 +217,12 @@ store. Never restore the wallet copies over the live wallets.
 3. Run `zecswap-maker --config <maker-config> zec-inventory` to obtain the seed-derived ZEC
    inventory address and balance. Fund the test inventory and the services' EVM gas accounts;
    to move the inventory from a retired contract, run `withdraw-inventory <amount>` under the old
-   config and `add-inventory <amount>` under the new one. Write the token issuer's key with `zecswap-issuer keygen <key>`, and once the app spends
-   tokens give the maker a `[tokens]` table with its public half ([tokens.md](tokens.md)). Run
+   config and `add-inventory <amount>` under the new one. Write the token issuer's key with
+   `zecswap-issuer keygen <key>`, and the maker's own return key, under which it hands tokens
+   back, with a second `zecswap-issuer keygen <return-key>`: its public half goes into the app
+   build, which pins it. Once the app spends tokens, give the maker a `[tokens]` table with the
+   issuer's public half and the return key's file ([tokens.md](tokens.md)); a `[tokens]`
+   without `return_key` no longer loads. Run
    `zecswap-issuer serve --config <issuer-config>`, `zecswap-maker --config <maker-config> serve`
    and `zecswap-relayer --config <relayer-config>` under host process supervision.
 4. Configure a [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/get-started/)
@@ -263,9 +269,9 @@ requires reconciling newer on-chain swaps before admitting new quotes.
 A forward accept spends maker gas before the user's ZEC deposit, and a reverse accept reserves
 the maker's ZEC until its funding deadline. The maker's `max_awaiting_deposit` caps how many
 swaps wait on their users at once, in both directions. With `[tokens]`, every accept spends a
-Privacy Pass token from `zecswap-issuer`, so a device starts only `tokens_per_day` swaps a day
-([tokens.md](tokens.md)); that limit binds only once the issuer checks real attestations, which
-awaits the Zapp identity. The relayer serves only its configured token and maker, on every
+Privacy Pass token from `zecswap-issuer`, handed back once the user pays in, so a device walks
+away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that limit binds only
+once the issuer checks real attestations, which awaits the Zapp identity. The relayer serves only its configured token and maker, on every
 route, and every swap it serves paid for its accept; the funding route keeps its transaction
 validation and gas caps, and there is no aggregate sponsorship budget. The shared nginx rate limit is one bucket behind the
 tunnel: rely on the cap and the tokens, not on it. Keep the existing forward ordering:

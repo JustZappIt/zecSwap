@@ -90,11 +90,14 @@ pub(crate) async fn run(env: Arc<Env>, name: &'static str) -> Result<()> {
 }
 
 /// Deposit, `ready`, claim; the maker sweeps the ZEC. The claim resumes under a lock taken
-/// beforehand, as after an interruption, and claiming again once done changes nothing.
+/// beforehand, as after an interruption, and claiming again once done changes nothing. Paid
+/// into, the swap hands its accept's token back, and the device, whose issuer gives it one
+/// accept a day, pays for a second swap with it: one it walks away from.
 async fn happy(p: &Player) -> Result<()> {
     let swap = p.open().await?;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
     p.wait_for(&swap, Stage::Ready).await?;
+    p.collect_token(&swap).await?;
     p.user.lock_claim(&swap).await?;
     p.claim_lock_until(&swap).await?;
     p.claim(&swap).await?;
@@ -107,17 +110,16 @@ async fn happy(p: &Player) -> Result<()> {
     })
     .await?;
     p.expect_swept_by_maker(swap).await?;
-    p.forget(account).await
+    p.forget(account).await?;
+    let second = p.open().await?;
+    p.log("paid for a second swap with the token the first handed back");
+    p.walk_away(&second).await
 }
 
 /// Nothing arrives, so the maker cancels, revealing a share that completes the key.
 async fn no_deposit(p: &Player) -> Result<()> {
     let swap = p.open().await?;
-    p.user.verify(&swap).await?;
-    p.wait_for(&swap, Stage::Refunded).await?;
-    p.user.refund_key(&swap).await?;
-    p.expect_settled(&swap).await?;
-    Ok(())
+    p.walk_away(&swap).await
 }
 
 /// A short deposit is refused; the user takes it back with the maker's revealed share.
@@ -217,7 +219,7 @@ enum Step<T> {
 impl Player {
     async fn join(env: Arc<Env>, name: &'static str, silent_maker: bool) -> Result<Self> {
         let maker =
-            MakerApi::new(node(&env, silent_maker).url().await)?.with_tokens(env.tokens.clone());
+            MakerApi::new(node(&env, silent_maker).url().await)?.with_tokens(env.tokens(name)?);
         let (settlement, route) = if pays_into_railgun(name) {
             let route = Route::Railgun {
                 relayer: RelayerApi::new(env.relayer_url.clone())?,
@@ -257,6 +259,35 @@ impl Player {
             swap.swap_id, swap.quote.deposit_zat, swap.index
         ));
         Ok(swap)
+    }
+
+    /// Never pays into the swap: the maker cancels it, revealing a share that completes the
+    /// key, and hands nothing back.
+    async fn walk_away(&self, swap: &UserSwap) -> Result<()> {
+        self.user.verify(swap).await?;
+        self.wait_for(swap, Stage::Refunded).await?;
+        self.user.refund_key(swap).await?;
+        self.expect_settled(swap).await?;
+        ensure!(
+            !self.user.collect_token(swap).await?,
+            "a swap walked away from handed its token back"
+        );
+        Ok(())
+    }
+
+    /// Waits for the swap to hand its accept's token back.
+    async fn collect_token(&self, swap: &UserSwap) -> Result<()> {
+        let user = &self.user;
+        self.poll("the swap's token back", move || async move {
+            Ok(if user.collect_token(swap).await? {
+                Step::Done(())
+            } else {
+                Step::Wait
+            })
+        })
+        .await?;
+        self.log("the swap handed its token back");
+        Ok(())
     }
 
     /// Verifies the swap on-chain, then watches its deposit account and pays into it.

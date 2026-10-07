@@ -7,11 +7,12 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Router, middleware};
+use axum::{Extension, Router, middleware};
 use tracing::error;
 use zecswap_api::server::{self, Json, Path};
 use zecswap_api::service::{ErrorCode, MakerInfo};
-use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
+use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
+use zecswap_tokens::server::Spend;
 
 use crate::maker::{Maker, MakerError};
 
@@ -33,6 +34,7 @@ pub fn router(maker: Arc<Maker>) -> Router {
         .route("/v1/quote", post(quote))
         .route("/v1/reverse/quote", post(reverse_quote))
         .merge(costly)
+        .route("/v1/swaps/{swap_id}", get(status))
         .route("/v1/reverse/swaps/{swap_id}", get(reverse_status))
         .fallback(server::not_found)
         .method_not_allowed_fallback(server::method_not_allowed)
@@ -80,9 +82,23 @@ async fn reverse_quote(
 async fn accept_reverse(
     State(maker): State<Arc<Maker>>,
     Path(quote_id): Path<B256>,
+    spend: Option<Extension<Spend>>,
     Json(acceptance): Json<Acceptance>,
 ) -> Result<Json<Accepted>, MakerError> {
-    Ok(Json(maker.accept_reverse(quote_id, acceptance).await?))
+    let spend = spend.as_ref().map(|Extension(spend)| spend);
+    Ok(Json(
+        maker.accept_reverse(quote_id, acceptance, spend).await?,
+    ))
+}
+
+async fn status(
+    State(maker): State<Arc<Maker>>,
+    Path(swap_id): Path<B256>,
+) -> Result<Json<Status>, MakerError> {
+    maker
+        .swap_status(swap_id)?
+        .map(Json)
+        .ok_or(MakerError::UnknownSwap)
 }
 
 #[tracing::instrument(skip_all, fields(operation = "reverse_status", %swap_id), err(level = "warn"))]
@@ -108,9 +124,11 @@ async fn quote(
 async fn accept(
     State(maker): State<Arc<Maker>>,
     Path(quote_id): Path<B256>,
+    spend: Option<Extension<Spend>>,
     Json(acceptance): Json<Acceptance>,
 ) -> Result<Json<Accepted>, MakerError> {
-    Ok(Json(maker.accept(quote_id, acceptance).await?))
+    let spend = spend.as_ref().map(|Extension(spend)| spend);
+    Ok(Json(maker.accept(quote_id, acceptance, spend).await?))
 }
 
 impl IntoResponse for MakerError {

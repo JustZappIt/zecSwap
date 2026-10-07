@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, Result, ensure};
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use zcash_address::ZcashAddress;
 use zcash_keys::keys::UnifiedSpendingKey;
@@ -111,7 +112,10 @@ impl Settings {
                 quote_ttl: 300,
                 t0_after,
                 t1_after: t0_after + 5 * 60,
-                cancel_after: 3 * 60,
+                // One wallet pays every deposit, so the last leaves a minute after its open,
+                // and a testnet block can take minutes: room for both before calling a swap
+                // unpaid.
+                cancel_after: 8 * 60,
                 t0_margin: 5 * 60,
                 reveal_margin: 2 * 60,
                 tick: 15,
@@ -148,8 +152,10 @@ pub(crate) struct Env {
     pub(crate) contract: Address,
     pub(crate) token: Address,
     pub(crate) relayer_url: String,
-    /// What every player spends on its accepts, which the makers take tokens for.
-    pub(crate) tokens: Arc<zecswap_client::Tokens>,
+    /// The token issuer, which gives each device one accept a day, and the key the makers hand
+    /// tokens back under.
+    issuer_url: String,
+    return_key: String,
     pub(crate) min_time_to_t0: u64,
     restart_after: Duration,
     pub(crate) zcash: Mutex<Zcash>,
@@ -230,7 +236,7 @@ impl Env {
                 )
                 .await?;
         }
-        let (issuer_url, gate) = start_issuer(&settings.work_dir).await?;
+        let (issuer_url, return_key, gate) = start_issuer(&settings.work_dir).await?;
         let relayer_url = start_relayer(&settings, contract, token, relayer_key).await?;
         log(
             started,
@@ -304,11 +310,8 @@ impl Env {
             contract,
             token,
             relayer_url,
-            tokens: Arc::new(zecswap_client::Tokens::new(
-                issuer_url,
-                b"e2e".to_vec(),
-                10,
-            )?),
+            issuer_url,
+            return_key,
             min_time_to_t0: pace.min_time_to_t0,
             restart_after: pace.restart_after,
             zcash: Mutex::new(Zcash { wallet, client }),
@@ -324,6 +327,13 @@ impl Env {
 
     pub(crate) fn log(&self, who: &str, message: impl Display) {
         log(self.started, who, message);
+    }
+
+    /// What `device` pays for its accepts with.
+    pub(crate) fn tokens(&self, device: &str) -> Result<Arc<zecswap_client::Tokens>> {
+        let device = device.as_bytes().to_vec();
+        let tokens = zecswap_client::Tokens::new(&self.issuer_url, device, 1, &self.return_key)?;
+        Ok(Arc::new(tokens))
     }
 
     pub(crate) fn payout_key(&self) -> PrivateKeySigner {
@@ -372,14 +382,16 @@ pub(crate) struct MakerNode {
 
 struct Running {
     maker: Arc<Maker>,
-    url: String,
+    address: SocketAddr,
     server: JoinHandle<()>,
+    shutdown: Option<oneshot::Sender<()>>,
     watchtower: Option<JoinHandle<()>>,
 }
 
 impl MakerNode {
     async fn start(config: Config, secrets: Secrets, watching: bool) -> Result<Self> {
-        let running = Running::start(&config, &secrets, watching).await?;
+        let any_port = SocketAddr::from(([127, 0, 0, 1], 0));
+        let running = Running::start(&config, &secrets, watching, any_port).await?;
         Ok(Self {
             config,
             secrets,
@@ -388,7 +400,7 @@ impl MakerNode {
     }
 
     pub(crate) async fn url(&self) -> String {
-        self.running.lock().await.url.clone()
+        format!("http://{}", self.running.lock().await.address)
     }
 
     pub(crate) async fn maker(&self) -> Arc<Maker> {
@@ -411,29 +423,43 @@ impl MakerNode {
         }
     }
 
+    /// On the same address, which players keep reaching the maker at.
     async fn restart(&self) -> Result<()> {
         let mut running = self.running.lock().await;
         let watching = running.watchtower.is_some();
-        running.stop();
-        *running = Running::start(&self.config, &self.secrets, watching).await?;
+        running.stop().await;
+        let address = running.address;
+        *running = Running::start(&self.config, &self.secrets, watching, address).await?;
         Ok(())
     }
 }
 
 impl Running {
-    async fn start(config: &Config, secrets: &Secrets, watching: bool) -> Result<Self> {
+    async fn start(
+        config: &Config,
+        secrets: &Secrets,
+        watching: bool,
+        address: SocketAddr,
+    ) -> Result<Self> {
         let maker = Arc::new(Maker::new(config.clone(), secrets.clone()).await?);
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let url = format!("http://{}", listener.local_addr()?);
+        let listener = TcpListener::bind(address).await?;
+        let address = listener.local_addr()?;
         let router = zecswap_maker::api::router(maker.clone());
+        let (shutdown, stopped) = oneshot::channel();
         let server = tokio::spawn(async move {
-            axum::serve(listener, router).await.ok();
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    stopped.await.ok();
+                })
+                .await
+                .ok();
         });
         let watchtower = watching.then(|| tokio::spawn(maker.clone().run()));
         let mut running = Self {
             maker,
-            url,
+            address,
             server,
+            shutdown: Some(shutdown),
             watchtower,
         };
         if watching {
@@ -444,17 +470,27 @@ impl Running {
             })
             .await;
             if ready.is_err() {
-                running.stop();
+                running.stop().await;
                 anyhow::bail!("maker watchtower did not complete its initial pass");
             }
         }
         Ok(running)
     }
 
-    fn stop(&mut self) {
-        self.server.abort();
+    /// Stops the watchtower and the API, closing its idle connections, so that no request
+    /// reaches this maker once another replaces it.
+    async fn stop(&mut self) {
         if let Some(watchtower) = self.watchtower.take() {
             watchtower.abort();
+        }
+        if let Some(shutdown) = self.shutdown.take() {
+            shutdown.send(()).ok();
+        }
+        if tokio::time::timeout(Duration::from_secs(10), &mut self.server)
+            .await
+            .is_err()
+        {
+            self.server.abort();
         }
     }
 }
@@ -540,23 +576,27 @@ async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address
     Ok((contract, token, gas_price))
 }
 
-/// Runs a relayer in-process, with its own key: it must never be a maker.
-/// Runs a token issuer in-process, with a new key, and what the makers' `[tokens]` hold.
+/// Runs a token issuer in-process, with a new key and one accept a device a day; returns its
+/// URL, the key the makers hand tokens back under, and what the makers' `[tokens]` hold.
 async fn start_issuer(
     work_dir: &Path,
 ) -> Result<(
+    String,
     String,
     impl Fn(&str, PathBuf) -> zecswap_tokens::server::Config,
 )> {
     let key = zecswap_tokens::IssuerKey::generate()?;
     let pem = work_dir.join("issuer.pem");
     std::fs::write(&pem, key.to_pem()?)?;
+    let returns = zecswap_tokens::IssuerKey::generate()?;
+    let return_pem = work_dir.join("return.pem");
+    std::fs::write(&return_pem, returns.to_pem()?)?;
     let issuer = zecswap_issuer::Issuer::new(zecswap_issuer::Config {
         listen: "127.0.0.1:0".parse().expect("socket address"),
         name: "zecswap-e2e".into(),
         key: pem,
         data_dir: work_dir.join("issuer"),
-        tokens_per_day: 1000,
+        tokens_per_day: 1,
         attestation: zecswap_issuer::Attestation::InsecureTest,
     })?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -570,11 +610,13 @@ async fn start_issuer(
         issuer: "zecswap-e2e".into(),
         origin: origin.into(),
         keys: vec![token_key.clone()],
+        return_key: return_pem.clone(),
         spent,
     };
-    Ok((url, gate))
+    Ok((url, returns.token_key().to_base64(), gate))
 }
 
+/// Runs a relayer in-process, with its own key: it must never be a maker.
 async fn start_relayer(
     settings: &Settings,
     contract: Address,

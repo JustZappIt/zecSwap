@@ -58,12 +58,15 @@ tick = 15
 # deposit_margin = 1800
 # fee_reserve_zat = 20000
 
-# A Privacy Pass token per accept, from the issuer `zecswap-issuer` runs: a device starts only as
-# many swaps a day as it has tokens, and the maker never learns which device asked. `keys` lists
-# the issuer's public keys (base64url SPKI, as `zecswap-issuer keygen` prints), the current one
-# first. Turn it on only once the app spends tokens.
+# A Privacy Pass token per accept, from the issuer `zecswap-issuer` runs, handed back once the
+# user pays in: a device walks away from only as many swaps a day as it has tokens, and the
+# maker never learns which device asked. `keys` lists the issuer's public keys (base64url SPKI,
+# as `zecswap-issuer keygen` prints), the current one first. `return_key` is the maker's own
+# key for handing tokens back, a second `zecswap-issuer keygen`; the app pins its public half,
+# which /v1/info shows. Turn it on only once the app spends tokens.
 # [tokens]
 # issuer = "zecswap-issuer"
 # origin = "maker"
 # keys = ["..."]
+# return_key = "/etc/zecswap-maker/return-key.pem"
 # spent = "maker-data/spent-tokens.sqlite"
