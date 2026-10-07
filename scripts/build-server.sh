@@ -13,4 +13,4 @@ export CARGO_INCREMENTAL=0
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 export CARGO_PROFILE_RELEASE_STRIP=symbols
 cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu.2.39 \
-  -p zecswap-maker -p zecswap-relayer
+  -p zecswap-maker -p zecswap-relayer -p zecswap-issuer
