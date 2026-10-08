@@ -38,11 +38,15 @@
       "relayerTerms": 200,
       "issuerTokenKey": 200,
       "makerMonitorWithToken": 200,
-      "fifteenUnauthenticatedMonitorReads": { "answered401": 11, "refused503": 4 }
+      "fifteenUnauthenticatedMonitorReads": {
+        "answered401": 11,
+        "refused503": 4
+      }
     },
     "redactionTest": "33 fixtures passed against the new config.alloy",
     "alloyRestarted": true,
     "dashboardMonitorsHealthy": true,
-    "dashboardAlert": "Telegram low-gas alerts are off: the maker has no [gas_alerts]"
+    "dashboardAlert": "Telegram low-gas alerts are off: the maker has no [gas_alerts]",
+    "forkSuite": "all nine scenarios passed on an anvil fork of Ethereum Sepolia with the live Zcash testnet in 26.7 min (.testnet/e2e-monitoring-fork.log)"
   }
 }
