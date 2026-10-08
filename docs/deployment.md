@@ -292,8 +292,25 @@ before switching to the service account.
 From `deploy/worker/`, run `npm ci`, `npm run types`, `npm run check`, `npm test`, then
 `npx wrangler deploy --dry-run` before `npm run deploy`. The VPC binding is pinned in
 `wrangler.jsonc`. The gateway streams request bodies unchanged, disables caching and does
-not retry financial requests. The nginx gateway limits traffic to five requests per second
-with a burst of twenty, shared across clients through the tunnel.
+not retry financial requests.
+
+Every request reaches nginx from `cloudflared` on loopback, so nginx can't tell callers apart,
+and limits are never per IP. `deploy/nginx.conf` gives each kind of request its own allowance
+instead, so a flood of one kind never refuses another:
+
+| Requests | Allowance |
+| --- | --- |
+| Settling funded swaps (locks, claims, payouts, refunds, rescues): every relayer `POST` route except `reverse/fund` | 5 a second; up to 50 more wait their turn |
+| Starting swaps: quotes, accepts and `reverse/fund` | 2 a second, bursts of 20 |
+| The issuer's challenges and tokens | 2 a second, bursts of 20 |
+| Reverse swap status, which reads the chain on every request | 2 a second, bursts of 20 |
+| Everything else | 10 a second, bursts of 50 |
+
+Each swap's status also has its own allowance, of one a second with bursts of ten, so an app
+polling its swap too fast slows only that swap. Past an allowance nginx answers `503` with
+`Retry-After` and the gateway's `unavailable` error, which clients take as a passing failure;
+the services' own `503`s pass through unchanged. It never answers `429`, which from the issuer means a device's
+tokens for the day are spent.
 
 Keep the maker seed, root secret, and both databases together in protected backups. A disk
 on the VPS is persistent storage, not an off-host backup. Restoring an old snapshot also
@@ -307,8 +324,10 @@ away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that li
 once the issuer checks Android key attestation, which the hosted testnet issuer does not yet do
 ([Token issuer attestation](#token-issuer-attestation)). The relayer serves only its configured token and maker, on every
 route, and every swap it serves paid for its accept; the funding route keeps its transaction
-validation and gas caps, and there is no aggregate sponsorship budget. The shared nginx rate limit is one bucket behind the
-tunnel: rely on the cap and the tokens, not on it. Keep the existing forward ordering:
+validation and gas caps, and there is no aggregate sponsorship budget. nginx's allowances are
+per kind of request, not per caller: a flood of claims for swaps that don't exist still fills
+the claims allowance, since the relayer reads the chain to tell them from real ones. Rely on
+the cap and the tokens, not on them. Keep the existing forward ordering:
 depositing ZEC before escrow exists would remove its contract-backed recovery path.
 
 ### Token issuer attestation
