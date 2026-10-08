@@ -112,8 +112,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
     on users.
   - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).
     The issuer's `android-key` mode checks Android hardware key attestation (one key per
-    install); `insecure-test` starts only with `allow_insecure = true`, and the hosted testnet
-    issuer still runs it, so there the cap is what holds.
+    install), and the hosted testnet issuer runs it since 2026-10-08; `insecure-test` starts
+    only with `allow_insecure = true`.
 - Tokens count walk-aways (2026-10-07): a device walks away from at most `tokens_per_day` swaps
   a day (3) and makes as many as it pays into. The gate holds an accept's token while it runs
   and keeps it only once the quote is taken (`Spend::keep`): a refused accept leaves it
@@ -124,6 +124,14 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   blind signature as `tokenReturn`. Challenges carry the UTC day in their redemption context,
   so tokens die at midnight and the spent store keeps only today's. The client spends the
   issuer's tokens before returned ones and drops earlier days'.
+- Attestation and the gateway (2026-10-08): the issuer reads a certificate's `TRUE` written as
+  1 (a OnePlus StrongBox writes it so) and Google's status list's decimal serials (most of
+  them), and `zecswap-issuer-status.timer` refreshes that list. Only the app's testnet builds on
+  a locked phone get tokens from the hosted issuer: not emulators, unlocked phones or the CLI.
+  `deploy/nginx.conf` gives each kind of request its own allowance, claims and refunds theirs,
+  and each swap's status reads one too; nginx refuses with `503` and `Retry-After`, never
+  `429`, which from the issuer means a device's tokens for the day are spent. The Worker
+  forwards only `Authorization`, `Content-Type` and `Content-Length`.
 - Terms hash (2026-10-06): the contract stores only `hashTerms(terms)` of each swap, so `open`
   writes three slots (about 106k gas, from 243k–264k). Every call on a swap takes its `Terms`
   after the id and reverts `WrongTerms` unless they hash to it; one loader (`_load`) does
