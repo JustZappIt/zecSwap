@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use zecswap_api::relayer::{Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
+use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
 use zecswap_api::service::{ErrorCode, ErrorResponse};
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
 
@@ -112,7 +112,8 @@ pub enum Broadcast {
     /// Refused: nothing from this proof was sent or will be. Drop it and free its notes.
     Refused(String),
     /// A note it spends is spent, or a transaction already sent spends it: settle from the chain.
-    Spent,
+    /// Names the relayer's own transactions that spend them, when it knows them.
+    Spent(Vec<B256>),
     /// Not known yet, or never answered: post the same bytes again later.
     Retry(String),
 }
@@ -174,7 +175,11 @@ impl RelayerApi {
         let error = serde_json::from_str::<ErrorResponse>(&body).ok();
         match (status, error) {
             (StatusCode::CONFLICT, Some(e)) if e.code == ErrorCode::AlreadySpent => {
-                Broadcast::Spent
+                Broadcast::Spent(
+                    serde_json::from_str::<AlreadySpent>(&body)
+                        .map(|spent| spent.transactions)
+                        .unwrap_or_default(),
+                )
             }
             (status, error) if status.is_client_error() && status != StatusCode::CONFLICT => {
                 Broadcast::Refused(error.map_or(body, |e| e.error))

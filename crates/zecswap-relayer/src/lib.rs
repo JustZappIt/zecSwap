@@ -110,9 +110,10 @@ impl Config {
 pub enum RelayerError {
     #[error("{0}")]
     Rejected(String),
-    /// A note the transaction spends is spent, or a transaction already sent spends it.
+    /// A note the transaction spends is spent, or a transaction already sent spends it: those of
+    /// the relayer's own that do, when it knows them.
     #[error("these notes are already spent, or a transaction already sent spends them")]
-    Spent,
+    Spent(Vec<B256>),
     /// A send was attempted and its outcome is unknown: the same request is to be posted again.
     #[error("{0}")]
     Unsettled(&'static str),
@@ -136,7 +137,7 @@ impl RelayerError {
     /// What kind of failure this is, for the monitor; none for a refusal.
     fn failure_kind(&self) -> Option<&'static str> {
         match self {
-            RelayerError::Rejected(_) | RelayerError::Spent => None,
+            RelayerError::Rejected(_) | RelayerError::Spent(_) => None,
             RelayerError::Unsettled(_) => Some("unconfirmed"),
             RelayerError::Internal(error) => Some(
                 error

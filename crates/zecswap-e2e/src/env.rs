@@ -207,6 +207,8 @@ pub(crate) struct SendsNode {
     pub(crate) relayer_url: String,
     /// The same relayer, key and journal, on an RPC that swallows its first broadcast.
     pub(crate) lossy_relayer_url: String,
+    /// The same relayer and key on an empty journal, as after losing it.
+    pub(crate) forgetful_relayer_url: String,
     /// The seed of the relayer's own Railgun wallet, which the fee notes pay.
     pub(crate) railgun_seed: [u8; 64],
     /// A public account holding the token to shield, `SHIELDED` a note, and gas.
@@ -302,15 +304,26 @@ impl Env {
                     .await?;
                 let mut railgun_seed = [0; 64];
                 UnwrapErr(SysRng).fill_bytes(&mut railgun_seed);
-                let seed = Some(&railgun_seed);
+                let journal = Some((&railgun_seed, "relayer-sends.sqlite"));
                 let (rpc, lossy_rpc) = (&settings.evm_rpc, lossy_rpc(settings.evm_rpc.clone()));
                 let relayer_url =
-                    start_relayer(&settings, rpc, contract, token, key.clone(), seed).await?;
-                let lossy_relayer_url =
-                    start_relayer(&settings, &lossy_rpc.await?, contract, token, key, seed).await?;
+                    start_relayer(&settings, rpc, contract, token, key.clone(), journal).await?;
+                let lossy_relayer_url = start_relayer(
+                    &settings,
+                    &lossy_rpc.await?,
+                    contract,
+                    token,
+                    key.clone(),
+                    journal,
+                )
+                .await?;
+                let forgetful = Some((&railgun_seed, "relayer-sends-forgotten.sqlite"));
+                let forgetful_relayer_url =
+                    start_relayer(&settings, rpc, contract, token, key, forgetful).await?;
                 Some(SendsNode {
                     relayer_url,
                     lossy_relayer_url,
+                    forgetful_relayer_url,
                     railgun_seed,
                     shielder,
                 })
@@ -701,14 +714,14 @@ async fn start_issuer(
 }
 
 /// Runs a relayer in-process on `evm_rpc`, with its own key: it must never be a maker. With the
-/// seed of its own Railgun wallet, it sends private Railgun sends for a fee note.
+/// seed of its own Railgun wallet and a journal, it sends private Railgun sends for a fee note.
 async fn start_relayer(
     settings: &Settings,
     evm_rpc: &str,
     contract: Address,
     token: Address,
     key: PrivateKeySigner,
-    railgun_seed: Option<&[u8; 64]>,
+    sends: Option<(&[u8; 64], &str)>,
 ) -> Result<String> {
     // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
@@ -720,14 +733,14 @@ async fn start_relayer(
         fee: RELAYER_FEE,
         claim_margin: 3 * 60,
         reverse_funding: None,
-        railgun_sends: railgun_seed.map(|_| zecswap_relayer::RailgunSendsConfig {
+        railgun_sends: sends.map(|(_, journal)| zecswap_relayer::RailgunSendsConfig {
             fee: SEND_FEE,
             max_gas_limit: SEND_GAS_LIMIT,
             max_gas_price_wei: SEND_MAX_GAS_PRICE,
-            journal: settings.work_dir.join("relayer-sends.sqlite"),
+            journal: settings.work_dir.join(journal),
         }),
     };
-    let railgun = railgun_seed.map(|seed| zecswap_railgun::Keys::from_seed(seed, 0));
+    let railgun = sends.map(|(seed, _)| zecswap_railgun::Keys::from_seed(seed, 0));
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
