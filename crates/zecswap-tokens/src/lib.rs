@@ -25,7 +25,8 @@ const KEY_BITS: usize = 2048;
 const NK: usize = KEY_BITS / 8;
 /// What the issuer signs: `token_type`, `nonce`, `challenge_digest` and `token_key_id`.
 const INPUT: usize = 2 + 32 + 32 + 32;
-const DAY: u64 = 24 * 60 * 60;
+/// Seconds in a UTC day, the span a token is good for.
+pub const DAY: u64 = 24 * 60 * 60;
 
 /// The UTC day `unix` (seconds) falls on, counted from the Unix epoch: what a challenge's
 /// redemption context names.

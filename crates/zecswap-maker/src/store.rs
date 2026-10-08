@@ -4,7 +4,7 @@ pub(crate) use flow::{FlowObservation, FlowStatus, ZecTransaction};
 mod notifications;
 mod reverse;
 mod transactions;
-pub(crate) use monitoring::{MonitorCounts, MonitorSwap};
+pub(crate) use monitoring::{MonitorCounts, MonitorSwap, TokenDay};
 pub(crate) use notifications::{Notification, NotificationStatus};
 pub(crate) use reverse::ReverseSwap;
 pub(crate) use transactions::{EvmTransaction, TransactionStatus};
@@ -50,6 +50,8 @@ const SCHEMA: &str = "
         token_request BLOB,
         token_return TEXT
     );
+    -- When each swap, of either direction, was accepted: monitoring only.
+    CREATE TABLE IF NOT EXISTS swap_accepted (id BLOB PRIMARY KEY, at INTEGER NOT NULL);
 ";
 
 /// Seconds a settled swap is still re-read, in case a reorganisation undoes its settlement: far
@@ -202,6 +204,7 @@ impl Store {
                 swap.token_request,
             ],
         )?;
+        accepted(&tx, &swap.id)?;
         notifications::insert(&tx, event)?;
         tx.commit()?;
         Ok(())
@@ -340,6 +343,16 @@ impl Store {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Records that the swap was accepted now. Monitoring alone reads it, so it never fails an accept
+/// over a row already there.
+fn accepted(conn: &Connection, id: &B256) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!("INSERT OR IGNORE INTO swap_accepted (id, at) VALUES (?1, {NOW})"),
+        [id.as_slice()],
+    )?;
+    Ok(())
 }
 
 fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {

@@ -8,18 +8,24 @@ pub mod api;
 mod funding_tests;
 #[cfg(test)]
 mod logging_tests;
+mod monitor;
+#[cfg(test)]
+mod monitor_tests;
 mod reverse;
 #[cfg(test)]
 mod terms_tests;
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
 use anyhow::Context as _;
 use serde::Deserialize;
 use tracing::{info, warn};
 use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
+use zecswap_api::server::MonitorToken;
 use zecswap_chain::evm::funding::{FundingPolicy, MAX_CALLDATA_BYTES};
 use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, Settlement, Stage};
 use zecswap_core::{Domain, SecretShare, signer};
@@ -93,6 +99,20 @@ impl From<zecswap_chain::Error> for RelayerError {
     }
 }
 
+impl RelayerError {
+    /// What kind of failure this is, for the monitor; none for a refusal.
+    fn failure_kind(&self) -> Option<&'static str> {
+        match self {
+            RelayerError::Rejected(_) => None,
+            RelayerError::Internal(error) => Some(
+                error
+                    .downcast_ref()
+                    .map_or("internal", monitor::failure_kind),
+            ),
+        }
+    }
+}
+
 type Result<T> = std::result::Result<T, RelayerError>;
 
 pub struct Relayer {
@@ -100,6 +120,7 @@ pub struct Relayer {
     account: Address,
     domain: Domain,
     settlement: Settlement,
+    monitor: monitor::Monitor,
 }
 
 impl Relayer {
@@ -119,11 +140,61 @@ impl Relayer {
             account,
             domain,
             settlement,
+            monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
         })
     }
 
     pub fn listen(&self) -> SocketAddr {
         self.config.listen
+    }
+
+    /// Counts a request for `operation` by how it ended. The gas of what it sent is read from
+    /// the receipts after the reply, so monitoring never delays a user's request; a receipt not
+    /// read within a few seconds goes uncounted.
+    pub fn observe(
+        self: &Arc<Self>,
+        operation: &'static str,
+        result: Result<Sent>,
+    ) -> Result<Sent> {
+        match &result {
+            Ok(sent) => {
+                self.monitor.sent(operation, sent.transactions.len() as u64);
+                let (relayer, transactions) = (Arc::clone(self), sent.transactions.clone());
+                tokio::spawn(async move {
+                    for tx in transactions {
+                        let cost = relayer.settlement.transaction_cost(tx);
+                        if let Ok(Ok(Some((gas, wei)))) =
+                            tokio::time::timeout(Duration::from_secs(5), cost).await
+                        {
+                            relayer.monitor.burned(operation, gas, wei);
+                        }
+                    }
+                });
+            }
+            Err(error) => match error.failure_kind() {
+                None => self.monitor.refused(operation),
+                Some(kind) => self.monitor.failed(operation, kind),
+            },
+        }
+        result
+    }
+
+    pub fn monitor_snapshot(&self) -> monitor::MonitorSnapshot {
+        self.monitor.snapshot(monitor::Deployment {
+            relayer: self.account,
+            chain_id: self.domain.chain_id,
+            contract: self.config.contract,
+            token: self.config.token,
+            maker: self.config.maker,
+            fees: monitor::Fees {
+                payout: self.config.fee.to_string(),
+                funding: self
+                    .config
+                    .reverse_funding
+                    .as_ref()
+                    .map(|funding| funding.fee.to_string()),
+            },
+        })
     }
 
     pub fn terms(&self) -> Terms {
@@ -204,7 +275,11 @@ impl Relayer {
         let mut transactions = vec![claim];
         match self.send_payout(&request.payout, &terms, &note).await {
             Ok(tx) => transactions.push(tx),
-            Err(e) => warn!(id = %request.swap_id, "the payout after the claim failed: {e:#}"),
+            Err(e) => {
+                warn!(id = %request.swap_id, "the payout after the claim failed: {e:#}");
+                self.monitor
+                    .failed("payout", e.failure_kind().unwrap_or("internal"));
+            }
         }
         Ok(Sent { transactions })
     }

@@ -72,6 +72,13 @@ would come back. Quotes, reads and the relayer take none.
   reverse `GET /v1/reverse/swaps/{id}`: the RFC 9578 `blind_sig`, base64url, once the swap
   hands its token back, else `null`. Serving it to anyone who asks is safe: only the blinding
   secret turns it into a token.
+- `GET /v1/monitor` (bearer `MAKER_MONITOR_TOKEN`) → `tokens`: the tokens its spent store
+  holds for today; since the maker started or midnight UTC, the tokens accepts kept, by whether
+  the issuer's key or the return key signed them, and the accepts refused, by why (`missing`,
+  `unreadable`, `malformed`, `unknownKey`, `invalid`, `inUse`, `spent`); and for each of the
+  last seven UTC days, the accepts that spent a token, split into those that handed it back,
+  those walked away from, and those not yet either. Walk-aways are the tokens spam wastes.
+  These are counts: none of them says which device or swap.
 
 ## The issuer's API
 
@@ -90,6 +97,14 @@ would come back. Quotes, reads and the relayer take none.
   not; a refused one costs the device none of its allowance. The issuer never sees a token
   challenge, so it signs tokens for whatever day the app blinded them for; the app fetches for
   the day the maker asks.
+- `GET /v1/monitor` (bearer `ISSUER_MONITOR_TOKEN`, at least 32 characters; closed while it is
+  unset) → the day's totals: devices served, tokens issued, devices that used their whole
+  allowance; and since the issuer started or midnight UTC, the challenges given out or refused
+  as busy, the requests granted (and of those, cut short by the allowance), answered `429`,
+  malformed, and refused, by the attester's reason. With `android-key`, also when the status
+  list in force was written and how many certificates it lists: a refresh that stops working
+  shows as that time growing old. Nothing in it tells one device from another or says when any
+  one request came.
 
 ## What keeps it private
 
@@ -121,8 +136,8 @@ app:
 - The issuer still learns which installs fetch tokens and how many: it sees the install's key
   on every fetch, as any limit per install must. Run it apart from the maker, ideally by another
   party, and keep no request logs; it keeps only today's counts, by the key's digest, and logs no
-  chain, key, challenge or device id. The maker keeps each swap's request for its token back
-  with the swap, and logs neither tokens nor requests.
+  chain, key, challenge or device id. Its monitor shows only the day's totals. The maker keeps
+  each swap's request for its token back with the swap, and logs neither tokens nor requests.
 
 ## Attestation
 

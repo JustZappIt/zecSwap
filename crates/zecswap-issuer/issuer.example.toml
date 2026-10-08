@@ -1,7 +1,8 @@
 # Signs each genuine device a day's tokens, blind: it learns which devices fetch tokens and how
 # many, never which swaps they pay for. Run it apart from the maker, and keep no request logs.
 # `zecswap-issuer keygen <key>` writes the key and prints its public half, which the maker's
-# `[tokens]` lists.
+# `[tokens]` lists. ISSUER_MONITOR_TOKEN in the environment, at least 32 characters, opens
+# GET /v1/monitor to it: the day's totals, never a device.
 
 listen = "127.0.0.1:8789"
 # The issuer name every token's challenge carries; the maker's `[tokens] issuer` repeats it. The

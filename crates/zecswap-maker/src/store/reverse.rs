@@ -120,6 +120,7 @@ impl Store {
                 serde_json::to_string(swap)?
             ],
         )?;
+        super::accepted(&tx, &swap.id)?;
         super::notifications::insert(&tx, event)?;
         tx.commit()?;
         Ok(())
@@ -302,9 +303,11 @@ mod tests {
             swap.acceptance.viewing_keys.to_bytes()
         );
         assert_eq!(store.pending_reverse_swaps().unwrap().len(), 1);
-        let rows = store.monitor_swaps(50).unwrap();
+        let rows = store.monitor_swaps(50, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].direction, "reverse");
+        assert!(rows[0].accepted_at.is_some());
+        assert_eq!((rows[0].opened_at, rows[0].token_returned), (None, None));
         assert_eq!(rows[0].funding_deadline, Some(300));
         assert_eq!(rows[0].ready_deadline, 500);
         assert_eq!(rows[0].refund_after, 700);

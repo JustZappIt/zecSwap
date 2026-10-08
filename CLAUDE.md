@@ -97,6 +97,15 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Monitoring (2026-10-08, branch `feature/monitoring`): the maker's `/v1/monitor` is schema 2
+  and reads nothing from the chain (the dashboard, `~/dev/zapp-dashboard`, reads swap states and
+  balances on its own RPC through Multicall3); it adds per-swap accept/open/settle times, block
+  times of Ethereum events, token outcomes by day (walk-aways = wasted tokens), the deposit cap
+  and gas alert accounts, and `/v1/monitor/swaps/{id}`. The issuer and relayer have their own
+  `/v1/monitor` (`ISSUER_MONITOR_TOKEN`, `RELAYER_MONITOR_TOKEN`): day totals and refusals by
+  reason, never a device; relayed transactions by outcome and their gas, read after the reply.
+  All three share one gateway allowance; Alloy ships the issuer's journal. The dashboard pins
+  the contract in Vercel's `BRIDGE_TESTNET_CONTRACT`: update it with every contract redeploy.
 - PR #8 review (2026-10-06), each fix with a test that fails without it:
   - Contract: a reverse escrow's id is `reverseSwapId` (`keccak256(abi.encode(user, makerKey,
     true))`), never a forward id, so a maker can't open a user's verified forward swap as a

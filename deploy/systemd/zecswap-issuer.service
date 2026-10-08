@@ -12,6 +12,8 @@ Group=zecswap-issuer
 WorkingDirectory=/var/lib/zecswap-issuer
 StateDirectory=zecswap-issuer
 StateDirectoryMode=0700
+# ISSUER_MONITOR_TOKEN, if the monitor is on.
+EnvironmentFile=-/etc/zecswap-issuer/secrets.env
 Environment=TOKIO_WORKER_THREADS=1
 Environment=RUST_LOG=info
 ExecStart=/opt/zecswap/current/zecswap-issuer serve --config /etc/zecswap-issuer/config.toml

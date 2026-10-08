@@ -17,6 +17,10 @@ pub(super) const SCHEMA: &str = "
         scope TEXT PRIMARY KEY, next_block INTEGER NOT NULL, notify_from_block INTEGER NOT NULL,
         confirmed_head INTEGER NOT NULL, updated_at INTEGER, last_error TEXT
     );
+    CREATE TABLE IF NOT EXISTS evm_block_times (
+        scope TEXT NOT NULL, block_hash BLOB NOT NULL, time INTEGER NOT NULL,
+        PRIMARY KEY (scope, block_hash)
+    );
 ";
 
 #[derive(Serialize)]
@@ -28,6 +32,7 @@ pub(crate) struct EvmTransaction {
     pub block_hash: B256,
     pub log_index: u64,
     pub uses_railgun: Option<bool>,
+    pub block_time: Option<u64>,
 }
 
 pub(crate) struct TransactionCursor {
@@ -73,13 +78,23 @@ impl Store {
         let conn = self.conn();
         Ok(conn.prepare(
             "SELECT kind, transaction_hash, block_number, block_hash, log_index,
-                (SELECT uses_railgun FROM evm_transaction_info i WHERE i.scope = evm_transactions.scope AND i.transaction_hash = evm_transactions.transaction_hash)
+                (SELECT uses_railgun FROM evm_transaction_info i WHERE i.scope = evm_transactions.scope AND i.transaction_hash = evm_transactions.transaction_hash),
+                (SELECT time FROM evm_block_times b WHERE b.scope = evm_transactions.scope AND b.block_hash = evm_transactions.block_hash)
              FROM evm_transactions
              WHERE scope = ?1 AND swap_id = ?2 ORDER BY block_number, log_index",
         )?.query_map(params![scope, id.as_slice()], |row| Ok(EvmTransaction {
             kind: row.get(0)?, transaction_hash: B256::from(row.get::<_, [u8; 32]>(1)?),
             block_number: row.get(2)?, block_hash: B256::from(row.get::<_, [u8; 32]>(3)?), log_index: row.get(4)?, uses_railgun: row.get(5)?,
+            block_time: row.get(6)?,
         }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub(crate) fn save_block_time(&self, scope: &str, block_hash: B256, time: u64) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO evm_block_times (scope, block_hash, time) VALUES (?1, ?2, ?3)",
+            params![scope, block_hash.as_slice(), time],
+        )?;
+        Ok(())
     }
 
     /// Replace an overlapping block window to discard orphaned logs. Cursor and alert inserts

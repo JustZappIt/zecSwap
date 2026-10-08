@@ -10,11 +10,19 @@ use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
 
+use crate::monitor::MonitorSnapshot;
 use crate::{Relayer, RelayerError};
 
 pub fn router(relayer: Arc<Relayer>) -> Router {
+    let monitor = Router::new()
+        .route("/v1/monitor", get(monitor))
+        .route_layer(middleware::from_fn_with_state(
+            relayer.monitor.token.clone(),
+            server::require_monitor,
+        ));
     Router::new()
         .route("/v1/terms", get(terms))
+        .merge(monitor)
         .route("/v1/lock-claim", post(lock_claim))
         .route("/v1/claim", post(claim))
         .route("/v1/payout", post(payout))
@@ -38,74 +46,88 @@ async fn terms(State(relayer): State<Arc<Relayer>>) -> Json<Terms> {
     Json(relayer.terms())
 }
 
+async fn monitor(State(relayer): State<Arc<Relayer>>) -> Json<MonitorSnapshot> {
+    Json(relayer.monitor_snapshot())
+}
+
 async fn lock_claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<LockClaim>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.lock_claim(request).await?))
+    let sent = relayer.lock_claim(request).await;
+    Ok(Json(relayer.observe("lock_claim", sent)?))
 }
 
 async fn claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Claim>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.claim(request).await?))
+    let sent = relayer.claim(request).await;
+    Ok(Json(relayer.observe("claim", sent)?))
 }
 
 async fn payout(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.payout(request).await?))
+    let sent = relayer.payout(request).await;
+    Ok(Json(relayer.observe("payout", sent)?))
 }
 
 async fn rescue(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.rescue(request).await?))
+    let sent = relayer.rescue(request).await;
+    Ok(Json(relayer.observe("rescue", sent)?))
 }
 
 async fn ready_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.ready_reverse(request).await?))
+    let sent = relayer.ready_reverse(request).await;
+    Ok(Json(relayer.observe("ready_reverse", sent)?))
 }
 
 async fn fund_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Funding>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.fund_reverse(request).await?))
+    let sent = relayer.fund_reverse(request).await;
+    Ok(Json(relayer.observe("fund_reverse", sent)?))
 }
 
 async fn lock_reverse_refund(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.lock_reverse_refund(request).await?))
+    let sent = relayer.lock_reverse_refund(request).await;
+    Ok(Json(relayer.observe("lock_reverse_refund", sent)?))
 }
 
 async fn refund_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Refund>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.refund_reverse(request).await?))
+    let sent = relayer.refund_reverse(request).await;
+    Ok(Json(relayer.observe("refund_reverse", sent)?))
 }
 
 async fn reverse_refund_payout(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.reverse_refund_payout(request).await?))
+    let sent = relayer.reverse_refund_payout(request).await;
+    Ok(Json(relayer.observe("reverse_refund_payout", sent)?))
 }
 
 async fn rescue_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
-    Ok(Json(relayer.rescue_reverse(request).await?))
+    let sent = relayer.rescue_reverse(request).await;
+    Ok(Json(relayer.observe("rescue_reverse", sent)?))
 }
 
 impl IntoResponse for RelayerError {

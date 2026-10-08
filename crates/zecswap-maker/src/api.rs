@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use alloy_primitives::B256;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router, middleware};
@@ -27,10 +27,17 @@ pub fn router(maker: Arc<Maker>) -> Router {
             zecswap_tokens::server::require,
         ));
     }
+    let monitor = Router::new()
+        .route("/v1/monitor", get(monitor))
+        .route("/v1/monitor/swaps/{swap_id}", get(monitor_swap))
+        .route_layer(middleware::from_fn_with_state(
+            maker.monitor_token(),
+            server::require_monitor,
+        ));
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/info", get(info))
-        .route("/v1/monitor", get(monitor))
+        .merge(monitor)
         .route("/v1/quote", post(quote))
         .route("/v1/reverse/quote", post(reverse_quote))
         .merge(costly)
@@ -51,24 +58,28 @@ async fn info(State(maker): State<Arc<Maker>>) -> Json<MakerInfo> {
     Json(maker.info())
 }
 
-async fn monitor(State(maker): State<Arc<Maker>>, headers: HeaderMap) -> Response {
-    let authorization = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok());
-    if !maker.monitor_authorized(authorization) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
+async fn monitor(State(maker): State<Arc<Maker>>) -> Response {
     match maker.monitor_snapshot().await {
         Ok(snapshot) => axum::Json(snapshot).into_response(),
-        Err(e) => {
-            error!("monitor snapshot: {e:#}");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "monitoring temporarily unavailable",
-            )
-                .into_response()
-        }
+        Err(e) => monitor_unavailable(e),
     }
+}
+
+async fn monitor_swap(State(maker): State<Arc<Maker>>, Path(swap_id): Path<B256>) -> Response {
+    match maker.monitor_swap(swap_id) {
+        Ok(Some(swap)) => axum::Json(swap).into_response(),
+        Ok(None) => MakerError::UnknownSwap.into_response(),
+        Err(e) => monitor_unavailable(e),
+    }
+}
+
+fn monitor_unavailable(e: anyhow::Error) -> Response {
+    error!("monitor snapshot: {e:#}");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "monitoring temporarily unavailable",
+    )
+        .into_response()
 }
 
 #[tracing::instrument(skip_all, fields(operation = "reverse_quote"), err(level = "warn"))]
