@@ -301,7 +301,8 @@ gateway's `503`s. The redaction test passed its 33 fixtures against the new Allo
 before Alloy restarted. The dashboard at `zapp-dashboard-seven.vercel.app`, deployed from
 `zapp-dashboard` `4165055`, shows all three monitors healthy and the issuer's and maker's keys as
 the app pins them. It raised one alert: the maker has no `[gas_alerts]`, so Telegram pages no one
-when the maker's or the relayer's ETH runs low.
+when the maker's or the relayer's ETH runs low. All nine live scenarios passed on a fork of Ethereum
+Sepolia with the live Zcash testnet, in 26.7 minutes, on the same commit.
 [sepolia-monitoring.json](../deployments/sepolia-monitoring.json) records the checksums and checks.
 
 Rollback files are in `/var/backups/zecswap/20261008-monitoring-991e16f` (root-only): the nginx
