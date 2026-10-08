@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use zecswap_api::tokens::Attestation;
 
 use crate::Attester;
-use crate::x509::{BASIC_CONSTRAINTS, Cert, KEY_USAGE, Kind, octets};
+use crate::x509::{BASIC_CONSTRAINTS, Cert, KEY_USAGE, Kind, boolean, octets};
 
 /// What sets the issuer's signatures and keys apart from any other use of the same key.
 pub(crate) const CONTEXT: &[u8] = b"zecswap-issuer-v1";
@@ -402,15 +402,6 @@ fn uint(value: AnyRef<'_>, tag: Tag) -> der::Result<u64> {
     }
 }
 
-/// Any non-zero octet is true: some secure hardware writes `TRUE` as 1, not DER's 0xff.
-fn boolean(value: AnyRef<'_>) -> der::Result<bool> {
-    value.tag().assert_eq(Tag::Boolean)?;
-    match value.value() {
-        [byte] => Ok(*byte != 0),
-        _ => Err(Tag::Boolean.value_error().into()),
-    }
-}
-
 /// Google's attestation status list (`https://android.googleapis.com/attestation/status`):
 /// `{"entries": {"<serial, lowercase hex>": {"status": "REVOKED", ...}, ...}}`.
 struct StatusList {
@@ -761,6 +752,16 @@ mod tests {
         /// A new key attested as `record` says by the attestation key `issuer`, whose chain
         /// is `above`.
         fn new(issuer: (&Signer, &str), above: &[Vec<u8>], record: &Record) -> Self {
+            Self::with(issuer, above, record, &[])
+        }
+
+        /// As `new`, its key's certificate carrying `extensions` besides the record.
+        fn with(
+            issuer: (&Signer, &str),
+            above: &[Vec<u8>],
+            record: &Record,
+            extensions: &[Vec<u8>],
+        ) -> Self {
             let key = Signer::p256();
             let description = extension("1.3.6.1.4.1.11129.2.1.17", false, &record.der());
             let leaf = certificate(
@@ -768,7 +769,7 @@ mod tests {
                 (&key.spki(), "Android Keystore Key"),
                 1,
                 (NOW - 60, NOW + 10 * YEAR),
-                &[description],
+                &[&[description], extensions].concat(),
             );
             Self {
                 key,
@@ -1016,6 +1017,31 @@ mod tests {
             refused(fixture.ask(&phone, 1, NOW)),
             "a chain to an unknown root"
         );
+    }
+
+    /// A OnePlus StrongBox marks its keys' `keyUsage` critical with 1, not DER's 0xff: a chain
+    /// whose flags are written so still counts, its certificate authority's included.
+    #[test]
+    fn a_true_written_as_one_still_reads() {
+        let fixture = Fixture::new(Signer::p384());
+        let one = tlv(&[0x01], &[0x01]);
+        let flagged = |id: &str, value: &[u8]| seq(&[&oid(id), &one, &octet_string(value)]);
+        let batch = Signer::p256();
+        let batch_cert = certificate(
+            (&fixture.root, "root"),
+            (&batch.spki(), "batch"),
+            BATCH_SERIAL,
+            (NOW - YEAR, NOW + YEAR),
+            &[
+                flagged("2.5.29.19", &seq(&[&one])),
+                flagged("2.5.29.15", &tlv(&[0x03], &[0x01, 0x06])),
+            ],
+        );
+        // digitalSignature
+        let usage = flagged("2.5.29.15", &tlv(&[0x03], &[0x07, 0x80]));
+        let above = [batch_cert, fixture.root_cert.clone()];
+        let phone = Device::with((&batch, "batch"), &above, &Record::default(), &[usage]);
+        assert_eq!(fixture.ask(&phone, 3, NOW).unwrap(), 3);
     }
 
     /// A certificate counts only signed by the key of the one it names as its issuer.

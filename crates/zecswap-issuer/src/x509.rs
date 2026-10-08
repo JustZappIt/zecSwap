@@ -1,5 +1,5 @@
 //! What an attestation chain is checked by in each X.509 certificate (RFC 5280), read by DER's
-//! strict rules, and the signatures binding them.
+//! strict rules but for booleans, and the signatures binding them.
 
 use der::asn1::{AnyRef, BitStringRef, GeneralizedTime, ObjectIdentifier, UtcTime};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber, Tagged};
@@ -172,7 +172,8 @@ impl<'a> Cert<'a> {
         };
         let (authority, depth) = whole(constraints.value, |r| {
             r.sequence(|r| {
-                let authority = Tag::peek(r).ok() == Some(Tag::Boolean) && bool::decode(r)?;
+                let authority =
+                    Tag::peek(r).ok() == Some(Tag::Boolean) && boolean(AnyRef::decode(r)?)?;
                 let depth = if r.is_finished() {
                     None
                 } else {
@@ -226,6 +227,16 @@ pub(crate) fn octets(value: AnyRef<'_>) -> der::Result<&[u8]> {
     Ok(value.value())
 }
 
+/// Any non-zero octet is true: some secure hardware writes `TRUE` as 1, not DER's 0xff. The
+/// signatures cover the bytes as written, so reading them this way trusts nothing more.
+pub(crate) fn boolean(value: AnyRef<'_>) -> der::Result<bool> {
+    value.tag().assert_eq(Tag::Boolean)?;
+    match value.value() {
+        [byte] => Ok(*byte != 0),
+        _ => Err(Tag::Boolean.value_error().into()),
+    }
+}
+
 fn bits(bits: BitStringRef<'_>) -> der::Result<&[u8]> {
     bits.as_bytes()
         .ok_or_else(|| Tag::BitString.value_error().into())
@@ -272,7 +283,7 @@ fn extensions(der: &[u8]) -> der::Result<Vec<Extension<'_>>> {
             while !r.is_finished() {
                 extensions.push(r.sequence(|r| {
                     let id = ObjectIdentifier::decode(r)?;
-                    let critical = Tag::peek(r)? == Tag::Boolean && bool::decode(r)?;
+                    let critical = Tag::peek(r)? == Tag::Boolean && boolean(AnyRef::decode(r)?)?;
                     let value = octets(AnyRef::decode(r)?)?;
                     Ok::<_, der::Error>(Extension {
                         id,
