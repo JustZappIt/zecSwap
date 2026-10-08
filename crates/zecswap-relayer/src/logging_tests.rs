@@ -36,6 +36,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             fee: 1,
             claim_margin: 30,
             reverse_funding: None,
+            railgun_sends: None,
         },
         account: Address::repeat_byte(2),
         domain: Domain {
@@ -44,6 +45,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
+        sends: None,
     };
     let swap_id = B256::repeat_byte(0xab);
     let secret = B256::repeat_byte(0xcd);

@@ -330,7 +330,10 @@ new tables, and the dashboard reads both monitor schemas.
    refuses to start if its secret or key is not the one its live swaps opened under. Enable
    `[reverse]` using the example maker config and supply
    `MAKER_ZCASH_SEED` alongside the existing maker secrets through the process environment.
-   The relayer serves one token and one maker: set its `token` and `maker`.
+   The relayer serves one token and one maker: set its `token` and `maker`. To have it send
+   wallets' private Railgun sends and withdrawals for a fee note, give it `[railgun_sends]` and
+   its own Railgun wallet's seed in `RELAYER_RAILGUN_SEED` ([railgun-sends.md](railgun-sends.md));
+   its journal belongs in its state directory.
 3. Run `zecswap-maker --config <maker-config> zec-inventory` to obtain the seed-derived ZEC
    inventory address and balance. Fund the test inventory and the services' EVM gas accounts;
    to move the inventory from a retired contract, run `withdraw-inventory <amount>` under the old
@@ -391,6 +394,7 @@ instead, so a flood of one kind never refuses another:
 | --- | --- |
 | Settling funded swaps (locks, claims, payouts, refunds, rescues): every relayer `POST` route except `reverse/fund` | 5 a second; up to 50 more wait their turn |
 | Starting swaps: quotes, accepts and `reverse/fund` | 2 a second, bursts of 20 |
+| Private Railgun sends and withdrawals: `railgun/transact` | 2 a second, bursts of 20 |
 | The issuer's challenges and tokens | 2 a second, bursts of 20 |
 | Reverse swap status, which reads the chain on every request | 2 a second, bursts of 20 |
 | Everything else | 10 a second, bursts of 50 |

@@ -26,8 +26,15 @@ const ACCOUNT: [&str; 6] = [
     "never-claimed",
     "abandoned-claim",
 ];
-/// Paid into Railgun, where the deployment has it.
-const RAILGUN: [&str; 3] = ["railgun-happy", "railgun-resume", "railgun-no-deposit"];
+/// Paid into Railgun, where the deployment has it, and private sends from it.
+const RAILGUN: [&str; 4] = [
+    "railgun-happy",
+    "railgun-resume",
+    "railgun-no-deposit",
+    SEND,
+];
+/// Private Railgun sends and withdrawals the relayer sends as their broadcaster.
+const SEND: &str = "railgun-send";
 
 const POLL: Duration = Duration::from_secs(15);
 const TIMEOUT: Duration = Duration::from_secs(80 * 60);
@@ -59,22 +66,27 @@ pub(crate) fn select(only: &[String], railgun: bool) -> Result<Vec<&'static str>
 }
 
 pub(crate) fn needs(names: &[&str]) -> Needs {
+    let sends = names.iter().filter(|name| **name == SEND).count();
     let relayed = names.iter().filter(|name| pays_into_railgun(name)).count();
     Needs {
-        accounts: names.len() - relayed,
+        accounts: names.len() - relayed - sends,
         relayed,
+        sends,
         deposits: names
             .iter()
-            .filter(|name| !name.ends_with("no-deposit"))
+            .filter(|name| **name != SEND && !name.ends_with("no-deposit"))
             .count(),
     }
 }
 
 fn pays_into_railgun(name: &str) -> bool {
-    name.starts_with("railgun-")
+    name.starts_with("railgun-") && name != SEND
 }
 
 pub(crate) async fn run(env: Arc<Env>, name: &'static str) -> Result<()> {
+    if name == SEND {
+        return crate::sends::railgun_send(&env).await;
+    }
     let player = Player::join(env, name, name == "silent-maker").await?;
     match name {
         "happy" => happy(&player).await,

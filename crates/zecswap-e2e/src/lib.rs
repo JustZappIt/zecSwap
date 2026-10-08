@@ -6,6 +6,7 @@
 
 mod env;
 mod scenarios;
+mod sends;
 
 use std::time::Instant;
 

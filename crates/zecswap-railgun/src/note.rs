@@ -8,9 +8,9 @@ use sha2::{Digest, Sha512};
 use sha3::Keccak256;
 use zeroize::Zeroizing;
 
-use crate::keys::{Receiver, ed25519_public_key, note_public_key, shared_key};
+use crate::keys::{Receiver, ed25519_public_key, note_hash, note_public_key, shared_key};
 
-/// Railgun encrypts shield notes with AES-256-GCM under a 16-byte IV.
+/// Railgun encrypts notes with AES-256-GCM under a 16-byte IV.
 type Gcm = AesGcm<Aes256, U16>;
 type Ctr = ctr::Ctr128BE<Aes256>;
 
@@ -99,6 +99,55 @@ impl ShieldNote {
             )
             .ok()?;
         Some(random)
+    }
+}
+
+/// One output of a Railgun transaction as its `CommitmentCiphertext` carries it (V2): the note
+/// encrypted to its receiver under a key agreed with the sender's blinded viewing key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputCiphertext {
+    /// The GCM IV and tag, then the note: its encoded master public key, its token, and its
+    /// random and value.
+    pub ciphertext: [[u8; 32]; 4],
+    pub blinded_sender_viewing_key: [u8; 32],
+    /// The encrypted memo, which continues the GCM stream and is covered by its tag.
+    pub memo: Vec<u8>,
+}
+
+/// What a transaction output pays the wallet that opens it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Received {
+    /// The token's hash: for an ERC-20, its address left-padded to 32 bytes.
+    pub token: [u8; 32],
+    pub value: u128,
+}
+
+impl OutputCiphertext {
+    /// The output, if the holder of `viewing_key` can decrypt it and it is the note
+    /// `commitment` paying `master_public_key`, so that wallet can find and spend it.
+    pub(crate) fn open(
+        &self,
+        viewing_key: &[u8; 32],
+        master_public_key: &[u8; 32],
+        commitment: &[u8; 32],
+    ) -> Option<Received> {
+        let key = Zeroizing::new(shared_key(viewing_key, &self.blinded_sender_viewing_key)?);
+        let [iv_and_tag, note @ ..] = &self.ciphertext;
+        let mut plaintext = Zeroizing::new(note.concat());
+        plaintext.extend_from_slice(&self.memo);
+        Gcm::new(GenericArray::from_slice(&*key))
+            .decrypt_in_place_detached(
+                GenericArray::from_slice(&iv_and_tag[..16]),
+                &[],
+                &mut plaintext[..],
+                GenericArray::from_slice(&iv_and_tag[16..]),
+            )
+            .ok()?;
+        let token: [u8; 32] = plaintext[32..64].try_into().expect("32 bytes");
+        let random: [u8; 16] = plaintext[64..80].try_into().expect("16 bytes");
+        let value = u128::from_be_bytes(plaintext[80..96].try_into().expect("16 bytes"));
+        let npk = note_public_key(master_public_key, &random);
+        (note_hash(&npk, &token, value) == *commitment).then_some(Received { token, value })
     }
 }
 

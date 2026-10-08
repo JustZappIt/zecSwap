@@ -11,7 +11,7 @@ use serde::Serialize;
 use zecswap_api::server::MonitorToken;
 
 /// Every operation, by the name its requests are logged under.
-const OPERATIONS: [&str; 10] = [
+const OPERATIONS: [&str; 11] = [
     "lock_claim",
     "claim",
     "payout",
@@ -22,6 +22,7 @@ const OPERATIONS: [&str; 10] = [
     "refund_reverse",
     "reverse_refund_payout",
     "rescue_reverse",
+    "railgun_transact",
 ];
 
 pub(crate) struct Monitor {
@@ -73,6 +74,7 @@ pub struct MonitorSnapshot {
 pub(crate) struct Fees {
     pub(crate) payout: String,
     pub(crate) funding: Option<String>,
+    pub(crate) sends: Option<String>,
 }
 
 #[derive(Serialize)]

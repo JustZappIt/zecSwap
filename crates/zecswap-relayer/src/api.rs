@@ -6,12 +6,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tracing::error;
-use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
+use zecswap_api::relayer::{Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
 
 use crate::monitor::MonitorSnapshot;
-use crate::{Relayer, RelayerError};
+use crate::{Relayer, RelayerError, Sending};
 
 pub fn router(relayer: Arc<Relayer>) -> Router {
     let monitor = Router::new()
@@ -36,6 +36,10 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
         .route("/v1/reverse/refund", post(refund_reverse))
         .route("/v1/reverse/refund-payout", post(reverse_refund_payout))
         .route("/v1/reverse/rescue", post(rescue_reverse))
+        .route(
+            "/v1/railgun/transact",
+            post(railgun_transact).layer(DefaultBodyLimit::max(132 * 1024)),
+        )
         .fallback(server::not_found)
         .method_not_allowed_fallback(server::method_not_allowed)
         .layer(middleware::from_fn(server::no_store))
@@ -130,12 +134,36 @@ async fn rescue_reverse(
     Ok(Json(relayer.observe("rescue_reverse", sent)?))
 }
 
+/// A repeated post of the same bytes answers with the first send's hash, and is not counted
+/// again.
+async fn railgun_transact(
+    State(relayer): State<Arc<Relayer>>,
+    Json(request): Json<RailgunTransact>,
+) -> Result<Json<Sent>, RelayerError> {
+    let sent = match relayer.railgun_transact(request).await {
+        Ok(Sending::Again(sent)) => Ok(sent),
+        Ok(Sending::New(sent)) => relayer.observe("railgun_transact", Ok(sent)),
+        Err(error) => relayer.observe("railgun_transact", Err(error)),
+    };
+    Ok(Json(sent?))
+}
+
 impl IntoResponse for RelayerError {
     fn into_response(self) -> Response {
         match &self {
             RelayerError::Rejected(reason) => {
                 server::error(StatusCode::BAD_REQUEST, ErrorCode::Rejected, reason)
             }
+            RelayerError::Spent => server::error(
+                StatusCode::CONFLICT,
+                ErrorCode::AlreadySpent,
+                self.to_string(),
+            ),
+            RelayerError::Unsettled(reason) => server::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::Unavailable,
+                *reason,
+            ),
             RelayerError::Internal(e) => {
                 error!("{e:#}");
                 server::error(

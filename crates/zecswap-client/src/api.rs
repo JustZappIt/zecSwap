@@ -7,7 +7,8 @@ use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
+use zecswap_api::relayer::{Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
+use zecswap_api::service::{ErrorCode, ErrorResponse};
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
 
 use crate::tokens::Tokens;
@@ -103,6 +104,19 @@ impl MakerApi {
 #[derive(Clone)]
 pub struct RelayerApi(Endpoint);
 
+/// What a relayer made of a Railgun transaction posted to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Broadcast {
+    /// Submitted, in these transactions; the same bytes posted again name the same ones.
+    Sent(Vec<B256>),
+    /// Refused: nothing from this proof was sent or will be. Drop it and free its notes.
+    Refused(String),
+    /// A note it spends is spent, or a transaction already sent spends it: settle from the chain.
+    Spent,
+    /// Not known yet, or never answered: post the same bytes again later.
+    Retry(String),
+}
+
 impl RelayerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("relayer", url).map(Self)
@@ -138,6 +152,38 @@ impl RelayerApi {
 
     pub async fn terms(&self) -> Result<Terms> {
         self.0.get("/v1/terms").await
+    }
+
+    /// Posts a wallet's own proved Railgun transaction for the relayer to send as its
+    /// broadcaster. Persist `request` before posting it, and post the same bytes again until the
+    /// answer is not `Retry`.
+    pub async fn railgun_transact(&self, request: &RailgunTransact) -> Broadcast {
+        let url = format!("{}/v1/railgun/transact", self.0.url);
+        let response = match self.0.http.post(url).json(request).send().await {
+            Ok(response) => response,
+            Err(e) => return Broadcast::Retry(e.to_string()),
+        };
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if status.is_success() {
+            return match serde_json::from_str::<Sent>(&body) {
+                Ok(sent) => Broadcast::Sent(sent.transactions),
+                Err(e) => Broadcast::Retry(format!("an unreadable answer: {e}")),
+            };
+        }
+        let error = serde_json::from_str::<ErrorResponse>(&body).ok();
+        match (status, error) {
+            (StatusCode::CONFLICT, Some(e)) if e.code == ErrorCode::AlreadySpent => {
+                Broadcast::Spent
+            }
+            (status, error) if status.is_client_error() && status != StatusCode::CONFLICT => {
+                Broadcast::Refused(error.map_or(body, |e| e.error))
+            }
+            (status, error) => Broadcast::Retry(format!(
+                "relayer answered {status}: {}",
+                error.map_or(body, |e| e.error)
+            )),
+        }
     }
 
     pub(crate) async fn lock_claim(&self, request: &LockClaim) -> Result<Sent> {
