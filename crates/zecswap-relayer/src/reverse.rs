@@ -148,7 +148,11 @@ impl Relayer {
             .await
         {
             Ok(tx) => transactions.push(tx),
-            Err(e) => tracing::warn!(id = %request.swap_id, "refund payout pending: {e}"),
+            Err(e) => {
+                tracing::warn!(id = %request.swap_id, "refund payout pending: {e}");
+                self.monitor
+                    .failed("reverse_refund_payout", crate::monitor::failure_kind(&e));
+            }
         }
         Ok(Sent { transactions })
     }

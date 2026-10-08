@@ -1,19 +1,19 @@
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, ensure};
-use futures_util::{StreamExt, stream};
+use anyhow::Result;
 use serde::Serialize;
-use tokio::time::{Instant, timeout, timeout_at};
+use zecswap_api::server::MonitorToken;
 use zecswap_api::service::MakerInfo;
-use zecswap_chain::evm::{B256, Stage};
-use zecswap_chain::zcash::Funds;
+use zecswap_chain::evm::{Address, B256};
+use zecswap_chain::zcash::{AccountUuid, Funds, Wallet};
 
 use super::{Maker, unix_now};
-use crate::store::{MonitorCounts, MonitorSwap};
+use crate::store::{MonitorCounts, MonitorSwap, TokenDay};
+
+const SCHEMA_VERSION: u32 = 2;
 
 pub(super) struct Monitoring {
-    token_hash: Option<blake2b_simd::Hash>,
+    token: Arc<MonitorToken>,
     started_at: u64,
     state: Mutex<Runtime>,
 }
@@ -30,38 +30,16 @@ struct Runtime {
 }
 
 impl Monitoring {
-    pub(super) fn new(token: Option<&str>) -> Self {
+    pub(super) fn from_env() -> Result<Self> {
+        Ok(Self::new(MonitorToken::from_env("MAKER_MONITOR_TOKEN")?))
+    }
+
+    pub(super) fn new(token: MonitorToken) -> Self {
         Self {
-            token_hash: token.map(|value| blake2b_simd::blake2b(value.as_bytes())),
+            token: Arc::new(token),
             started_at: unix_now(),
             state: Mutex::new(Runtime::default()),
         }
-    }
-
-    pub(super) fn from_env() -> Result<Self> {
-        let token = match std::env::var("MAKER_MONITOR_TOKEN") {
-            Ok(value) => Some(zeroize::Zeroizing::new(value)),
-            Err(std::env::VarError::NotPresent) => None,
-            Err(error) => return Err(error.into()),
-        };
-        if let Some(token) = &token {
-            ensure!(
-                token.len() >= 32,
-                "MAKER_MONITOR_TOKEN must be at least 32 characters"
-            );
-        }
-        Ok(Self::new(token.as_ref().map(|value| value.as_str())))
-    }
-
-    fn authorized(&self, header: Option<&str>) -> bool {
-        let Some(expected) = self.token_hash else {
-            return false;
-        };
-        let Some(value) = header.and_then(|value| value.strip_prefix("Bearer ")) else {
-            return false;
-        };
-        // Hash equality is constant time; both hashes have the same fixed length.
-        blake2b_simd::blake2b(value.as_bytes()) == expected
     }
 }
 
@@ -75,12 +53,14 @@ pub(crate) struct MonitorSnapshot {
     watchtower_healthy: bool,
     last_pass_age_seconds: Option<u64>,
     runtime: Runtime,
-    counts: MonitorCounts,
+    counts: Counts,
     inventory: Inventory,
     pricing: crate::market::PriceSnapshot,
     notifications: crate::store::NotificationStatus,
     transactions: crate::store::TransactionStatus,
     zcash_flow: crate::store::FlowStatus,
+    gas_alerts: Option<GasAlerts>,
+    tokens: Option<Tokens>,
     policy: Policy,
     swaps: Vec<MonitorSwap>,
     swap_limit: usize,
@@ -88,15 +68,54 @@ pub(crate) struct MonitorSnapshot {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MonitorSwapSnapshot {
+    schema_version: u32,
+    generated_at: u64,
+    swap: MonitorSwap,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Counts {
+    #[serde(flatten)]
+    stored: MonitorCounts,
+    awaiting_deposit: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Inventory {
-    usdc_available: Option<String>,
-    usdc_wallet: Option<String>,
-    maker_gas_wei: Option<String>,
     zec_total_zat: Option<String>,
     zec_spendable_zat: Option<String>,
     zec_reserved_zat: String,
     zec_available_zat: Option<String>,
+    zec_in_flight_zat: Option<String>,
     wallet_busy: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GasAlerts {
+    enabled: bool,
+    interval_seconds: u64,
+    accounts: Vec<GasAlertAccount>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GasAlertAccount {
+    label: String,
+    address: Address,
+    low_wei: String,
+    recovery_wei: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tokens {
+    #[serde(flatten)]
+    gate: zecswap_tokens::server::Today,
+    days: Vec<TokenDay>,
 }
 
 #[derive(Serialize)]
@@ -117,11 +136,12 @@ struct Policy {
     evm_confirmations: Option<u32>,
     forward_evm_confirmations: u32,
     reverse_fee_reserve_zat: Option<String>,
+    max_awaiting_deposit: Option<usize>,
 }
 
 impl Maker {
-    pub(crate) fn monitor_authorized(&self, header: Option<&str>) -> bool {
-        self.monitoring.authorized(header)
+    pub(crate) fn monitor_token(&self) -> Arc<MonitorToken> {
+        self.monitoring.token.clone()
     }
 
     pub(super) fn record_monitor_sync(&self, synced: bool) {
@@ -148,135 +168,83 @@ impl Maker {
         runtime.failed_swap_ids = failed;
     }
 
-    /// No syncing, proving, broadcasts or inventory writes. Slow RPCs and a busy wallet
-    /// produce missing readings, so monitoring cannot queue behind a financial operation.
+    /// No chain reads, syncing, proving, broadcasts or inventory writes: the dashboard reads
+    /// the chain itself, and a busy wallet leaves its readings missing, so monitoring never
+    /// queues behind a financial operation or spends the watchtower's RPC.
     pub(crate) async fn monitor_snapshot(&self) -> Result<MonitorSnapshot> {
         const LIMIT: usize = 50;
-        let counts = self.store.monitor_counts()?;
-        let mut swaps = self.store.monitor_swaps(LIMIT)?;
+        let stored = self.store.monitor_counts()?;
+        let mut swaps = self.store.monitor_swaps(LIMIT, None)?;
         let runtime = self.monitoring.state.lock().unwrap().clone();
-        for swap in &mut swaps {
-            swap.last_pass_failed = runtime.failed_swap_ids.contains(&swap.id);
-        }
         let reserved = self.reverse_reserved()?;
-        let (funds, wallet_busy) = match self.zcash.try_lock() {
-            Ok(zcash) => {
-                for swap in &mut swaps {
-                    if let Some(funds) =
-                        uuid::Uuid::parse_str(&swap.account)
-                            .ok()
-                            .and_then(|account| {
-                                zcash
-                                    .wallet()
-                                    .ok()?
-                                    .funds(zecswap_chain::zcash::AccountUuid::from_uuid(account))
-                                    .ok()
-                            })
-                    {
-                        swap.zec_total_zat = Some(funds.total.to_string());
-                        swap.zec_spendable_zat = Some(funds.spendable.to_string());
-                    }
-                }
-                (
-                    self.inventory
-                        .as_ref()
-                        .and_then(|(account, _)| zcash.wallet().ok()?.funds(*account).ok()),
-                    false,
-                )
-            }
-            Err(_) => (runtime.cached_funds, true),
-        };
-        let readings = async {
-            let duration = Duration::from_secs(3);
-            let (available, wallet, gas) = tokio::join!(
-                timeout(
-                    duration,
-                    self.settlement.balance_of(self.account, self.config.token)
-                ),
-                timeout(
-                    duration,
-                    self.settlement
-                        .token_balance(self.config.token, self.account)
-                ),
-                timeout(duration, self.settlement.eth_balance(self.account)),
-            );
-            (
-                available.ok().and_then(Result::ok),
-                wallet.ok().and_then(Result::ok),
-                gas.ok().and_then(Result::ok),
-            )
-        };
-        let observations = async {
-            let ids: Vec<_> = swaps.iter().map(|swap| swap.id).collect();
-            let mut pending = stream::iter(ids)
-                .map(|id| async move {
+        let (funds, in_flight, wallet_busy) = match self.zcash.try_lock() {
+            Ok(zcash) => match zcash.wallet() {
+                Ok(wallet) => {
+                    self.wallet_funds(&mut swaps, wallet);
                     (
-                        id,
-                        timeout(Duration::from_secs(2), self.settlement.swap_state(id)).await,
+                        self.inventory
+                            .as_ref()
+                            .and_then(|(account, _)| wallet.funds(*account).ok()),
+                        self.in_flight(wallet)?,
+                        false,
                     )
-                })
-                .buffer_unordered(4);
-            let deadline = Instant::now() + Duration::from_secs(6);
-            let mut observed = Vec::new();
-            while let Ok(Some((id, result))) = timeout_at(deadline, pending.next()).await {
-                if let Ok(Ok(chain)) = result {
-                    observed.push((id, chain));
                 }
-            }
-            observed
+                Err(_) => (None, None, false),
+            },
+            Err(_) => (runtime.cached_funds, None, true),
         };
-        let ((available, wallet, gas), observed, ()) =
-            tokio::join!(readings, observations, self.prices.refresh());
-        for (id, chain) in observed {
-            let swap = swaps.iter_mut().find(|swap| swap.id == id).unwrap();
-            swap.chain_observed = true;
-            if let Some(chain) = chain {
-                swap.stage = Some(
-                    match chain.stage {
-                        Stage::Open => "open",
-                        Stage::Ready => "ready",
-                        Stage::Claimed => "claimed",
-                        Stage::Refunded => "refunded",
-                    }
-                    .into(),
-                );
-                swap.paid_out = Some(chain.paid_out);
-                swap.claim_lock_until = Some(chain.claim_lock_until);
-                swap.refund_lock_until = Some(chain.refund_lock_until);
-            }
-        }
+        self.records(&mut swaps, &runtime.failed_swap_ids)?;
+        self.prices.refresh().await;
         let pricing = self.prices.snapshot(unix_now());
-        for swap in &mut swaps {
-            swap.evm_transactions = self
-                .store
-                .evm_transactions(&self.transaction_scope(), swap.id)?;
-            swap.zcash_flow = self
-                .store
-                .flow_observation(&self.transaction_scope(), swap.id)?;
-        }
+        let tokens = match &self.tokens {
+            Some(gate) => {
+                let gate = gate.today()?;
+                Some(Tokens {
+                    days: self.store.token_days(gate.day)?,
+                    gate,
+                })
+            }
+            None => None,
+        };
         Ok(MonitorSnapshot {
             transactions: self.store.transaction_status(&self.transaction_scope())?,
             zcash_flow: self.store.flow_status(&self.transaction_scope())?,
             notifications: self.store.notification_status(self.telegram.enabled())?,
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             generated_at: unix_now(),
             deployment: self.info(),
             uptime_seconds: unix_now().saturating_sub(self.monitoring.started_at),
             watchtower_healthy: self.check_watchtower().is_ok(),
             last_pass_age_seconds: self.health.completed_age_seconds(),
             runtime,
-            counts,
+            counts: Counts {
+                stored,
+                awaiting_deposit: self.awaiting_deposit()?,
+            },
             inventory: Inventory {
-                usdc_available: available.map(|value| value.to_string()),
-                usdc_wallet: wallet.map(|value| value.to_string()),
-                maker_gas_wei: gas.map(|value| value.to_string()),
                 zec_total_zat: funds.map(|value| value.total.to_string()),
                 zec_spendable_zat: funds.map(|value| value.spendable.to_string()),
                 zec_reserved_zat: reserved.to_string(),
                 zec_available_zat: funds
                     .map(|value| value.spendable.saturating_sub(reserved).to_string()),
+                zec_in_flight_zat: in_flight.map(|value| value.to_string()),
                 wallet_busy,
             },
+            gas_alerts: self.config.gas_alerts.as_ref().map(|alerts| GasAlerts {
+                enabled: self.telegram.enabled(),
+                interval_seconds: alerts.interval_seconds,
+                accounts: alerts
+                    .accounts
+                    .iter()
+                    .map(|account| GasAlertAccount {
+                        label: account.label.clone(),
+                        address: account.address,
+                        low_wei: account.low_wei.to_string(),
+                        recovery_wei: account.recovery_wei.to_string(),
+                    })
+                    .collect(),
+            }),
+            tokens,
             policy: Policy {
                 price_per_zec: pricing.price_per_zec.clone().unwrap_or_else(|| "0".into()),
                 spread_bps: self.config.pricing.spread_bps,
@@ -301,30 +269,73 @@ impl Maker {
                     .reverse
                     .as_ref()
                     .map(|value| value.fee_reserve_zat.to_string()),
+                max_awaiting_deposit: self.config.max_awaiting_deposit,
             },
             pricing,
             swaps,
             swap_limit: LIMIT,
         })
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn monitoring_is_closed_by_default_and_requires_the_exact_bearer_token() {
-        assert!(!Monitoring::new(None).authorized(Some("Bearer anything")));
-        let monitor = Monitoring::new(Some("test-token"));
-        assert!(monitor.authorized(Some("Bearer test-token")));
-        for header in [
-            None,
-            Some("test-token"),
-            Some("Bearer test-tokeN"),
-            Some("Bearer "),
-        ] {
-            assert!(!monitor.authorized(header));
+    /// One swap as the monitor exports it, whether or not it is among the latest.
+    pub(crate) fn monitor_swap(&self, id: B256) -> Result<Option<MonitorSwapSnapshot>> {
+        let mut swaps = self.store.monitor_swaps(1, Some(id))?;
+        if swaps.is_empty() {
+            return Ok(None);
         }
+        if let Ok(zcash) = self.zcash.try_lock()
+            && let Ok(wallet) = zcash.wallet()
+        {
+            self.wallet_funds(&mut swaps, wallet);
+        }
+        let failed = self
+            .monitoring
+            .state
+            .lock()
+            .unwrap()
+            .failed_swap_ids
+            .clone();
+        self.records(&mut swaps, &failed)?;
+        Ok(swaps.pop().map(|swap| MonitorSwapSnapshot {
+            schema_version: SCHEMA_VERSION,
+            generated_at: unix_now(),
+            swap,
+        }))
+    }
+
+    fn wallet_funds(&self, swaps: &mut [MonitorSwap], wallet: &Wallet) {
+        for swap in swaps {
+            if let Some(funds) = uuid::Uuid::parse_str(&swap.account)
+                .ok()
+                .and_then(|account| wallet.funds(AccountUuid::from_uuid(account)).ok())
+            {
+                swap.zec_total_zat = Some(funds.total.to_string());
+                swap.zec_spendable_zat = Some(funds.spendable.to_string());
+            }
+        }
+    }
+
+    /// ZEC in the joint accounts of every unsettled swap: users' deposits the maker has yet to
+    /// sweep, and its own deposits users have yet to claim. Unknown if any account can't be read.
+    fn in_flight(&self, wallet: &Wallet) -> Result<Option<u64>> {
+        let forward = self.store.unsettled_swaps()?;
+        let reverse = self.store.pending_reverse_swaps()?;
+        Ok(forward
+            .iter()
+            .map(|swap| swap.zcash_account)
+            .chain(reverse.iter().map(|swap| swap.account))
+            .map(|account| wallet.funds(account).map(|funds| funds.total))
+            .sum::<Result<u64, _>>()
+            .ok())
+    }
+
+    fn records(&self, swaps: &mut [MonitorSwap], failed: &[B256]) -> Result<()> {
+        let scope = self.transaction_scope();
+        for swap in swaps {
+            swap.last_pass_failed = failed.contains(&swap.id);
+            swap.evm_transactions = self.store.evm_transactions(&scope, swap.id)?;
+            swap.zcash_flow = self.store.flow_observation(&scope, swap.id)?;
+        }
+        Ok(())
     }
 }

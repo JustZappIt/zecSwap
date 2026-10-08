@@ -28,7 +28,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
         tokens: None,
         telegram: crate::telegram::Telegram::new(None, None).unwrap(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
-        monitoring: monitoring::Monitoring::new(None),
+        monitoring: monitoring::Monitoring::new(Default::default()),
         inventory: None,
         account: key.address(),
         lock_duration: 7200,
@@ -252,7 +252,9 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(response.headers()["cache-control"], "no-store");
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
-    maker.monitoring = monitoring::Monitoring::new(Some("monitor-test-token"));
+    maker.monitoring = monitoring::Monitoring::new(zecswap_api::server::MonitorToken::new(Some(
+        "monitor-test-token",
+    )));
     let maker = Arc::new(maker);
     let app = crate::api::router(maker.clone());
     for (token, status) in [
@@ -275,8 +277,11 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
                 .await
                 .unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["schemaVersion"], 2);
             assert_eq!(json["counts"]["quotes"], 0);
-            assert!(json["inventory"]["usdcAvailable"].is_null());
+            assert_eq!(json["counts"]["awaitingDeposit"], 0);
+            assert!(json["inventory"].get("usdcAvailable").is_none());
+            assert!(json["tokens"].is_null());
             assert_eq!(json["watchtowerHealthy"], false);
             assert!(json["swaps"].as_array().unwrap().is_empty());
             assert!(
@@ -286,8 +291,100 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
             );
         }
     }
+    let swap = format!("/v1/monitor/swaps/{}", B256::repeat_byte(9));
+    for (token, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("wrong-token"), StatusCode::UNAUTHORIZED),
+        (Some("monitor-test-token"), StatusCode::NOT_FOUND),
+    ] {
+        let mut request = Request::get(&swap);
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{token:?}");
+    }
     assert_eq!(maker.store.monitor_counts().unwrap().quotes, 0);
     assert!(maker.store.unsettled_swaps().unwrap().is_empty());
+}
+
+/// The monitor reads nothing from the chain: with the settlement RPC taking connections and
+/// never answering, a snapshot and a single swap's record still come back at once, and the RPC
+/// sees no request.
+#[tokio::test]
+async fn monitoring_never_waits_on_the_chain() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let rpc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", rpc.local_addr().unwrap());
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = connections.clone();
+    let silent = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = rpc.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            held.push(stream);
+        }
+    });
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.settlement =
+        Settlement::connect(&url, maker.config.contract, PrivateKeySigner::random()).unwrap();
+    maker
+        .store
+        .insert_quote(
+            [1; 32],
+            Address::repeat_byte(1),
+            None,
+            1_000_000,
+            100_000,
+            unix_now() + 120,
+        )
+        .unwrap();
+    let swap = Swap {
+        id: B256::repeat_byte(3),
+        quote: maker
+            .store
+            .take_quote(&[1; 32], unix_now())
+            .unwrap()
+            .unwrap(),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
+        zcash_account: AccountUuid::from_uuid(uuid::Uuid::from_bytes([3; 16])),
+        opened_at: unix_now(),
+        token: Address::repeat_byte(4),
+        t0: unix_now() + 3600,
+        t1: unix_now() + 7200,
+        sweep: None,
+        settled: false,
+        refund_started: false,
+        token_request: None,
+        token_return: None,
+    };
+    maker.store.insert_swap(&swap, None).unwrap();
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), maker.monitor_snapshot())
+        .await
+        .expect("the monitor waited on the chain")
+        .unwrap();
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["counts"]["awaitingDeposit"], 1);
+    let swaps = json["swaps"].as_array().unwrap();
+    assert_eq!(swaps.len(), 1);
+    assert_eq!(swaps[0]["id"], swap.id.to_string());
+    assert_eq!(swaps[0]["quoteId"], B256::repeat_byte(1).to_string());
+    assert!(swaps[0]["acceptedAt"].as_u64().is_some());
+    for chain in ["stage", "chainObserved", "paidOut", "claimLockUntil"] {
+        assert!(swaps[0].get(chain).is_none(), "{chain}");
+    }
+    let single = serde_json::to_value(maker.monitor_swap(swap.id).unwrap().unwrap()).unwrap();
+    assert_eq!(single["swap"]["id"], swap.id.to_string());
+    assert_eq!(connections.load(Ordering::SeqCst), 0);
+    silent.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -889,6 +986,41 @@ async fn opened_swap() -> Option<(
     let terms = maker.terms(&swap).unwrap();
     maker.settlement.open(&terms).await.unwrap();
     Some((anvil, dir, maker, swap, terms))
+}
+
+/// Each settlement event the indexer records carries its block's time once the history is
+/// enriched, read from the block itself, for the monitor's timeline.
+#[tokio::test]
+async fn settlement_events_carry_their_block_time() {
+    let Some((anvil, _dir, maker, swap, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x3"])).await;
+    maker.transaction_pass().await.unwrap();
+    let opened = |maker: &Maker| {
+        let swap = serde_json::to_value(maker.monitor_swap(swap.id).unwrap().unwrap()).unwrap();
+        swap["swap"]["evmTransactions"][0].clone()
+    };
+    let before = opened(&maker);
+    assert_eq!(before["kind"], "opened");
+    assert!(before["blockTime"].is_null());
+    maker.enrich_evm_history().await.unwrap();
+    let number = format!("{:#x}", before["blockNumber"].as_u64().unwrap());
+    let block = anvil_rpc(
+        &url,
+        "eth_getBlockByNumber",
+        serde_json::json!([number, false]),
+    )
+    .await;
+    let time = block["timestamp"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("0x");
+    assert_eq!(
+        opened(&maker)["blockTime"].as_u64(),
+        Some(u64::from_str_radix(time, 16).unwrap())
+    );
 }
 
 /// Restarted on another account, root secret or, with a reverse swap pending, token, a maker

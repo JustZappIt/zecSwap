@@ -498,7 +498,9 @@ max_age_seconds = 300
 Set `ZCASH_CMC_KEY` only in the maker's protected environment file. It is never a
 dashboard variable or part of a browser response. Quote and monitoring requests fetch
 CoinMarketCap's ZEC (ID 1437) and USDC (ID 3408) USD prices together, using a shared
-60-second cache and a single in-flight request. There is no cron or background polling.
+60-second cache and a single in-flight request. The same request carries ETH (ID 1027) for
+the dashboard's gas values alone: missing or stale, it is left out and never touches quotes.
+There is no cron or background polling.
 ZEC/USDC is ZEC/USD divided by USDC/USD, converted to six-decimal token units with decimal
 arithmetic; the existing spread and zatoshi rounding apply in both swap directions.
 Both asset timestamps must be within the configured maximum age. A provider failure can
@@ -509,27 +511,44 @@ their exact stored amounts until expiry; settlement and watchtower recovery cont
 independently of the price feed. Omitting `[pricing.market]` retains fixed pricing for
 local tests. Production and mainnet should explicitly enable market pricing.
 
-`GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`. It is
-disabled unless `MAKER_MONITOR_TOKEN` is set (at least 32 characters), and requires
+`GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`, and
+`GET /maker/v1/monitor/swaps/{id}` the same record for any one swap, old or new. Both are
+disabled unless `MAKER_MONITOR_TOKEN` is set (at least 32 characters), and require
 `Authorization: Bearer <token>`. Use the same value as `BRIDGE_TESTNET_MONITOR_TOKEN`
 in the dashboard's server environment. No seed, spending share, viewing key, user
 authorization, or wallet account identifier is returned.
 
-The export reports contract and wallet USDC, maker ETH, shielded ZEC total/spendable/
-reserved/available inventory, quote and swap counts, watchtower readiness, sync recency,
-errors since restart, pricing/timing policy, and up to 50 swaps with active records first.
-The `pricing` object reports the same prices used for quotes, provider timestamps,
-cache/freshness policy and sanitized refresh errors. USD inventory values and displayed
-maker buy/sell rates use these readings, rather than another independent price feed.
-Swap details include observed contract states, deposit/sweep transaction IDs, wallet funds,
-and claim/refund deadlines. Settled counts include expired and refunded swaps; they are
-not successful-trade counts. Per-swap errors are from the last completed watchtower pass;
-the counter resets when the maker restarts. Detailed errors remain in the maker logs.
+The export (`schemaVersion` 2) holds only what the maker knows: shielded ZEC total/spendable/
+reserved/available inventory and the ZEC sitting in unsettled swaps' deposit accounts, quote
+and swap counts and how many swaps wait on a deposit (against `max_awaiting_deposit`),
+watchtower readiness, sync recency, errors since restart, pricing/timing policy, the gas
+alert accounts, the token gate's day (see [tokens.md](tokens.md)), and up to 50 swaps with
+active records first. The `pricing` object reports the same prices used for quotes, provider
+timestamps, cache/freshness policy and sanitized refresh errors. USD inventory values and
+displayed maker buy/sell rates use these readings, rather than another independent price feed.
+Each swap carries its quote ID, when it was accepted, opened and settled, whether it is
+archived or cancelling, whether its token went back, deposit/sweep transaction IDs, wallet
+funds, deadlines, and every recorded Ethereum event with its block time. Settled counts
+include expired and refunded swaps; they are not successful-trade counts. Per-swap errors are
+from the last completed watchtower pass; the counter resets when the maker restarts. Detailed
+errors remain in the maker logs.
 
-The endpoint never syncs the wallet, generates proofs, sends transactions, or writes
-inventory. RPC observations have bounded concurrency and a six-second total time budget;
-failed observations return unknown fields. A busy wallet uses the last captured inventory
-reading and sets `walletBusy`; individual wallet readings remain unknown while busy.
+The endpoint reads nothing from the chain: contract states, USDC and ETH balances are the
+dashboard's to read, on its own RPC, so monitoring never spends the RPC the watchtower needs.
+It never syncs the wallet, generates proofs, sends transactions, or writes inventory. A busy
+wallet uses the last captured inventory reading and sets `walletBusy`; individual wallet
+readings remain unknown while busy.
+
+The relayer's `GET /relayer/v1/monitor` (`RELAYER_MONITOR_TOKEN`) counts, for each operation
+since it started, the transactions sent, the requests refused and those that failed (by kind:
+`reverted`, `unconfirmed` or `internal`, never a message), and the gas and wei its sent
+transactions burned, from which the dashboard works out how long its ETH lasts. The issuer's
+`GET /issuer/v1/monitor` (`ISSUER_MONITOR_TOKEN`, in `/etc/zecswap-issuer/secrets.env`)
+shows the day's token totals, its refusals by reason and its status list's age. Both are
+closed while their token is unset and take tokens of at least 32 characters. All three
+monitors share a gateway allowance of their own (one a second, a burst of ten), apart from the
+apps'.
+
 The dashboard validates the deployment and token precision before formatting USDC.
 The pinned test token has no optional `decimals()` metadata and uses explicitly configured
 six-decimal USDC units; mainnet has no default token precision.

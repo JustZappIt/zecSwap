@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-fn relayer(enabled: bool) -> Relayer {
+pub(crate) fn relayer(enabled: bool) -> Relayer {
     let contract = Address::repeat_byte(1);
     Relayer {
         config: Config {
@@ -28,6 +28,7 @@ fn relayer(enabled: bool) -> Relayer {
             contract: contract.into(),
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
+        monitor: crate::monitor::Monitor::new(MonitorToken::default()),
     }
 }
 

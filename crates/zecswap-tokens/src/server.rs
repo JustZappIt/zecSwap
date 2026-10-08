@@ -15,11 +15,11 @@ use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zecswap_api::server::error;
 use zecswap_api::service::ErrorCode;
 
-use crate::{Challenge, IssuerKey, Token, TokenKey, today, www_authenticate};
+use crate::{Challenge, DAY, IssuerKey, Token, TokenKey, day, today, www_authenticate};
 
 /// `[tokens]` in a service's config.
 #[derive(Clone, Debug, Deserialize)]
@@ -50,11 +50,105 @@ struct Spent {
     store: Connection,
     /// The tokens of requests still running.
     held: HashSet<[u8; 32]>,
+    today: Today,
 }
 
 enum Refusal {
-    Token(String),
+    Token(Refused, String),
     Store(rusqlite::Error),
+}
+
+/// Why a token was refused, as the gate counts it.
+#[derive(Clone, Copy)]
+enum Refused {
+    Missing,
+    Unreadable,
+    Malformed,
+    UnknownKey,
+    /// For another service or day, or not signed by the key it names.
+    Invalid,
+    InUse,
+    Spent,
+}
+
+/// What the gate has seen today, for monitoring: the tokens its store holds spent today, and
+/// since `since` (its start or 00:00 UTC, whichever came later) the ones requests kept, by
+/// whose key they were under, and the requests refused, by why. Nothing in it tells one token
+/// or device from another.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Today {
+    pub day: u64,
+    pub spent_today: u64,
+    pub since: u64,
+    pub spent: Kept,
+    pub refused: Refusals,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct Kept {
+    pub issuer: u64,
+    pub returned: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refusals {
+    pub missing: u64,
+    pub unreadable: u64,
+    pub malformed: u64,
+    pub unknown_key: u64,
+    pub invalid: u64,
+    pub in_use: u64,
+    pub spent: u64,
+}
+
+impl Today {
+    fn starting(now: u64) -> Self {
+        Self {
+            day: day(now),
+            since: now,
+            ..Self::default()
+        }
+    }
+
+    /// Counts afresh from midnight on.
+    fn roll(&mut self, now: u64) {
+        if day(now) != self.day {
+            *self = Self::starting(day(now) * DAY);
+        }
+    }
+
+    fn kept(&mut self, returned: bool, now: u64) {
+        self.roll(now);
+        let kept = &mut self.spent;
+        *if returned {
+            &mut kept.returned
+        } else {
+            &mut kept.issuer
+        } += 1;
+    }
+
+    fn refused(&mut self, why: Refused, now: u64) {
+        self.roll(now);
+        let refused = &mut self.refused;
+        *match why {
+            Refused::Missing => &mut refused.missing,
+            Refused::Unreadable => &mut refused.unreadable,
+            Refused::Malformed => &mut refused.malformed,
+            Refused::UnknownKey => &mut refused.unknown_key,
+            Refused::Invalid => &mut refused.invalid,
+            Refused::InUse => &mut refused.in_use,
+            Refused::Spent => &mut refused.spent,
+        } += 1;
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock is after 1970")
+        .as_secs()
 }
 
 impl Gate {
@@ -82,7 +176,24 @@ impl Gate {
             state: Mutex::new(Spent {
                 store,
                 held: HashSet::new(),
+                today: Today::starting(now()),
             }),
+        })
+    }
+
+    /// What the gate has seen today.
+    pub fn today(&self) -> anyhow::Result<Today> {
+        let now = now();
+        let mut state = self.state();
+        state.today.roll(now);
+        let spent_today = state.store.query_row(
+            "SELECT count(*) FROM spent_tokens WHERE day = ?1",
+            [day(now)],
+            |row| row.get(0),
+        )?;
+        Ok(Today {
+            spent_today,
+            ..state.today.clone()
         })
     }
 
@@ -115,27 +226,35 @@ impl Gate {
     /// Holds the request's token, unless it is missing, forged, meant for another service or
     /// day, spent, or held by another request.
     fn hold(self: &Arc<Self>, headers: &HeaderMap) -> Result<Spend, Refusal> {
-        let refuse = |why: &str| Refusal::Token(why.into());
+        let refuse = |kind: Refused, why: &str| Refusal::Token(kind, why.into());
         let header = headers
             .get(header::AUTHORIZATION)
-            .ok_or_else(|| refuse("this request takes a token"))?
+            .ok_or_else(|| refuse(Refused::Missing, "this request takes a token"))?
             .to_str()
-            .map_err(|_| refuse("an unreadable authorization"))?;
-        let token = Token::from_authorization(header).map_err(|e| refuse(&e.to_string()))?;
-        let key = self
-            .keys
-            .iter()
-            .chain([self.return_key()])
-            .find(|key| key.id() == token.key_id())
-            .ok_or_else(|| refuse("a token under a key not taken here"))?;
+            .map_err(|_| refuse(Refused::Unreadable, "an unreadable authorization"))?;
+        let token = Token::from_authorization(header)
+            .map_err(|e| refuse(Refused::Malformed, &e.to_string()))?;
+        let (key, returned) = match self.keys.iter().find(|key| key.id() == token.key_id()) {
+            Some(key) => (key, false),
+            None if self.return_key().id() == token.key_id() => (self.return_key(), true),
+            None => {
+                return Err(refuse(
+                    Refused::UnknownKey,
+                    "a token under a key not taken here",
+                ));
+            }
+        };
         let day = today();
         token
             .verify(key, &self.challenge(day))
-            .map_err(|e| refuse(&e.to_string()))?;
+            .map_err(|e| refuse(Refused::Invalid, &e.to_string()))?;
         let nonce = token.nonce();
         let mut state = self.state();
         if state.held.contains(&nonce) {
-            return Err(refuse("a token another request is spending"));
+            return Err(refuse(
+                Refused::InUse,
+                "a token another request is spending",
+            ));
         }
         let spent = state
             .store
@@ -147,13 +266,14 @@ impl Gate {
             .optional()
             .map_err(Refusal::Store)?;
         if spent.is_some() {
-            return Err(refuse("a token already spent"));
+            return Err(refuse(Refused::Spent, "a token already spent"));
         }
         state.held.insert(nonce);
         Ok(Spend(Arc::new(Held {
             gate: self.clone(),
             nonce,
             day,
+            returned,
         })))
     }
 
@@ -178,13 +298,20 @@ struct Held {
     gate: Arc<Gate>,
     nonce: [u8; 32],
     day: u64,
+    /// Under the service's own key: handed back by an earlier request.
+    returned: bool,
 }
 
 impl Spend {
     pub fn keep(&self) -> anyhow::Result<()> {
-        let Held { gate, nonce, day } = &*self.0;
-        let state = gate.state();
-        state.store.execute(
+        let Held {
+            gate,
+            nonce,
+            day,
+            returned,
+        } = &*self.0;
+        let mut state = gate.state();
+        let kept = state.store.execute(
             "INSERT OR IGNORE INTO spent_tokens (nonce, day) VALUES (?1, ?2)",
             params![nonce, day],
         )?;
@@ -192,6 +319,9 @@ impl Spend {
         state
             .store
             .execute("DELETE FROM spent_tokens WHERE day < ?1", [day])?;
+        if kept == 1 {
+            state.today.kept(*returned, now());
+        }
         Ok(())
     }
 }
@@ -210,7 +340,8 @@ pub async fn require(State(gate): State<Arc<Gate>>, mut request: Request, next: 
             request.extensions_mut().insert(spend);
             next.run(request).await
         }
-        Err(Refusal::Token(why)) => {
+        Err(Refusal::Token(kind, why)) => {
+            gate.state().today.refused(kind, now());
             let mut response = error(StatusCode::UNAUTHORIZED, ErrorCode::TokenRequired, why);
             response
                 .headers_mut()
@@ -399,7 +530,7 @@ mod tests {
     async fn one_token_sent_twice_at_once_buys_one_request() {
         let service = Service::new();
         let go = Arc::new(Notify::new());
-        let (_, maker) = service.app(&service.config, go.clone());
+        let (gate, maker) = service.app(&service.config, go.clone());
         let paid = token(&service.issuer, &service.today());
         let first = tokio::spawn({
             let (maker, paid) = (maker.clone(), paid.clone());
@@ -421,6 +552,102 @@ mod tests {
         assert_eq!(
             send(&maker, "/keep", Some(&paid)).await,
             StatusCode::UNAUTHORIZED
+        );
+        let today = gate.today().unwrap();
+        assert!(today.refused.in_use >= 2, "{today:?}");
+        assert_eq!((today.refused.spent, today.spent.issuer), (1, 1));
+    }
+
+    /// The gate counts the requests it refused, by why, and the tokens requests kept, by whose
+    /// key they were under; a token whose request was refused after the gate let it through is
+    /// neither.
+    #[tokio::test]
+    async fn refusals_are_counted_by_why_and_kept_tokens_by_whose_key() {
+        let service = Service::new();
+        let (gate, maker) = service.app(&service.config, Arc::default());
+        let challenge = service.today();
+        let with = |value: HeaderValue| {
+            let maker = maker.clone();
+            async move {
+                let request = Request::post("/keep")
+                    .header(header::AUTHORIZATION, value)
+                    .body(Body::empty())
+                    .unwrap();
+                maker.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(send(&maker, "/keep", None).await, StatusCode::UNAUTHORIZED);
+        let unreadable = HeaderValue::from_bytes(b"PrivateToken token=\xff").unwrap();
+        assert_eq!(with(unreadable).await, StatusCode::UNAUTHORIZED);
+        let malformed = HeaderValue::from_static("PrivateToken token=abc");
+        assert_eq!(with(malformed).await, StatusCode::UNAUTHORIZED);
+        let stranger = token(&IssuerKey::generate().unwrap(), &challenge);
+        assert_eq!(
+            send(&maker, "/keep", Some(&stranger)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let yesterday = token(&service.issuer, &challenge.on(challenge.day() - 1));
+        assert_eq!(
+            send(&maker, "/keep", Some(&yesterday)).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let paid = token(&service.issuer, &challenge);
+        assert_eq!(
+            send(&maker, "/refuse", Some(&paid)).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(send(&maker, "/keep", Some(&paid)).await, StatusCode::OK);
+        assert_eq!(
+            send(&maker, "/keep", Some(&paid)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let (pending, blinded) = Pending::new(gate.return_key(), &challenge).unwrap();
+        let signature = URL_SAFE_NO_PAD
+            .decode(gate.sign_return(&blinded).unwrap())
+            .unwrap();
+        let returned = pending.finalize(gate.return_key(), &signature).unwrap();
+        assert_eq!(send(&maker, "/keep", Some(&returned)).await, StatusCode::OK);
+
+        let today = gate.today().unwrap();
+        assert_eq!(today.day, crate::today());
+        assert_eq!(today.spent_today, 2);
+        assert_eq!((today.spent.issuer, today.spent.returned), (1, 1));
+        let refused = today.refused;
+        assert_eq!(
+            (
+                refused.missing,
+                refused.unreadable,
+                refused.malformed,
+                refused.unknown_key,
+                refused.invalid,
+                refused.in_use,
+                refused.spent
+            ),
+            (1, 1, 1, 1, 1, 0, 1)
+        );
+    }
+
+    /// The day's counts start afresh at midnight UTC, counted from it.
+    #[test]
+    fn counts_start_afresh_at_midnight() {
+        let start = 20_000 * DAY + 3_600;
+        let mut today = Today::starting(start);
+        today.refused(Refused::Missing, start + 10);
+        today.kept(false, start + 20);
+        assert_eq!(
+            (today.refused.missing, today.spent.issuer, today.since),
+            (1, 1, start)
+        );
+        today.refused(Refused::Spent, 20_001 * DAY + 5);
+        assert_eq!((today.day, today.since), (20_001, 20_001 * DAY));
+        assert_eq!(
+            (
+                today.refused.missing,
+                today.refused.spent,
+                today.spent.issuer
+            ),
+            (0, 1, 0)
         );
     }
 }

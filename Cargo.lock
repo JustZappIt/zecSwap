@@ -6992,10 +6992,13 @@ name = "zecswap-api"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "anyhow",
  "axum",
+ "blake2b_simd",
  "serde",
  "zecswap-core",
  "zecswap-railgun",
+ "zeroize",
 ]
 
 [[package]]
@@ -7148,6 +7151,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "zecswap-api",

@@ -320,6 +320,10 @@ impl Attester for AndroidAttester {
             .map_err(|_| "a request its key did not sign")?;
         Ok(Sha256::digest(leaf.spki).into())
     }
+
+    fn status_list(&self) -> Option<crate::StatusList> {
+        self.status.as_ref().map(StatusList::state)
+    }
 }
 
 /// The chain below the root, and the pinned root it ends in. The app may send the root along,
@@ -407,20 +411,35 @@ fn uint(value: AnyRef<'_>, tag: Tag) -> der::Result<u64> {
 /// or, for over half of them, decimal.
 struct StatusList {
     path: PathBuf,
-    /// The serials listed, and when the file that listed them was written.
-    listed: Mutex<(SystemTime, HashSet<String>)>,
+    listed: Mutex<Listed>,
+}
+
+struct Listed {
+    /// When the file was written that the serials were read from.
+    written: SystemTime,
+    /// When the file was written as last seen, read or not.
+    seen: SystemTime,
+    entries: u64,
+    serials: HashSet<String>,
 }
 
 impl StatusList {
     fn open(path: &Path) -> Result<Self> {
-        let listed = (modified(path)?, Self::read(path)?);
+        let written = modified(path)?;
+        let (entries, serials) = Self::read(path)?;
         Ok(Self {
             path: path.into(),
-            listed: Mutex::new(listed),
+            listed: Mutex::new(Listed {
+                written,
+                seen: written,
+                entries,
+                serials,
+            }),
         })
     }
 
-    fn read(path: &Path) -> Result<HashSet<String>> {
+    /// The number of entries, and the serials they list.
+    fn read(path: &Path) -> Result<(u64, HashSet<String>)> {
         #[derive(Deserialize)]
         struct List {
             entries: HashMap<String, serde_json::Value>,
@@ -429,7 +448,8 @@ impl StatusList {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let list: List =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(list
+        let entries = list.entries.len() as u64;
+        let serials = list
             .entries
             .into_keys()
             .flat_map(|serial| {
@@ -444,27 +464,47 @@ impl StatusList {
                 [Some(serial_hex(&serial.to_ascii_lowercase())), decimal]
             })
             .flatten()
-            .collect())
+            .collect();
+        Ok((entries, serials))
     }
 
-    /// Whether any of `serials` is listed, as the file now has it. A file that no longer reads
-    /// leaves the last list in force.
-    fn revoked<'a>(&self, serials: impl IntoIterator<Item = &'a [u8]>) -> bool {
+    /// The list as the file now has it. A file that no longer reads leaves the last list in
+    /// force.
+    fn current(&self) -> std::sync::MutexGuard<'_, Listed> {
         let mut listed = self.listed.lock().unwrap();
         if let Ok(modified) = modified(&self.path)
-            && modified != listed.0
+            && modified != listed.seen
         {
+            listed.seen = modified;
             match Self::read(&self.path) {
-                Ok(serials) => *listed = (modified, serials),
-                Err(e) => {
-                    tracing::error!("keeping the last attestation status list: {e:#}");
-                    listed.0 = modified;
+                Ok((entries, serials)) => {
+                    listed.written = modified;
+                    listed.entries = entries;
+                    listed.serials = serials;
                 }
+                Err(e) => tracing::error!("keeping the last attestation status list: {e:#}"),
             }
         }
+        listed
+    }
+
+    /// Whether any of `serials` is listed.
+    fn revoked<'a>(&self, serials: impl IntoIterator<Item = &'a [u8]>) -> bool {
+        let listed = self.current();
         serials
             .into_iter()
-            .any(|serial| listed.1.contains(&serial_hex(&hex::encode(serial))))
+            .any(|serial| listed.serials.contains(&serial_hex(&hex::encode(serial))))
+    }
+
+    fn state(&self) -> crate::StatusList {
+        let listed = self.current();
+        crate::StatusList {
+            modified_at: listed
+                .written
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+            entries: listed.entries,
+        }
     }
 }
 
@@ -484,7 +524,7 @@ fn serial_hex(hex: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use der::Encode as _;
     use der::asn1::{GeneralizedTime, UtcTime};
@@ -917,7 +957,7 @@ mod tests {
         toml::from_str(&text).unwrap()
     }
 
-    fn refused(result: Result<usize, IssueError>) -> String {
+    fn refused(result: Result<usize, IssueError>) -> &'static str {
         match result {
             Err(IssueError::Refused(why)) => why,
             other => panic!("not refused: {other:?}"),
@@ -1158,6 +1198,28 @@ mod tests {
                 "a revoked certificate",
                 "listed as {serial}"
             );
+            let written = later.duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let shown = serde_json::to_value(fixture.issuer.monitor(NOW).unwrap()).unwrap();
+            assert_eq!(
+                shown["statusList"],
+                serde_json::json!({"modifiedAt": written, "entries": 1})
+            );
+            assert_eq!(shown["requests"]["refused"]["a revoked certificate"], 1);
+
+            // A refresh that doesn't read leaves the last list in force, and says so.
+            std::fs::write(&status, "not a list").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&status)
+                .unwrap()
+                .set_modified(later + Duration::from_secs(60))
+                .unwrap();
+            assert_eq!(
+                refused(fixture.ask(&phone, 1, NOW)),
+                "a revoked certificate"
+            );
+            let shown = serde_json::to_value(fixture.issuer.monitor(NOW).unwrap()).unwrap();
+            assert_eq!(shown["statusList"]["modifiedAt"], written);
         }
     }
 

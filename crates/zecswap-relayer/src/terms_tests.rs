@@ -79,6 +79,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         account: relayer_account,
         domain,
         settlement: Settlement::connect(&url, contract, relayer_key.clone()).unwrap(),
+        monitor: crate::monitor::Monitor::new(MonitorToken::default()),
     };
     let relayer = relayer_for(config.clone());
     let strangers = || {
@@ -302,8 +303,27 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         "other terms",
     );
     assert_eq!(sent().await, 2);
-    relayer.ready_reverse(ready(&escrow)).await.unwrap();
+    let relayer = Arc::new(relayer);
+    let readied = relayer.ready_reverse(ready(&escrow)).await;
+    relayer.observe("ready_reverse", readied).unwrap();
     assert_eq!(sent().await, 3);
+    // What it sent is counted at once, and the gas its receipt shows burned once that is read.
+    let snapshot = || {
+        serde_json::to_value(relayer.monitor_snapshot()).unwrap()["operations"]["ready_reverse"]
+            .clone()
+    };
+    assert_eq!(snapshot()["sent"], 1);
+    let mut readied = snapshot();
+    for _ in 0..50 {
+        if readied["gasUsed"] != "0" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        readied = snapshot();
+    }
+    let gas: u64 = readied["gasUsed"].as_str().unwrap().parse().unwrap();
+    let wei: u128 = readied["gasCostWei"].as_str().unwrap().parse().unwrap();
+    assert!(gas > 21_000 && wei >= u128::from(gas), "{readied}");
     assert_eq!(
         maker.swap(id, &escrow).await.unwrap().unwrap().stage,
         Stage::Ready

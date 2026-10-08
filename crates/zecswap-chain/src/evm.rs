@@ -431,6 +431,20 @@ impl Settlement {
                 .any(|log| log.address() == railgun))
     }
 
+    /// What a mined transaction burned: its gas, and that gas at the price it paid, in wei.
+    /// None for one the node has no receipt of.
+    pub async fn transaction_cost(&self, tx: B256) -> Result<Option<(u64, u128)>, Error> {
+        Ok(self
+            .provider
+            .get_transaction_receipt(tx)
+            .await
+            .map_err(Error::contract)?
+            .map(|receipt| {
+                let gas = receipt.gas_used;
+                (gas, u128::from(gas) * receipt.effective_gas_price)
+            }))
+    }
+
     /// The notes a transaction shielded into Railgun.
     pub async fn shielded(&self, tx: B256) -> Result<Vec<Shielded>, Error> {
         let railgun = self.railgun().await?;
@@ -861,17 +875,14 @@ async fn confirmed(
         .await
         .map_err(|error| {
             warn!(%transaction_hash, outcome = "unknown", error = %error, "receipt unavailable; submission may still mine");
-            Error::contract(error)
+            Error::Unconfirmed(transaction_hash)
         })?;
     if receipt.status() {
         info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
         Ok(receipt)
     } else {
         warn!(%transaction_hash, block_number = receipt.block_number, outcome = "reverted", "transaction reverted on chain");
-        Err(Error::Contract(format!(
-            "transaction {} reverted",
-            receipt.transaction_hash
-        )))
+        Err(Error::Reverted(receipt.transaction_hash))
     }
 }
 

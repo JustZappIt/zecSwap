@@ -12,6 +12,8 @@ use crate::pricing::{MarketConfig, Pricing};
 const CMC_QUOTES: &str = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/latest";
 const ZEC_ID: u64 = 1437;
 const USDC_ID: u64 = 3408;
+/// For the dashboard's gas values only: never part of a quote.
+const ETH_ID: u64 = 1027;
 const USD_ID: u64 = 2781;
 
 pub(crate) struct PriceBook {
@@ -35,6 +37,8 @@ struct MarketPrice {
     usdc_usd: String,
     zec_updated_at: u64,
     usdc_updated_at: u64,
+    eth_usd: Option<String>,
+    eth_updated_at: Option<u64>,
     fetched_at: u64,
     fetched: Instant,
 }
@@ -55,6 +59,8 @@ pub(crate) struct PriceSnapshot {
     pub usdc_usd: Option<String>,
     pub zec_updated_at: Option<u64>,
     pub usdc_updated_at: Option<u64>,
+    pub eth_usd: Option<String>,
+    pub eth_updated_at: Option<u64>,
     pub fetched_at: Option<u64>,
     pub last_attempt_at: Option<u64>,
     pub last_error: Option<String>,
@@ -165,6 +171,8 @@ impl PriceBook {
             usdc_usd: price.map(|p| p.usdc_usd.clone()),
             zec_updated_at: price.map(|p| p.zec_updated_at),
             usdc_updated_at: price.map(|p| p.usdc_updated_at),
+            eth_usd: price.and_then(|p| p.eth_usd.clone()),
+            eth_updated_at: price.and_then(|p| p.eth_updated_at),
             fetched_at: price.map(|p| p.fetched_at),
             last_attempt_at: state.last_attempt_at,
             last_error: state.last_error.clone(),
@@ -229,7 +237,7 @@ impl PriceBook {
         let client = self.client.as_ref().expect("market client configured");
         let mut response = client
             .get(url)
-            .query(&[("id", "1437,3408"), ("convert", "USD")])
+            .query(&[("id", "1437,3408,1027"), ("convert", "USD")])
             .send()
             .await
             .map_err(|_| "CMC request failed or timed out".to_string())?;
@@ -280,7 +288,8 @@ impl MarketPrice {
 #[derive(Deserialize)]
 struct CmcResponse {
     status: CmcStatus,
-    data: Vec<CmcAsset>,
+    /// Each asset read on its own, so an ETH entry that doesn't read can be left out.
+    data: Vec<serde_json::Value>,
 }
 #[derive(Deserialize)]
 struct CmcStatus {
@@ -322,9 +331,18 @@ fn parse_price(body: &[u8], now: u64, config: &MarketConfig) -> Result<MarketPri
     if data.status.error_code != 0 {
         return Err(format!("CMC error {}", data.status.error_code));
     }
+    let mut listed = Vec::new();
+    for asset in data.data {
+        let id = asset.get("id").and_then(serde_json::Value::as_u64);
+        match serde_json::from_value::<CmcAsset>(asset) {
+            Ok(asset) => listed.push(asset),
+            // ETH only values gas on the dashboard: quotes never wait on it.
+            Err(_) if id == Some(ETH_ID) => {}
+            Err(_) => return Err("CMC response invalid".into()),
+        }
+    }
     let asset = |id, symbol: &str| -> Result<(Decimal, u64), String> {
-        let assets: Vec<_> = data
-            .data
+        let assets: Vec<_> = listed
             .iter()
             .filter(|a| a.id == id && a.symbol == symbol)
             .collect();
@@ -358,6 +376,7 @@ fn parse_price(body: &[u8], now: u64, config: &MarketConfig) -> Result<MarketPri
     };
     let (zec, zec_updated_at) = asset(ZEC_ID, "ZEC")?;
     let (usdc, usdc_updated_at) = asset(USDC_ID, "USDC")?;
+    let eth = asset(ETH_ID, "ETH").ok();
     let scale = Decimal::from(10u64.pow(config.token_decimals.into()));
     let price_per_zec = zec
         .checked_div(usdc)
@@ -371,6 +390,8 @@ fn parse_price(body: &[u8], now: u64, config: &MarketConfig) -> Result<MarketPri
         usdc_usd: usdc.normalize().to_string(),
         zec_updated_at,
         usdc_updated_at,
+        eth_usd: eth.map(|(price, _)| price.normalize().to_string()),
+        eth_updated_at: eth.map(|(_, at)| at),
         fetched_at: now,
         fetched: Instant::now(),
     })
@@ -572,6 +593,45 @@ mod tests {
                 .contains("private-test-key")
         );
         task.abort();
+    }
+
+    /// ETH's price rides along for the dashboard: missing, invalid or stale, it is left out and
+    /// the ZEC/USDC rate, its freshness and quotes are as they would be without it.
+    #[test]
+    fn eth_never_holds_up_the_rate_quotes_use() {
+        let config = policy().market.unwrap();
+        let with_eth = |price: serde_json::Value, at: &str| {
+            let mut body: serde_json::Value =
+                serde_json::from_slice(&sample("40", "1", AT)).unwrap();
+            body["data"].as_array_mut().unwrap().push(json!({
+                "id": 1027, "symbol": "ETH",
+                "quote": [{"id": 2781, "symbol": "USD", "price": price, "last_updated": at}],
+            }));
+            parse_price(&serde_json::to_vec(&body).unwrap(), NOW, &config).unwrap()
+        };
+        let priced = with_eth(json!(2500.5), AT);
+        assert_eq!(priced.eth_usd.as_deref(), Some("2500.5"));
+        assert_eq!(priced.eth_updated_at, Some(NOW));
+        for (price, at) in [
+            (json!(-1), AT),
+            (json!(0), AT),
+            (json!("2500"), AT),
+            (json!(2500), "2025-12-31T23:00:00.000Z"),
+        ] {
+            let price = with_eth(price, at);
+            assert_eq!((price.eth_usd, price.eth_updated_at), (None, None));
+            assert_eq!(price.price_per_zec, 40_000_000);
+        }
+        // An entry that doesn't read fails the response as before, unless it is ETH's.
+        let mut body: serde_json::Value = serde_json::from_slice(&sample("40", "1", AT)).unwrap();
+        body["data"][0]["quote"][0]["price"] = json!("40");
+        let error = parse_price(&serde_json::to_vec(&body).unwrap(), NOW, &config).err();
+        assert_eq!(error.as_deref(), Some("CMC response invalid"));
+        let book = PriceBook::new(&policy(), Some("test-key")).unwrap();
+        book.record(Ok(with_eth(json!(-1), AT)), NOW);
+        assert_eq!(book.quote(NOW).unwrap().policy.price_per_zec, 40_000_000);
+        let snapshot = book.snapshot(NOW);
+        assert_eq!((snapshot.status, snapshot.eth_usd), ("fresh", None));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Bridge service logs
 
-The VPS `147.182.158.187` runs **only Grafana Alloy**, sending maker and relayer
-journald logs to [Grafana Cloud](https://zealousglider2700.grafana.net).
+The VPS `147.182.158.187` runs **only Grafana Alloy**, sending maker, relayer and token
+issuer journald logs to [Grafana Cloud](https://zealousglider2700.grafana.net).
 The final scope is deliberately logs only, following the request to keep setup
 simple. Host metrics, tracing and custom dashboards are not enabled.
 
@@ -21,6 +21,14 @@ Add a filter for failures:
 ```logql
 {app="zecswap",environment="testnet",service=~"zecswap-maker|zecswap-relayer"}
   |~ "(?i)error|warn|failed|panic|timeout|unavailable"
+```
+
+The token issuer and the six-hourly refresh of its attestation status list log as
+`service="zecswap-issuer"`. The issuer logs little by design (its startup, internal errors
+and status list reloads); its refusals are counted in its monitor, not logged:
+
+```logql
+{app="zecswap",environment="testnet",service="zecswap-issuer"}
 ```
 
 Watchtower activity uses `|~ "(?i)watchtower|deposit|claim|refund|opened swap"`.
@@ -78,7 +86,7 @@ available memory or above 5% memory pressure also stop it. An API or RPC failure
 alone does **not** stop collection: those failure logs are needed for diagnosis.
 `Restart=no` prevents restart loops. Investigate before restoring the latch.
 
-No component calls `/v1/monitor`, requests prices, creates swaps, sends transactions,
+No component calls a `/v1/monitor` endpoint, requests prices, creates swaps, sends transactions,
 or changes Telegram notifications. Market pricing stays request-driven. Neither
 bridge service needs a restart to install, stop or roll back logging.
 
@@ -261,3 +269,26 @@ no memory-pressure/OOM events, and 1.07 MiB cursor storage in its bounded tmpfs.
 Since the collector restart it had sent 86 entries with zero write retries or
 drops. Both bridge APIs were healthy. This confirms successful ingestion writes;
 an additional Cloud readback awaits read credentials.
+
+## Issuer logs and monitor allowances (2026-10-08)
+
+`config.alloy` also reads the issuer's journal (`zecswap-issuer.service`, its PID 1 lifecycle
+lines, and `zecswap-issuer-status.service`, whose failures would leave the issuer on an aging
+status list), all labelled `service="zecswap-issuer"`, through the same redaction and rate
+limit. `configure.py` now also takes the exact values in `/etc/zecswap-issuer/*.env` (the
+issuer's `ISSUER_MONITOR_TOKEN`) into the redaction patterns. To install on the VPS, copy
+`deploy/observability` to `/opt/zecswap-observability`, then as root:
+
+```sh
+python3 /opt/zecswap-observability/configure.py
+python3 /opt/zecswap-observability/install.py
+systemctl restart alloy
+```
+
+`configure.py` without `--cloud-file` leaves the Cloud credentials as they are and rewrites
+`/etc/alloy/redact.regex`; `install.py` replaces `/etc/alloy/config.alloy` (backing up the old
+one) and the watchdog units. Run `test_redaction.py` against the new config before restarting.
+
+The gateway gives `GET /maker/v1/monitor`, `/relayer/v1/monitor` and `/issuer/v1/monitor`
+(and their subpaths) their own allowance, one a second with a burst of ten, so a dashboard
+polling them can't use up the apps' reads.

@@ -39,7 +39,9 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
         Some(Error::Lightwalletd(_) | Error::Connection(_)) => "lightwalletd",
         Some(Error::Rejected { .. }) => "transaction_rejected",
         Some(Error::Database(_) | Error::Wallet(_)) => "zcash_wallet",
-        Some(Error::Contract(_)) => "evm_rpc_or_contract",
+        Some(Error::Contract(_) | Error::Reverted(_) | Error::Unconfirmed(_)) => {
+            "evm_rpc_or_contract"
+        }
         Some(Error::Swap(_) | Error::WrongTerms(_)) => "swap_validation",
         None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
         None => "operation_failed",
@@ -274,13 +276,9 @@ impl Maker {
         self.tokens.clone()
     }
 
-    /// Refuses another accept while `max_awaiting_deposit` swaps wait on their users to pay
-    /// in: forward ones with no deposit seen and no cancel started, and reverse ones whose ZEC
-    /// the maker has yet to send.
-    pub(crate) fn admit_another(&self) -> Result<(), MakerError> {
-        let Some(cap) = self.config.max_awaiting_deposit else {
-            return Ok(());
-        };
+    /// Swaps waiting on their users to pay in: forward ones with no deposit seen and no cancel
+    /// started, and reverse ones whose ZEC the maker has yet to send.
+    pub(crate) fn awaiting_deposit(&self) -> Result<usize> {
         let forward = {
             let snapshots = self.wallet_snapshots.lock().unwrap();
             self.store
@@ -300,7 +298,15 @@ impl Maker {
             .iter()
             .filter(|swap| swap.deposit.is_none())
             .count();
-        if forward + reverse >= cap {
+        Ok(forward + reverse)
+    }
+
+    /// Refuses another accept while `max_awaiting_deposit` swaps wait on their users to pay in.
+    pub(crate) fn admit_another(&self) -> Result<(), MakerError> {
+        let Some(cap) = self.config.max_awaiting_deposit else {
+            return Ok(());
+        };
+        if self.awaiting_deposit()? >= cap {
             return Err(MakerError::Unavailable);
         }
         Ok(())

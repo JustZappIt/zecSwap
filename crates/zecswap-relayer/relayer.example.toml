@@ -1,5 +1,6 @@
-# The relayer's key is read from the environment, never from this file:
+# The relayer's secrets are read from the environment, never from this file:
 #   RELAYER_PRIVATE_KEY   pays the gas; keep it apart from any maker's key
+#   RELAYER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor
 #
 # On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
 # the public mempool while its lock is held, but it invites griefing.
