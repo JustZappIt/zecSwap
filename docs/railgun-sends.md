@@ -78,8 +78,9 @@ Post the populated transaction's `to`, `data` and `value` as they are, with the 
 }
 ```
 
-Persist these exact bytes before posting, and keep the notes they spend locked until an answer
-below releases them. Post the same bytes again after any answer that says to.
+Send these four fields and no others: the relayer refuses any other field with `422`. Persist
+these exact bytes before posting, and keep the notes they spend locked until an answer below
+releases them. Post the same bytes again after any answer that says to.
 
 ## Answers
 
@@ -87,8 +88,8 @@ below releases them. Post the same bytes again after any answer that says to.
 | --- | --- | --- | --- |
 | `200` | | `{"transactions": ["0x…"]}`: submitted, not yet mined. Posting the same bytes again, before or after it mines, answers with the same hash and sends nothing new. | Watch the transaction, then settle from the chain. |
 | `400` | `rejected` | Refused: nothing from this proof was sent, and nothing will be. | Drop the send and free its notes. |
-| `400` | `invalidRequest` | The body is not a request. Nothing was sent. | As `rejected`. |
-| `413` | `invalidRequest` | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
+| `400`, `415`, `422` | `invalidRequest` | The body is not JSON (`400`), not sent as `application/json` (`415`), or not this request (`422`): a field missing, mistyped, or not one of the four. Nothing was sent. | As `rejected`. |
+| `413` | none, from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
 | `404`, `405` | `notFound`, `methodNotAllowed` | This relayer has no such route. Nothing was sent. | As `rejected`. |
 | `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. | Settle from the chain; don't free the notes. |
 | `503` | `unavailable` | An earlier send of these notes has no known outcome yet, or the gateway is busy. | Post the same bytes again later. |
