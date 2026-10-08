@@ -403,7 +403,8 @@ fn uint(value: AnyRef<'_>, tag: Tag) -> der::Result<u64> {
 }
 
 /// Google's attestation status list (`https://android.googleapis.com/attestation/status`):
-/// `{"entries": {"<serial, lowercase hex>": {"status": "REVOKED", ...}, ...}}`.
+/// `{"entries": {"<serial>": {"status": "REVOKED", ...}, ...}}`, each serial in lowercase hex
+/// or, for over half of them, decimal.
 struct StatusList {
     path: PathBuf,
     /// The serials listed, and when the file that listed them was written.
@@ -431,7 +432,18 @@ impl StatusList {
         Ok(list
             .entries
             .into_keys()
-            .map(|serial| serial_hex(&serial.to_ascii_lowercase()))
+            .flat_map(|serial| {
+                // Digits alone could be either reading, so both are kept: a real serial
+                // matching the other one by chance is out of reach.
+                let decimal = serial
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+                    .then(|| serial.parse::<u128>().ok())
+                    .flatten()
+                    .map(|serial| format!("{serial:x}"));
+                [Some(serial_hex(&serial.to_ascii_lowercase())), decimal]
+            })
+            .flatten()
             .collect())
     }
 
@@ -1123,26 +1135,30 @@ mod tests {
     }
 
     /// The operator refreshes the status list in place, and a certificate it lists from
-    /// then on is refused, keyed as Google keys it: lowercase hex, no leading zeros.
+    /// then on is refused, keyed as Google keys it: lowercase hex with no leading zeros, or for
+    /// over half of the list's entries, decimal.
     #[test]
     fn a_certificate_is_refused_once_the_status_list_names_it() {
-        let fixture = Fixture::new(Signer::p384());
-        let phone = fixture.device(&Record::default());
-        assert_eq!(fixture.ask(&phone, 1, NOW).unwrap(), 1);
-        let status = fixture.dir.path().join("status.json");
-        let listed = format!(r#"{{"entries": {{"{BATCH_SERIAL:x}": {{"status": "REVOKED"}}}}}}"#);
-        std::fs::write(&status, listed).unwrap();
-        let later = SystemTime::now() + Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(&status)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
-        assert_eq!(
-            refused(fixture.ask(&phone, 1, NOW)),
-            "a revoked certificate"
-        );
+        for serial in [format!("{BATCH_SERIAL:x}"), BATCH_SERIAL.to_string()] {
+            let fixture = Fixture::new(Signer::p384());
+            let phone = fixture.device(&Record::default());
+            assert_eq!(fixture.ask(&phone, 1, NOW).unwrap(), 1);
+            let status = fixture.dir.path().join("status.json");
+            let listed = format!(r#"{{"entries": {{"{serial}": {{"status": "REVOKED"}}}}}}"#);
+            std::fs::write(&status, listed).unwrap();
+            let later = SystemTime::now() + Duration::from_secs(60);
+            std::fs::File::options()
+                .write(true)
+                .open(&status)
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+            assert_eq!(
+                refused(fixture.ask(&phone, 1, NOW)),
+                "a revoked certificate",
+                "listed as {serial}"
+            );
+        }
     }
 
     /// The attestation record must speak for this issuer's key, in the phone's secure hardware,
