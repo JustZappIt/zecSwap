@@ -21,7 +21,10 @@ which stores only a hash of each swap's terms ([October 7](#october-7-terms-hash
 [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records the transaction,
 block, test token, Railgun proxy, lock duration and the services' release. Since 19:02 UTC that
 day the maker takes Privacy Pass tokens ([October 7 tokens](#october-7-tokens)): Android builds
-that pin this contract and both token keys can swap; earlier builds cannot.
+that pin this contract and both token keys can swap; earlier builds cannot. Since 04:45 UTC on
+October 8 the issuer gives tokens only to installs whose key a locked phone's secure hardware
+attests, and the gateway gives each kind of request its own allowance
+([October 8](#october-8-attestation-and-gateway-allowances)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -227,6 +230,49 @@ stop `zecswap-issuer`, restore the config as `root:zecswap-maker` `0640` and the
 Builds that pin the keys still swap with a maker that takes no tokens: they send a token only when
 asked for one.
 
+## October 8 attestation and gateway allowances
+
+At 04:45 UTC the token issuer switched from `insecure-test` to `android-key`
+([Token issuer attestation](#token-issuer-attestation)), running a build of `490eff4` in
+`/opt/zecswap/releases/20261007-attestation-490eff4`, now `/opt/zecswap/current`. The release
+carries the maker and relayer binaries of `20261007-tokens-9b52dfc` unchanged, and only the issuer
+restarted. The issuer keeps its name, key and three tokens a day, so the app's pinned keys stand.
+It counts tokens by each install's attested key, and takes the testnet packages signed with the
+development debug key: `xyz.justzappit.zapp.testnet` and its `.debug`, `.foss.debug` and
+`.internal.debug` builds, the key held at least in the phone's trusted environment. Google's two
+attestation roots are in `/etc/zecswap-issuer/roots/`, and `zecswap-issuer-status.timer` refreshes
+Google's status list into `/var/lib/zecswap-issuer/attestation-status.json` every six hours.
+
+Two issuer fixes came with it. A certificate's `TRUE` written as 1, as a OnePlus StrongBox writes
+it, no longer makes the certificate undecodable. The status list's serials written in decimal,
+979 of its 1,759 entries, now count: the issuer had read only hex ones. A request captured from a
+Galaxy A35 (locked, booted verified, key in its TEE) passes against Google's real roots, and none
+of its certificates is on the status list.
+
+The same deployment put the gateway's per-kind allowances in place
+([Operating the deployment](#operating-the-deployment)), and the gateway Worker, now version
+`14793e0d`, forwards only `Authorization`, `Content-Type` and `Content-Length`.
+[sepolia-attestation.json](../deployments/sepolia-attestation.json) records the checksums and checks.
+
+Only the app's testnet builds on a locked phone get tokens now. Emulators, phones with unlocked
+bootloaders or self-signed boot (GrapheneOS, CalyxOS), `zecswap-cli`, and app builds that send
+the earlier request get none, so they cannot accept a swap on the hosted maker. A release-signed
+build needs its certificate's digest added to `signing_digests`.
+
+On the Droplet the issuer answered its key and a challenge. Through nginx, maker health returned
+204, maker info and relayer terms 200, and fifteen quick reads of one swap's status gave eleven
+answers and four `503`s with `Retry-After`. Publicly, the issuer serves the pinned key and
+refuses a request with a challenge it never gave out (`403`, "an unknown challenge") and one in
+the earlier format (`400`), and an accept without a token still answers `401` with the day's
+challenge. No swap has run on an attested token yet.
+
+Rollback files are in `/var/backups/zecswap/20261007-attestation-490eff4` (root-only): the issuer
+config, the nginx site and its path, and `previous-current`. Disable `zecswap-issuer-status.timer`,
+restore the config with `cp -a`, point `/opt/zecswap/current` back at the previous release,
+restart the issuer, and restore and reload nginx. Roll the Worker back with
+`npx wrangler rollback 1e82ab5d-7797-43ef-ba01-e0500a975b27`. The earlier issuer reads only the
+earlier request, so builds that send the new one get no tokens from it.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
@@ -277,7 +323,8 @@ directory, then switch `/opt/zecswap/current` and restart the services. Retain t
 release for rollback; do not replace or roll back wallet databases during a binary rollback.
 
 The systemd units are in `deploy/systemd/`. The deployed services are `zecswap-maker`,
-`zecswap-relayer`, `zecswap-issuer` and `zecswap-tunnel`, all enabled at boot. The maker uses one proving
+`zecswap-relayer`, `zecswap-issuer` and `zecswap-tunnel`, all enabled at boot, with
+`zecswap-issuer-status.timer`. The maker uses one proving
 thread and two async workers so proving does not occupy the only API worker. Its state lives
 in `/var/lib/zecswap-maker`; configs and root-readable environment
 files live in `/etc/zecswap-maker`, `/etc/zecswap-relayer` and `/etc/zecswap-issuer`. The tunnel uses a systemd
@@ -322,8 +369,8 @@ A forward accept spends maker gas before the user's ZEC deposit, and a reverse a
 the maker's ZEC until its funding deadline. The maker's `max_awaiting_deposit` caps how many
 swaps wait on their users at once, in both directions. With `[tokens]`, every accept spends a
 Privacy Pass token from `zecswap-issuer`, handed back once the user pays in, so a device walks
-away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that limit binds only
-once the issuer checks Android key attestation, which the hosted testnet issuer does not yet do
+away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that limit binds because
+the issuer checks Android key attestation, as the hosted testnet issuer has since October 8
 ([Token issuer attestation](#token-issuer-attestation)). The relayer serves only its configured token and maker, on every
 route, and every swap it serves paid for its accept; the funding route keeps its transaction
 validation and gas caps, and there is no aggregate sponsorship budget. nginx's allowances are
@@ -357,10 +404,9 @@ Run the issuer apart from the maker, ideally by another party: it sees each inst
 fetch, and the maker must never see an attestation. It logs no chain, key, challenge or device id,
 and keeps only today's counts.
 
-The hosted testnet issuer runs `insecure-test`, which believes any caller. A build from this
-change refuses to start in that mode without `allow_insecure = true`: add it to
-`/etc/zecswap-issuer/config.toml` before deploying one, or switch to `android-key` once the app
-attests its key.
+The hosted testnet issuer has run `android-key` since October 8
+([October 8](#october-8-attestation-and-gateway-allowances)). `insecure-test` believes any caller,
+and the issuer starts in it only with `allow_insecure = true`.
 
 ## Public verification
 

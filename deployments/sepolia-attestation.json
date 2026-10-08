@@ -1,0 +1,59 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "issuerUrl": "https://zecswap-testnet.pepeman931.workers.dev/issuer",
+  "servicesSince": "2026-10-08T04:45:46Z",
+  "servicesSourceCommit": "490eff4da3ce67d74ee810a164fa5db8545ef55a",
+  "release": "/opt/zecswap/releases/20261007-attestation-490eff4",
+  "previousRelease": "/opt/zecswap/releases/20261007-tokens-9b52dfc",
+  "backup": "/var/backups/zecswap/20261007-attestation-490eff4",
+  "issuerSha256": "027c4459c091aefa9ffd46144c0f19c6da7e1afa9a901ea43419267b44d30746",
+  "maker": "unchanged binary from 9b52dfc, not restarted",
+  "relayer": "unchanged binary from 9459be3, not restarted",
+  "nginxSiteSha256": "4c980193cf0313b67a5737cd97255253816a027ea3ff30766fe5fb5f4bf35fe4",
+  "gatewayWorkerVersion": "14793e0d-03c5-4f1c-9b4a-3ddb1bbaa351",
+  "previousGatewayWorkerVersion": "1e82ab5d-7797-43ef-ba01-e0500a975b27",
+  "tokens": {
+    "issuer": "zecswap-testnet-issuer",
+    "tokensPerDay": 3,
+    "issuerTokenKey": "unchanged, as sepolia-tokens.json lists it",
+    "attestation": "android-key",
+    "packages": [
+      "xyz.justzappit.zapp.testnet",
+      "xyz.justzappit.zapp.testnet.debug",
+      "xyz.justzappit.zapp.testnet.foss.debug",
+      "xyz.justzappit.zapp.testnet.internal.debug"
+    ],
+    "signingDigests": ["2bb4821119cbee38bbc95c3970d5ae1ae7501bc4b7eb72d866c4b6fc7e85bce4"],
+    "signingKey": "the development debug key",
+    "minSecurityLevel": "trusted-environment",
+    "roots": {
+      "/etc/zecswap-issuer/roots/google-1.pem": "cedb1cb6dc896ae5ec797348bce9286753c2b38ee71ce0fbe34a9a1248800dfc",
+      "/etc/zecswap-issuer/roots/google-2.pem": "6d9db4ce6c5c0b293166d08986e05774a8776ceb525d9e4329520de12ba4bcc0"
+    },
+    "rootsAre": "SHA-256 of each certificate, as https://android.googleapis.com/attestation/root served them",
+    "statusList": "/var/lib/zecswap-issuer/attestation-status.json",
+    "statusListRefresh": "zecswap-issuer-status.timer, every six hours"
+  },
+  "validation": {
+    "realPhoneChainPassesGoogleRoots": "Galaxy A35, locked, verified boot, key in its TEE",
+    "realPhoneCertificatesOnStatusList": false,
+    "issuerKeyAndChallengeOnDroplet": true,
+    "nginxConfigurationTest": true,
+    "throughNginx": {
+      "makerHealth": 204,
+      "makerInfo": 200,
+      "relayerTerms": 200,
+      "oneSwapStatusReadFifteenTimes": { "answered": 11, "refused503WithRetryAfter": 4 }
+    },
+    "public": {
+      "issuerServesPinnedKey": true,
+      "unknownChallenge": 403,
+      "earlierRequestFormat": 400,
+      "unpaidAcceptAnswers401WithChallenge": true,
+      "makerHealth": 204,
+      "relayerTerms": 200
+    },
+    "swapOnAttestedToken": false
+  }
+}
