@@ -27,8 +27,9 @@ own test vector. The Rust reference client (`zecswap_client::Tokens`) shows the 
 3. The app takes an unspent token for that challenge, its issuer's before any handed back, or
    fetches a batch from the issuer: for each token, a fresh 32-byte nonce and
    `token_input = 0x0002 ‖ nonce ‖ SHA-256(challenge) ‖ SHA-256(SPKI)`, blinded under the token
-   key; `POST {issuer}/v1/tokens` with the device's attestation and the blinded messages; then
-   each blind signature unblinded and checked. The issuer signs only as many as the device's
+   key; `GET {issuer}/v1/challenge`, then `POST {issuer}/v1/tokens` with the blinded messages
+   and the install's attestation of them ([Attestation](#attestation)); then each blind
+   signature unblinded and checked. The issuer signs only as many as the device's
    day has left, so a batch may come back short, and answers `429` once none is left.
 4. The app sends the accept again with `Authorization: PrivateToken token="<base64url token>"`,
    the token being `token_input ‖ authenticator` (354 bytes), and asks for it back: the body's
@@ -78,11 +79,17 @@ would come back. Quotes, reads and the relayer take none.
 
 - `GET /v1/token-key` → `{issuer, tokenKey, tokensPerDay}`: the issuer name challenges carry, the
   token key (base64url SPKI) and the daily allowance.
-- `POST /v1/tokens` with `{attestation, blinded: [...]}` (base64url; 1 to 100 blinded messages of
-  256 bytes) → `{blindSignatures: [...]}` for the first of them in order, as many as the device's
-  allowance for the UTC day has left. It answers `429` once none is left, `403` if the
-  attestation is refused. It never sees a challenge, so it signs tokens for whatever day the
-  app blinded them for; the app fetches for the day the maker asks.
+- `GET /v1/challenge` → `{challenge}`: 32 random bytes, base64url, for the next
+  `POST /v1/tokens` to sign. Each is good once, for five minutes; while too many are outstanding
+  the issuer answers `503`.
+- `POST /v1/tokens` with `{attestation: {challenge, chain, signature}, blinded: [...]}`
+  (base64url; 1 to 100 blinded messages of 256 bytes) → `{blindSignatures: [...]}` for the first
+  of them in order, as many as the device's allowance for the UTC day has left. It answers `400`
+  for malformed blinded messages, `403` if the attestation is refused, and `429` once none is
+  left. The challenge is spent by any request that gets as far as the attestation, refused or
+  not; a refused one costs the device none of its allowance. The issuer never sees a token
+  challenge, so it signs tokens for whatever day the app blinded them for; the app fetches for
+  the day the maker asks.
 
 ## What keeps it private
 
@@ -111,34 +118,105 @@ app:
   which made no swap, to the next accept, and nothing more.
 - **Never send the attestation, or anything identifying, to the maker.** Only the issuer sees
   the attestation, and it sees nothing of the swaps.
-- The issuer still learns which installs fetch tokens and how many. Run it apart from the maker,
-  ideally by another party, and keep no request logs; it keeps only today's counts. The maker
-  keeps each swap's request for its token back with the swap, and logs neither tokens nor
-  requests.
+- The issuer still learns which installs fetch tokens and how many: it sees the install's key
+  on every fetch, as any limit per install must. Run it apart from the maker, ideally by another
+  party, and keep no request logs; it keeps only today's counts, by the key's digest, and logs no
+  chain, key, challenge or device id. The maker keeps each swap's request for its token back
+  with the swap, and logs neither tokens nor requests.
 
 ## Attestation
 
 The issuer turns a device's attestation into a stable id per install, whose tokens it counts per
-day (`zecswap_issuer::Attester`). The Zapp identity (App Attest on iOS, Play Integrity on
-Android) will provide that. Until then the only mode is `insecure-test`, which takes the
-attestation for the device id unchecked: anyone can be any number of devices, so it limits
-nothing. It exists so the whole path can be built and tested now; the maker's
-`max_awaiting_deposit` is what bounds spam meanwhile.
+day (`zecswap_issuer::Attester`). Two modes:
+
+- **`android-key`**: Android hardware key attestation. Each install makes one key in the phone's
+  secure hardware and keeps it; the hardware certifies the key in a chain up to Google's root,
+  with a record of the app that made it and how the phone booted. The key signs every request,
+  and the issuer counts tokens by the key's digest.
+- **`insecure-test`**: takes the first certificate's place in the chain for the device's id,
+  unchecked, so anyone can be any number of devices and it limits nothing. It exists so the path
+  can be tested without phones, and the issuer refuses to start in it unless its config also
+  says `allow_insecure = true`.
+
+### What the app does
+
+Once per install, it makes an EC P-256 key in the Android Keystore (`KeyGenParameterSpec`,
+`PURPOSE_SIGN`, digest SHA-256, StrongBox where the phone has it) with the attestation challenge
+`SHA-256("zecswap-issuer-v1" ‖ issuer)`, `issuer` being the name `GET /v1/token-key` gives,
+UTF-8. Android attests a key only when it makes it, so the challenge names the issuer rather
+than a request: a key made for anything else counts for nothing here. The app keeps the key
+under one alias and reuses it for every fetch.
+
+For each fetch, after `GET /v1/challenge`, it sends `POST /v1/tokens` with:
+
+```json
+{
+  "attestation": {
+    "challenge": "<the challenge, as given>",
+    "chain": ["<the key's certificate chain from KeyStore.getCertificateChain, leaf first, each DER, base64url>"],
+    "signature": "<SHA256withECDSA by the key, DER, base64url>"
+  },
+  "blinded": ["<blinded message, base64url>", "..."]
+}
+```
+
+The signature covers `"zecswap-issuer-v1" ‖ challenge ‖ SHA-256(blinded₁ ‖ … ‖ blindedₙ)`: the
+challenge's 32 bytes, and the blinded messages decoded and concatenated in the order sent. All
+base64url is unpadded.
+
+### What the issuer checks
+
+In this order, every one before it signs anything, and a request failing any of them gets
+`403` and touches no count:
+
+1. The challenge is one it gave out, unused and under five minutes old; it is spent now,
+   whatever follows.
+2. The chain ends in one of the configured roots, Google's: a root that only comes with the
+   chain counts for nothing, sent along or left out. Each certificate is signed by the next,
+   whose subject it names, and each one above the leaf is marked a certificate authority and
+   carries no attestation record of its own: an attested key can sign anything, a forged
+   certificate too.
+3. Every certificate, the root's included, is within its validity.
+4. None is on Google's status list, a file the operator refreshes (`status_list`); the issuer
+   reads it again whenever it changes.
+5. The leaf's attestation record (extension 1.3.6.1.4.1.11129.2.1.17): its challenge is this
+   issuer's; the attestation and the key both live in at least the configured security level
+   (the trusted execution environment, or StrongBox); the secure hardware's root of trust says
+   the bootloader is locked and the phone booted verified; the app is one of the configured
+   packages, signed by one of the configured certificates.
+6. The leaf key, P-256, signed the request.
+
+### What it protects, and what it does not
+
+It binds the daily allowance to an install of the genuine app on a phone with locked, verified
+software: a script, an emulator, a phone with its bootloader unlocked (as rooting usually takes),
+or another app gets nothing, and an install can't get more than its allowance by asking more
+often or replaying another's requests.
+
+It does not stop a person with a genuine phone from starting over: reinstalling the app, or
+clearing its data, makes a new key and with it a fresh allowance, and so does the app's chain
+expiring. Closing that takes something tied to the phone rather than the install, such as Play
+Integrity's device recall, or a bond a device puts up. Nor does it hold against someone who
+breaks into a locked phone's running system, who can then make keys as the app. The issuer, which sees each install's key,
+must be run apart from the maker, which must never see an attestation.
 
 ## Running it
 
 1. `zecswap-issuer keygen /etc/zecswap-issuer/key.pem` writes the issuer's signing key (mode
    0600) and prints its public half.
-2. Configure and run `zecswap-issuer serve --config issuer.toml`
+2. Save Google's attestation roots and status list where the config says, and refresh the status
+   list at least daily (atomically: write a new file and rename it over the old). Set the app's
+   package and signing certificate digest.
+3. Configure and run `zecswap-issuer serve --config issuer.toml`
    (`crates/zecswap-issuer/issuer.example.toml`).
-3. `zecswap-issuer keygen /etc/zecswap-maker/return-key.pem` writes the maker's own return key:
+4. `zecswap-issuer keygen /etc/zecswap-maker/return-key.pem` writes the maker's own return key:
    a second key, never the issuer's. Its public half, which `GET /v1/info` also shows, is the
    one the app pins.
-4. Give the maker a `[tokens]` table: the issuer's name, its origin (`maker`), the issuer's
+5. Give the maker a `[tokens]` table: the issuer's name, its origin (`maker`), the issuer's
    public key under `keys`, the return key's file as `return_key`, and a file for spent tokens,
    which keeps only today's. Turn it on only once the app spends tokens: until then every
    accept would be refused.
-5. Rotating the issuer's key: generate a new one, list it first in the maker's `keys` with the
+6. Rotating the issuer's key: generate a new one, list it first in the maker's `keys` with the
    old one after it, then switch the issuer to it. Tokens live a day, so the old key can go
    the day after the switch. The return key is pinned in the app: changing it takes an app
    release, and tokens handed back under the old one die at the end of their day.

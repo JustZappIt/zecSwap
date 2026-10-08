@@ -253,7 +253,9 @@ asked for one.
    back, with a second `zecswap-issuer keygen <return-key>`: its public half goes into the app
    build, which pins it. Once the app spends tokens, give the maker a `[tokens]` table with the
    issuer's public half and the return key's file ([tokens.md](tokens.md)); a `[tokens]`
-   without `return_key` no longer loads. Run
+   without `return_key` no longer loads. Give the issuer an `[attestation.android-key]` table
+   (see [Token issuer attestation](#token-issuer-attestation)); an issuer on `insecure-test`
+   starts only with `allow_insecure = true`. Run
    `zecswap-issuer serve --config <issuer-config>`, `zecswap-maker --config <maker-config> serve`
    and `zecswap-relayer --config <relayer-config>` under host process supervision.
 4. Configure a [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/get-started/)
@@ -302,11 +304,40 @@ the maker's ZEC until its funding deadline. The maker's `max_awaiting_deposit` c
 swaps wait on their users at once, in both directions. With `[tokens]`, every accept spends a
 Privacy Pass token from `zecswap-issuer`, handed back once the user pays in, so a device walks
 away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that limit binds only
-once the issuer checks real attestations, which awaits the Zapp identity. The relayer serves only its configured token and maker, on every
+once the issuer checks Android key attestation, which the hosted testnet issuer does not yet do
+([Token issuer attestation](#token-issuer-attestation)). The relayer serves only its configured token and maker, on every
 route, and every swap it serves paid for its accept; the funding route keeps its transaction
 validation and gas caps, and there is no aggregate sponsorship budget. The shared nginx rate limit is one bucket behind the
 tunnel: rely on the cap and the tokens, not on it. Keep the existing forward ordering:
 depositing ZEC before escrow exists would remove its contract-backed recovery path.
+
+### Token issuer attestation
+
+With `[attestation.android-key]`, the issuer gives tokens only to an install of the app whose
+key the phone's secure hardware made and certifies up to Google's root, on a phone with a locked
+bootloader that booted verified, and it counts each day's tokens by that key. Scripts, emulators,
+phones with unlocked bootloaders and other apps get none, and an install gets no more by asking
+more often. It does not stop someone with a genuine phone from reinstalling the app, or clearing
+its data, for a new key and a fresh allowance; closing that needs a check tied to the phone, such
+as Play Integrity's device recall, or a bond. Nor does it hold against someone who breaks into a
+locked phone's running system.
+
+The issuer needs, readable by its service account: Google's attestation roots as PEM files
+(`roots`), saved from `https://android.googleapis.com/attestation/root`; Google's status list
+(`status_list`), saved from `https://android.googleapis.com/attestation/status` and refreshed at
+least daily by a timer that writes a new file and renames it into place (the issuer rereads it
+when it changes, and refuses to start if it can't read it); the app's package (testnet builds are
+`xyz.justzappit.zapp.testnet`) and the SHA-256 of its signing certificate. The issuer's `name`
+is in every install's key: changing it makes every install start over with a new key.
+
+Run the issuer apart from the maker, ideally by another party: it sees each install's key on every
+fetch, and the maker must never see an attestation. It logs no chain, key, challenge or device id,
+and keeps only today's counts.
+
+The hosted testnet issuer runs `insecure-test`, which believes any caller. A build from this
+change refuses to start in that mode without `allow_insecure = true`: add it to
+`/etc/zecswap-issuer/config.toml` before deploying one, or switch to `android-key` once the app
+attests its key.
 
 ## Public verification
 

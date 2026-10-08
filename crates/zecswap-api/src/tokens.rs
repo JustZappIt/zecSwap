@@ -18,14 +18,39 @@ pub struct TokenKey {
     pub tokens_per_day: u32,
 }
 
+/// `GET /v1/challenge`: what the next `POST /v1/tokens` signs. Good for one request, within
+/// five minutes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttestationChallenge {
+    /// 32 random bytes, base64url.
+    pub challenge: String,
+}
+
 /// `POST /v1/tokens`: blinded token requests for the device its attestation vouches for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TokenRequests {
-    /// The device's attestation, base64url.
-    pub attestation: String,
+    pub attestation: Attestation,
     /// RFC 9578 `blinded_msg`s, base64url.
     pub blinded: Vec<String>,
+}
+
+/// An install's key, attested by the phone's secure hardware, signing the request it comes
+/// with. The app makes the key once, an EC P-256 key in the Android Keystore whose
+/// attestation challenge is `SHA-256("zecswap-issuer-v1" ‖ issuer)`, `issuer` being the
+/// name `GET /v1/token-key` gives (UTF-8), and keeps it: the issuer counts tokens by key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Attestation {
+    /// The challenge from `GET /v1/challenge`, base64url, as given.
+    pub challenge: String,
+    /// The key's certificate chain from the Keystore, leaf first, each DER, base64url.
+    pub chain: Vec<String>,
+    /// `SHA256withECDSA` by the key, DER, base64url, over
+    /// `"zecswap-issuer-v1" ‖ challenge ‖ SHA-256(blinded)`: the challenge's 32 bytes, and
+    /// the request's blinded messages decoded and concatenated in order.
+    pub signature: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

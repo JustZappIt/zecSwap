@@ -183,7 +183,8 @@ async fn main() -> Result<()> {
                     // A test tool takes the return key the maker publishes; an app pins it.
                     let info = zecswap_client::MakerApi::new(maker.clone())?.info().await?;
                     let key = info.token_return_key.context("the maker takes no tokens")?;
-                    let tokens = zecswap_client::Tokens::new(issuer, device.into_bytes(), 5, &key)?;
+                    let device = zecswap_client::Unattested(device.into_bytes());
+                    let tokens = zecswap_client::Tokens::new(issuer, device, 5, &key)?;
                     Some(std::sync::Arc::new(tokens))
                 }
                 None => None,
