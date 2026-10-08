@@ -305,6 +305,36 @@ when the maker's or the relayer's ETH runs low. All nine live scenarios passed o
 Sepolia with the live Zcash testnet, in 26.7 minutes, on the same commit.
 [sepolia-monitoring.json](../deployments/sepolia-monitoring.json) records the checksums and checks.
 
+## October 8 Railgun sends
+
+At 19:10 UTC the relayer restarted on a build of `970cdf9` in
+`/opt/zecswap/releases/20261008-railgun-sends-970cdf9`, now `/opt/zecswap/current`. It sends
+wallets' own private Railgun sends and withdrawals as their broadcaster
+(`POST /relayer/v1/railgun/transact`, [railgun-sends.md](railgun-sends.md)) for a fee note of
+0.25 test tokens to its own Railgun wallet, `0zk1qy25r4x4…xpwljug`, whose seed was appended to
+`/etc/zecswap-relayer/secrets.env` as `RELAYER_RAILGUN_SEED`. Its config gained `[railgun_sends]`
+(fee 250000, gas capped at 3M and 20 gwei, journal `/var/lib/zecswap-relayer/railgun-sends.sqlite`),
+and the gateway gave the route an allowance of its own and the 132k body limit. The release
+carries the `991e16f` maker and issuer binaries byte for byte; neither restarted.
+
+The deploy script checked the staged files and that the Droplet was as the monitoring release left
+it, then backed up the relayer's config and secrets, the release link and the nginx site. After the
+restart the relayer's terms advertised the Railgun wallet, Sepolia's proxy and the fee, its monitor
+counted eleven operations and the sends fee, and it refused a send for another chain. Through nginx,
+maker health returned 204, maker info, relayer terms and the issuer's key 200; a 60 KB send reached
+the relayer and a 140 KB one got `413`. Through the public gateway the terms advertise
+`railgunSends`, and a send for another chain or calldata that is no `transact` call are refused
+with `400`. `railgun-send` passed live on Ethereum Sepolia and, with all nine other scenarios, on a
+fork of it. On Sepolia a relayed send's outputs stay unscreened: Railgun's indexer there breaks its
+chain of transaction verification hashes at index 4188, so wallets cannot prove their own sends
+(mainnet's chain is whole). [sepolia-railgun-sends.json](../deployments/sepolia-railgun-sends.json)
+records the checksums and checks.
+
+Rollback files are in `/var/backups/zecswap/20261008-railgun-sends-970cdf9` (root-only):
+`relayer-config.toml`, `relayer-secrets.env`, `nginx-site` and `previous-current`. Restore the
+config as `root:zecswap-relayer`, `0640`, and the site, point `/opt/zecswap/current` back at the
+previous release, reload nginx and restart only the relayer.
+
 Rollback files are in `/var/backups/zecswap/20261008-monitoring-991e16f` (root-only): the nginx
 site and its path, `previous-current`, the issuer's unit, the relayer's `secrets.env`, and Alloy's
 configuration, redaction patterns and scripts. Point `/opt/zecswap/current` back at the previous
