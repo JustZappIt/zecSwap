@@ -292,7 +292,9 @@ before switching to the service account.
 From `deploy/worker/`, run `npm ci`, `npm run types`, `npm run check`, `npm test`, then
 `npx wrangler deploy --dry-run` before `npm run deploy`. The VPC binding is pinned in
 `wrangler.jsonc`. The gateway streams request bodies unchanged, disables caching and does
-not retry financial requests.
+not retry financial requests. It forwards only the `Authorization`, `Content-Type` and
+`Content-Length` headers, so it passes on nothing else a client sends, nor the client address
+Cloudflare attaches to the request.
 
 Every request reaches nginx from `cloudflared` on loopback, so nginx can't tell callers apart,
 and limits are never per IP. `deploy/nginx.conf` gives each kind of request its own allowance
