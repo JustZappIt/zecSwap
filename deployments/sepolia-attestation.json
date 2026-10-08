@@ -24,7 +24,9 @@
       "xyz.justzappit.zapp.testnet.foss.debug",
       "xyz.justzappit.zapp.testnet.internal.debug"
     ],
-    "signingDigests": ["2bb4821119cbee38bbc95c3970d5ae1ae7501bc4b7eb72d866c4b6fc7e85bce4"],
+    "signingDigests": [
+      "2bb4821119cbee38bbc95c3970d5ae1ae7501bc4b7eb72d866c4b6fc7e85bce4"
+    ],
     "signingKey": "the development debug key",
     "minSecurityLevel": "trusted-environment",
     "roots": {
@@ -44,7 +46,10 @@
       "makerHealth": 204,
       "makerInfo": 200,
       "relayerTerms": 200,
-      "oneSwapStatusReadFifteenTimes": { "answered": 11, "refused503WithRetryAfter": 4 }
+      "oneSwapStatusReadFifteenTimes": {
+        "answered": 11,
+        "refused503WithRetryAfter": 4
+      }
     },
     "public": {
       "issuerServesPinnedKey": true,
@@ -53,6 +58,14 @@
       "unpaidAcceptAnswers401WithChallenge": true,
       "makerHealth": 204,
       "relayerTerms": 200
+    },
+    "livePhoneTokenFetch": {
+      "at": "2026-10-08, between about 04:50 and 05:10 UTC",
+      "device": "Galaxy A35, locked, verified boot, key in its TEE",
+      "package": "xyz.justzappit.zapp.testnet.internal.debug",
+      "route": "instrumented test, through the gateway over HTTPS",
+      "firstFetch": 3,
+      "nextFetch": 429
     },
     "swapOnAttestedToken": false
   }
