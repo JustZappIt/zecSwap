@@ -65,8 +65,8 @@ struct Balance {
 /// the way, and a proof underpaying the fee, are refused with nothing sent. A send whose
 /// broadcast is lost is unknown until the relayer broadcasts it again; the same bytes posted
 /// again, to either of two relayers on one journal, name it and send nothing new; a second proof
-/// of the same notes is told they are spent; and the fees reach the relayer's Railgun wallet,
-/// where Railgun's own SDK finds them.
+/// of the same notes is told which send spends them, and a relayer that lost its journal finds
+/// them spent; and the fees reach the relayer's Railgun wallet, where Railgun's own SDK finds them.
 pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
     let node = env
         .sends
@@ -159,8 +159,8 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         "the same bytes posted to the other relayer on the journal did not name the send"
     );
     ensure!(
-        relayer.railgun_transact(withdrawal).await == Broadcast::Spent,
-        "a proof of notes already being spent was not told so"
+        relayer.railgun_transact(withdrawal).await == Broadcast::Spent(sent.clone()),
+        "a proof of notes already being spent was not told which send spends them"
     );
     // The withdrawal spends a note shielded now: where Railgun screens, the send's change clears
     // only once screening proofs of the send are in (docs/railgun-sends.md, "Screening").
@@ -184,6 +184,12 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
     ensure!(
         relayer.railgun_transact(transfer).await == Broadcast::Sent(sent),
         "the first send's bytes, posted after it mined, did not name it"
+    );
+    // A relayer that lost its journal finds the notes spent on chain, and sends nothing.
+    let forgetful = RelayerApi::new(node.forgetful_relayer_url.clone())?;
+    ensure!(
+        forgetful.railgun_transact(transfer).await == Broadcast::Spent(Vec::new()),
+        "a relayer without the journal did not find the mined send's notes spent"
     );
     ensure!(
         nonce(all_terms.relayer).await? == sent_before + 2,

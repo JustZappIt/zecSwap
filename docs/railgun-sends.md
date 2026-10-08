@@ -91,13 +91,14 @@ releases them. Post the same bytes again after any answer that says to.
 | `400`, `415`, `422` | `invalidRequest` | The body is not JSON (`400`), not sent as `application/json` (`415`), or not this request (`422`): a field missing, mistyped, or not one of the four. Nothing was sent. | As `rejected`. |
 | `413` | none, from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
 | `404`, `405` | `notFound`, `methodNotAllowed` | This relayer has no such route. Nothing was sent. | As `rejected`. |
-| `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. | Settle from the chain; don't free the notes. |
+| `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. `{"code": "alreadySpent", "error": "…", "transactions": ["0x…"]}` names the relayer's own transactions that spend them; it is empty when the notes went in one the relayer didn't send or no longer remembers. | Settle from the chain; don't free the notes. |
 | `503` | `unavailable` | An earlier send of these notes has no known outcome yet, or the gateway is busy. | Post the same bytes again later. |
 | `500` | `internal` | The relayer could not read the chain or record the send. Nothing is known. | Post the same bytes again later. |
 
 A transport failure, a timeout or any other answer: post the same bytes again later. The relayer
 records each transaction before broadcasting it, so a repeat never sends a second one; once the
-first is known it answers `200` with its hash, or `409` to another proof of the same notes. A
+first is known it answers `200` with its hash, or `409` naming it to another proof of the same
+notes. A
 recorded transaction no node knows is broadcast again after a minute if its nonce is still free,
 and forgotten once its nonce went to another transaction mined twelve blocks deep, after which the
 same bytes are checked and sent afresh. `200` means submitted: the transaction can still revert,

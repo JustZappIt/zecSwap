@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tracing::error;
-use zecswap_api::relayer::{Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
+use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
 
@@ -154,11 +154,15 @@ impl IntoResponse for RelayerError {
             RelayerError::Rejected(reason) => {
                 server::error(StatusCode::BAD_REQUEST, ErrorCode::Rejected, reason)
             }
-            RelayerError::Spent => server::error(
+            RelayerError::Spent(transactions) => (
                 StatusCode::CONFLICT,
-                ErrorCode::AlreadySpent,
-                self.to_string(),
-            ),
+                axum::Json(AlreadySpent {
+                    code: ErrorCode::AlreadySpent,
+                    error: self.to_string(),
+                    transactions: transactions.clone(),
+                }),
+            )
+                .into_response(),
             RelayerError::Unsettled(reason) => server::error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::Unavailable,

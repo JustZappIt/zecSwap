@@ -135,6 +135,18 @@ pub struct RailgunTransact {
     pub value: u128,
 }
 
+/// `409` from `POST /v1/railgun/transact`: a note the transaction spends is spent, or a
+/// transaction the relayer sent spends it. `transactions` names the relayer's own that do, pending
+/// or mined; it is empty when the notes went in one the relayer did not send or no longer
+/// remembers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlreadySpent {
+    pub code: crate::service::ErrorCode,
+    pub error: String,
+    pub transactions: Vec<B256>,
+}
+
 /// The transactions a request sent, in order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -85,16 +85,23 @@ impl Relayer {
             }
         }
         let nullifiers = transact.nullifiers();
+        let (mut spending, mut unknown) = (Vec::new(), false);
         for entry in sends.journal.spending(chain_id, &nullifiers)? {
             match self.fate(&entry).await? {
-                Fate::Sent => return Err(RelayerError::Spent),
+                Fate::Sent => spending.push(entry.signed.hash),
                 Fate::Reverted => {}
                 Fate::Dead => sends.journal.forget(chain_id, entry.id)?,
-                Fate::Unknown => return Err(unsettled()),
+                Fate::Unknown => unknown = true,
             }
         }
+        if !spending.is_empty() {
+            return Err(RelayerError::Spent(spending));
+        }
+        if unknown {
+            return Err(unsettled());
+        }
         if self.settlement.spends_spent_notes(&transact).await? {
-            return Err(RelayerError::Spent);
+            return Err(RelayerError::Spent(Vec::new()));
         }
         sends
             .policy
@@ -137,7 +144,7 @@ impl Relayer {
 fn refused(error: SendError) -> RelayerError {
     match error {
         SendError::Rejected(reason) => RelayerError::Rejected(reason.into()),
-        SendError::Spent => RelayerError::Spent,
+        SendError::Spent => RelayerError::Spent(Vec::new()),
         SendError::Chain(error) => error.into(),
         SendError::Unknown(_) => unsettled(),
     }
