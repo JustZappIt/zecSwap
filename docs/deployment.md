@@ -335,6 +335,17 @@ Rollback files are in `/var/backups/zecswap/20261008-railgun-sends-970cdf9` (roo
 config as `root:zecswap-relayer`, `0640`, and the site, point `/opt/zecswap/current` back at the
 previous release, reload nginx and restart only the relayer.
 
+At 22:05 UTC the relayer restarted on a build of `5f82797` in
+`/opt/zecswap/releases/20261008-railgun-spent-5f82797`, now `/opt/zecswap/current`: a `409
+alreadySpent` from `/relayer/v1/railgun/transact` now names the relayer's own transactions that
+spend the notes. Only the binary changed; the config, secrets and gateway are as `970cdf9` left
+them, and the maker and issuer were not restarted. Afterwards the terms advertised the Railgun
+sends, the monitor counted the sends fee, and a send for another chain was refused directly,
+through nginx and through the public gateway.
+[sepolia-railgun-spent.json](../deployments/sepolia-railgun-spent.json) records the checksums. To
+roll back, point `/opt/zecswap/current` at the release in
+`/var/backups/zecswap/20261008-railgun-spent-5f82797/previous-current` and restart the relayer.
+
 Rollback files are in `/var/backups/zecswap/20261008-monitoring-991e16f` (root-only): the nginx
 site and its path, `previous-current`, the issuer's unit, the relayer's `secrets.env`, and Alloy's
 configuration, redaction patterns and scripts. Point `/opt/zecswap/current` back at the previous

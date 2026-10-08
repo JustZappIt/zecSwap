@@ -1,0 +1,23 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "relayerSince": "2026-10-08T22:05:35Z",
+  "relayerSourceCommit": "5f82797",
+  "release": "/opt/zecswap/releases/20261008-railgun-spent-5f82797",
+  "previousRelease": "/opt/zecswap/releases/20261008-railgun-sends-970cdf9",
+  "backup": "/var/backups/zecswap/20261008-railgun-spent-5f82797",
+  "relayerSha256": "fc740b6ee84600caf06bd48e360a56a2a50e1bd59811b1da5b673bf4acaf4eb7",
+  "makerSha256": "e9aaa24a026a38c14559392ebc2516b9ec9125f4ad262714bb48e9edfbb14e9e",
+  "issuerSha256": "84bedcddeb9903a3524a115c4af34362cbe8e1c0ac3386de93fed5d677d51018",
+  "makerAndIssuer": "the 991e16f binaries copied into the release byte for byte, not restarted",
+  "unchanged": "relayer config ([railgun_sends]), secrets (RELAYER_RAILGUN_SEED) and the nginx site, as 970cdf9 left them",
+  "change": "409 alreadySpent from POST /relayer/v1/railgun/transact names the relayer's own transactions that spend the notes (transactions)",
+  "validation": {
+    "preconditionsHeld": true,
+    "relayerTerms": "railgunSends with the expected 0zk address and fee 250000",
+    "relayerMonitor": "fees 100000 payout, 250000 funding, 250000 sends",
+    "sendForAnotherChain": "400 rejected, directly, through nginx and through the public gateway",
+    "makerAndIssuerUntouched": "both running since 2026-10-08T14:55:40Z; through the gateway maker health 204, maker info and the issuer's key 200",
+    "forkSuite": "railgun-send passed on an anvil fork of Ethereum Sepolia, its 409 naming the spending send and a relayer on an empty journal finding the notes spent with nothing sent"
+  }
+}
