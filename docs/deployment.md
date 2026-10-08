@@ -275,6 +275,43 @@ restart the issuer, and restore and reload nginx. Roll the Worker back with
 `npx wrangler rollback 1e82ab5d-7797-43ef-ba01-e0500a975b27`. The earlier issuer reads only the
 earlier request, so builds that send the new one get no tokens from it.
 
+## October 8 monitoring
+
+At 14:55 UTC the maker, relayer and issuer restarted on a build of `991e16f` in
+`/opt/zecswap/releases/20261008-monitoring-991e16f`, now `/opt/zecswap/current`. The maker's
+`/v1/monitor` moved to schema 2 and reads nothing from the chain: `zapp-dashboard` now reads swap
+states and balances itself, through Multicall3 on an RPC key of its own, so the dashboard never
+spends the RPC the watchtower needs. The relayer and the issuer each serve a `/v1/monitor` of
+their own, behind `RELAYER_MONITOR_TOKEN` (appended to `/etc/zecswap-relayer/secrets.env`) and
+`ISSUER_MONITOR_TOKEN` (in the new root-only `/etc/zecswap-issuer/secrets.env`, which one added
+line in the issuer's unit loads). The dashboard holds the same tokens in Vercel. The gateway gives
+the three monitors one allowance of their own, and Alloy now ships the issuer's journal and its
+status list refreshes as `service="zecswap-issuer"`. The maker's store gained two tables at start,
+with no fresh store: swaps accepted before this release show no accept time.
+
+The deploy script checked each staged file's SHA-256, refused to change anything unless the
+Droplet was as the last deployment left it, and named any check that failed (a first run whose
+checks failed silently changed nothing). After the restart the three monitors answered `401`
+without their tokens and, with them, the maker's schema 2 (five swaps, none waiting on a deposit,
+tokens on, ETH priced), the relayer's fees and the issuer's day (two devices served, six tokens,
+both devices at their limit, a status list of 1,759 entries 2.8 hours old). Through nginx, maker
+health returned 204, maker info, relayer terms and the issuer's key 200, the maker's monitor 200
+with its token, and fifteen quick unauthenticated monitor reads gave eleven `401`s and four of the
+gateway's `503`s. The redaction test passed its 33 fixtures against the new Alloy configuration
+before Alloy restarted. The dashboard at `zapp-dashboard-seven.vercel.app`, deployed from
+`zapp-dashboard` `4165055`, shows all three monitors healthy and the issuer's and maker's keys as
+the app pins them. It raised one alert: the maker has no `[gas_alerts]`, so Telegram pages no one
+when the maker's or the relayer's ETH runs low.
+[sepolia-monitoring.json](../deployments/sepolia-monitoring.json) records the checksums and checks.
+
+Rollback files are in `/var/backups/zecswap/20261008-monitoring-991e16f` (root-only): the nginx
+site and its path, `previous-current`, the issuer's unit, the relayer's `secrets.env`, and Alloy's
+configuration, redaction patterns and scripts. Point `/opt/zecswap/current` back at the previous
+release, restore the unit and the relayer's secrets with `cp -a`, remove
+`/etc/zecswap-issuer/secrets.env`, `systemctl daemon-reload`, and restart the three services;
+restore and reload nginx; restore Alloy's files and restart it. The earlier maker ignores the two
+new tables, and the dashboard reads both monitor schemas.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
