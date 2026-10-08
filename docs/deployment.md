@@ -264,7 +264,9 @@ On the Droplet the issuer answered its key and a challenge. Through nginx, maker
 answers and four `503`s with `Retry-After`. Publicly, the issuer serves the pinned key and
 refuses a request with a challenge it never gave out (`403`, "an unknown challenge") and one in
 the earlier format (`400`), and an accept without a token still answers `401` with the day's
-challenge. No swap has run on an attested token yet.
+challenge. On the A35, an instrumented test's new key then got its three tokens through the
+gateway, and its next fetch got `429`, the day's tokens spent. No swap has run on an attested token
+yet.
 
 Rollback files are in `/var/backups/zecswap/20261007-attestation-490eff4` (root-only): the issuer
 config, the nginx site and its path, and `previous-current`. Disable `zecswap-issuer-status.timer`,
