@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the token issuer's attestation status list every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

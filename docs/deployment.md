@@ -350,6 +350,8 @@ least daily by a timer that writes a new file and renames it into place (the iss
 when it changes, and refuses to start if it can't read it); the app's package (testnet builds are
 `xyz.justzappit.zapp.testnet`) and the SHA-256 of its signing certificate. The issuer's `name`
 is in every install's key: changing it makes every install start over with a new key.
+`deploy/systemd/zecswap-issuer-status.timer` refreshes the list every six hours: its service
+puts a new list in place only once it reads.
 
 Run the issuer apart from the maker, ideally by another party: it sees each install's key on every
 fetch, and the maker must never see an attestation. It logs no chain, key, challenge or device id,
