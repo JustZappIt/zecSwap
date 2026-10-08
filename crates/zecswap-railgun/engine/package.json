@@ -6,6 +6,7 @@
     "@railgun-community/engine": "9.8.0",
     "@railgun-community/shared-models": "8.2.0",
     "@railgun-community/wallet": "11.1.0",
-    "memdown": "6.1.1"
+    "memdown": "6.1.1",
+    "snarkjs": "0.7.5"
   }
 }

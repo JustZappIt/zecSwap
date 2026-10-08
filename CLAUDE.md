@@ -45,12 +45,12 @@ vectors, a testnet maker. The original design and threat model are in
 | Path | Role |
 |---|---|
 | `crates/zecswap-core` | Pure crypto: shares, proofs of knowledge, joint account (UFVK/UA), seed-derived keys incl. the per-swap auth key, EIP-712 signing, PCZT signing with the combined key |
-| `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, and the encrypted shield note a payout goes to; `engine/` checks it against Railgun's own engine and wallet SDK (Node) |
+| `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, the encrypted shield note a payout goes to, and transaction outputs as their receiver reads them (a relayer's fee notes); `engine/` checks it against Railgun's own engine and wallet SDK (Node), and `send.cjs` proves sends with the SDK for the live suite |
 | `crates/zecswap-chain` | I/O adapters: Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the EVM contract client (`evm`) |
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker; never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, and with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`); never run by a maker |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
@@ -97,6 +97,17 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Railgun broadcaster (2026-10-08, branch `feature/railgun-broadcaster`): `POST
+  /v1/railgun/transact` sends a wallet's own proved `transact` (private send or withdrawal) for
+  a fee note to the relayer's 0zk address, read as Railgun's public broadcasters read it
+  (`evm/railgun.rs`); any chain, the proxy read from the contract. Every send is journaled
+  (SQLite) before its broadcast, so the same bytes never send twice; answers are `200`,
+  `400 rejected` (nothing sent, ever), `409 alreadySpent`, `5xx` (post again). The live suite's
+  `railgun-send` proves with Railgun's own SDK (`engine/send.cjs`); on a fork it cuts the SDK's
+  quick sync at the fork block and turns screening off. The relayer's Sepolia Railgun seed and
+  mnemonic are in `.env.testnet`. Open: on live Sepolia a relayed send's outputs never clear
+  screening, since Railgun's indexer breaks its txid verification-hash chain at index 4188 and
+  SDK wallets can't prove their own sends; forwarding the SDK's pre-send POIs would fix it.
 - Monitoring (2026-10-08, branch `feature/monitoring`): the maker's `/v1/monitor` is schema 2
   and reads nothing from the chain (the dashboard, `~/dev/zapp-dashboard`, reads swap states and
   balances on its own RPC through Multicall3); it adds per-swap accept/open/settle times, block
@@ -179,6 +190,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   before) and `open` ~360k (108k on a local fork). `forge script` simulates the old prices and
   runs out of gas: deploy with `cast send --create` and the node's estimate. The anvil fork the
   live suite uses keeps the old prices.
+- anvil's fork errors quote the upstream URL, Alchemy key included: filter URLs out of anything
+  printed from a fork (`sed -E 's#https?://[^ "]+#<url>#g'`).
 - Alchemy's free tier caps `eth_getLogs` at 10 blocks. Load-balanced RPCs read a block behind.
   Railgun's wallet SDK scans logs, so `balance.cjs` needs an RPC without that cap;
   `https://ethereum-sepolia-rpc.publicnode.com` works.

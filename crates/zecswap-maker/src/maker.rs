@@ -43,6 +43,7 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
             "evm_rpc_or_contract"
         }
         Some(Error::Swap(_) | Error::WrongTerms(_)) => "swap_validation",
+        Some(Error::Journal(_)) => "database",
         None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
         None => "operation_failed",
     }

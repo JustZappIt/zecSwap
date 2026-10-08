@@ -5,57 +5,14 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_core::{Domain, ReverseOpen, signer};
 
+use super::railgun::{IRelayAdapt, MAX_CALLDATA_BYTES, MAX_TRANSACTIONS, TokenData};
 use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, reverse_swap_id, share_from_words};
 use crate::Error;
 
-pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
-
-sol! {
-    #[sol(rpc)]
-    interface IRelayAdapt {
-        struct G1Point { uint256 x; uint256 y; }
-        struct G2Point { uint256[2] x; uint256[2] y; }
-        struct SnarkProof { G1Point a; G2Point b; G1Point c; }
-        struct CommitmentCiphertext {
-            bytes32[4] ciphertext;
-            bytes32 blindedSenderViewingKey;
-            bytes32 blindedReceiverViewingKey;
-            bytes annotationData;
-            bytes memo;
-        }
-        struct BoundParams {
-            uint16 treeNumber;
-            uint72 minGasPrice;
-            uint8 unshield;
-            uint64 chainID;
-            address adaptContract;
-            bytes32 adaptParams;
-            CommitmentCiphertext[] commitmentCiphertext;
-        }
-        struct TokenData { uint8 tokenType; address tokenAddress; uint256 tokenSubID; }
-        struct Preimage { bytes32 npk; TokenData token; uint120 value; }
-        struct Transaction {
-            SnarkProof proof;
-            bytes32 merkleRoot;
-            bytes32[] nullifiers;
-            bytes32[] commitments;
-            BoundParams boundParams;
-            Preimage unshieldPreimage;
-        }
-        struct Call { address to; bytes data; uint256 value; }
-        struct ActionData { bytes31 random; bool requireSuccess; uint256 minGasLimit; Call[] calls; }
-        struct Ciphertext { bytes32[3] encryptedBundle; bytes32 shieldKey; }
-        struct ShieldRequest { Preimage preimage; Ciphertext ciphertext; }
-        function relay(Transaction[] _transactions, ActionData _actionData) external payable;
-        function shield(ShieldRequest[] _shieldRequests) external;
-        function railgun() external view returns (address);
-    }
-}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FundingPolicy {
@@ -242,7 +199,7 @@ impl FundingPolicy {
             "escrow is not authorized by its user",
         )?;
         require(
-            !relay._transactions.is_empty() && relay._transactions.len() <= 16,
+            !relay._transactions.is_empty() && relay._transactions.len() <= MAX_TRANSACTIONS,
             "expected between one and sixteen Railgun transactions",
         )?;
         let nullifiers: Vec<Vec<B256>> = relay
@@ -399,7 +356,7 @@ impl Settlement {
     }
 }
 
-fn erc20(token: &IRelayAdapt::TokenData, address: Address) -> bool {
+fn erc20(token: &TokenData, address: Address) -> bool {
     token.tokenType == 0 && token.tokenAddress == address && token.tokenSubID.is_zero()
 }
 

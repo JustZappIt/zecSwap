@@ -72,7 +72,7 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
     let (status, shown) = send(&app, monitor(Some("monitor-test-token"))).await;
     assert_eq!(status, StatusCode::OK);
     let operations = shown["operations"].as_object().unwrap();
-    assert_eq!(operations.len(), 10);
+    assert_eq!(operations.len(), 11);
     let locked = &operations["lock_claim"];
     assert_eq!(
         (&locked["sent"], &locked["refused"], &locked["failed"]),
@@ -88,7 +88,7 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
     assert_eq!(shown["lastFailure"]["kind"], "internal");
     assert_eq!(
         shown["fees"],
-        serde_json::json!({"payout": "1", "funding": null})
+        serde_json::json!({"payout": "1", "funding": null, "sends": null})
     );
     let text = shown.to_string();
     for said in ["127.0.0.1", "another token or maker", "error"] {

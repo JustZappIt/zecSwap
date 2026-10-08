@@ -21,6 +21,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
                 max_gas_price_wei: 20_000_000_000,
                 fee: 250_000,
             }),
+            railgun_sends: None,
         },
         account: Address::repeat_byte(5),
         domain: Domain {
@@ -29,6 +30,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
+        sends: None,
     }
 }
 

@@ -1,7 +1,9 @@
 //! A relayer for users with no account on the settlement chain: it sends what a swap's own key
 //! signed, and the reveal, and keeps a fee from the payout. It runs with its own key, apart
 //! from any maker: a maker that learned the user share before the claim landed could hold the
-//! claim back until the lock lapses, then refund and race the user for the ZEC.
+//! claim back until the lock lapses, then refund and race the user for the ZEC. With
+//! `railgun_sends` it also sends wallets' own Railgun transactions as their broadcaster, paid
+//! by a fee note to its own Railgun wallet (`sends`).
 
 pub mod api;
 #[cfg(test)]
@@ -12,24 +14,28 @@ mod monitor;
 #[cfg(test)]
 mod monitor_tests;
 mod reverse;
+mod sends;
 #[cfg(test)]
 mod terms_tests;
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
-use anyhow::Context as _;
+use anyhow::{Context as _, ensure};
 use serde::Deserialize;
 use tracing::{info, warn};
 use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
 use zecswap_api::server::MonitorToken;
-use zecswap_chain::evm::funding::{FundingPolicy, MAX_CALLDATA_BYTES};
+use zecswap_chain::evm::funding::FundingPolicy;
+use zecswap_chain::evm::railgun::{MAX_CALLDATA_BYTES, SendPolicy};
 use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, Settlement, Stage};
 use zecswap_core::{Domain, SecretShare, signer};
-use zecswap_railgun::ShieldNote;
+use zecswap_railgun::{Keys, ShieldNote};
+
+pub use sends::Sending;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +58,10 @@ pub struct Config {
     /// Opt-in sponsorship of initial Railgun funding on Sepolia.
     #[serde(default)]
     pub reverse_funding: Option<ReverseFundingConfig>,
+    /// Opt-in sending of wallets' own Railgun transactions, private sends and withdrawals, as
+    /// their broadcaster, on whichever chain the contract is. Needs `RELAYER_RAILGUN_SEED`.
+    #[serde(default)]
+    pub railgun_sends: Option<RailgunSendsConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -62,6 +72,17 @@ pub struct ReverseFundingConfig {
     pub max_gas_price_wei: u64,
     /// Escrow-token base units each funding pays this relayer for its gas.
     pub fee: u64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RailgunSendsConfig {
+    /// Base units of the relayer's token that each send's fee notes must pay it.
+    pub fee: u64,
+    pub max_gas_limit: u64,
+    pub max_gas_price_wei: u64,
+    /// The SQLite file each send is recorded in before it is broadcast.
+    pub journal: PathBuf,
 }
 
 impl Config {
@@ -89,6 +110,12 @@ impl Config {
 pub enum RelayerError {
     #[error("{0}")]
     Rejected(String),
+    /// A note the transaction spends is spent, or a transaction already sent spends it.
+    #[error("these notes are already spent, or a transaction already sent spends them")]
+    Spent,
+    /// A send was attempted and its outcome is unknown: the same request is to be posted again.
+    #[error("{0}")]
+    Unsettled(&'static str),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -99,11 +126,18 @@ impl From<zecswap_chain::Error> for RelayerError {
     }
 }
 
+impl From<rusqlite::Error> for RelayerError {
+    fn from(e: rusqlite::Error) -> Self {
+        RelayerError::Internal(e.into())
+    }
+}
+
 impl RelayerError {
     /// What kind of failure this is, for the monitor; none for a refusal.
     fn failure_kind(&self) -> Option<&'static str> {
         match self {
-            RelayerError::Rejected(_) => None,
+            RelayerError::Rejected(_) | RelayerError::Spent => None,
+            RelayerError::Unsettled(_) => Some("unconfirmed"),
             RelayerError::Internal(error) => Some(
                 error
                     .downcast_ref()
@@ -121,10 +155,17 @@ pub struct Relayer {
     domain: Domain,
     settlement: Settlement,
     monitor: monitor::Monitor,
+    sends: Option<sends::Sends>,
 }
 
 impl Relayer {
-    pub async fn new(config: Config, key: PrivateKeySigner) -> anyhow::Result<Self> {
+    /// `railgun` holds the relayer's own Railgun keys, which `railgun_sends` needs: never a
+    /// maker's.
+    pub async fn new(
+        config: Config,
+        key: PrivateKeySigner,
+        railgun: Option<Keys>,
+    ) -> anyhow::Result<Self> {
         let account = key.address();
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
         let domain = Domain {
@@ -135,12 +176,38 @@ impl Relayer {
             policy.validate_config(domain.chain_id, account)?;
             settlement.check_funding_adapter(policy.relay_adapt).await?;
         }
+        let sends = match (&config.railgun_sends, railgun) {
+            (None, _) => None,
+            (Some(_), None) => anyhow::bail!("railgun_sends needs the relayer's Railgun keys"),
+            (Some(sends), Some(keys)) => {
+                ensure!(
+                    config.maker != account,
+                    "a relayer sending Railgun transactions must not be the maker"
+                );
+                ensure!(
+                    sends.max_gas_limit > 0 && sends.max_gas_price_wei > 0,
+                    "railgun_sends gas caps must be positive"
+                );
+                let railgun = settlement.railgun().await?;
+                ensure!(!railgun.is_zero(), "the contract pays into no Railgun");
+                let policy = SendPolicy {
+                    railgun,
+                    token: config.token,
+                    fee: sends.fee.into(),
+                    max_gas_limit: sends.max_gas_limit,
+                    max_gas_price_wei: sends.max_gas_price_wei.into(),
+                };
+                info!(railgun = %keys.address(), proxy = %railgun, "sending Railgun transactions");
+                Some(sends::Sends::open(policy, keys, &sends.journal)?)
+            }
+        };
         Ok(Self {
             config,
             account,
             domain,
             settlement,
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
+            sends,
         })
     }
 
@@ -193,6 +260,10 @@ impl Relayer {
                     .reverse_funding
                     .as_ref()
                     .map(|funding| funding.fee.to_string()),
+                sends: self
+                    .sends
+                    .as_ref()
+                    .map(|sends| sends.policy.fee.to_string()),
             },
         })
     }
@@ -212,6 +283,17 @@ impl Relayer {
                     max_gas_price_wei: funding.max_gas_price_wei.into(),
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
                     fee: funding.fee.into(),
+                }
+            }),
+            railgun_sends: self.sends.as_ref().map(|sends| {
+                zecswap_api::relayer::RailgunSendTerms {
+                    railgun_address: sends.keys.address(),
+                    railgun_proxy: sends.policy.railgun,
+                    token: sends.policy.token,
+                    fee: sends.policy.fee,
+                    max_gas_limit: sends.policy.max_gas_limit,
+                    max_gas_price_wei: sends.policy.max_gas_price_wei,
+                    max_calldata_bytes: MAX_CALLDATA_BYTES,
                 }
             }),
         }

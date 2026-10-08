@@ -22,6 +22,8 @@ pub enum Error {
     Unconfirmed(alloy::primitives::B256),
     #[error("swap {0} opened on other terms than these")]
     WrongTerms(alloy::primitives::B256),
+    #[error("recording a transaction before its broadcast: {0}")]
+    Journal(String),
     #[error(transparent)]
     Swap(#[from] zecswap_core::Error),
 }

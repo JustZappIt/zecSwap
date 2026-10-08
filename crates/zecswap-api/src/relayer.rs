@@ -3,7 +3,7 @@
 //! delay a swap but never redirect it. Each request that acts on a swap carries its terms
 //! (`crate::Terms`), which the relayer checks against the chain before sending anything.
 
-use alloy_primitives::{Address, B256, FixedBytes};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
@@ -22,6 +22,30 @@ pub struct Terms {
     /// Absent when initial reverse funding is not sponsored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverse_funding: Option<ReverseFundingTerms>,
+    /// Absent when the relayer sends no private Railgun sends or withdrawals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub railgun_sends: Option<RailgunSendTerms>,
+}
+
+/// What the relayer takes to send a wallet's own Railgun transaction (`POST /v1/railgun/transact`)
+/// as its broadcaster: the transaction's first output is a fee note to `railgunAddress`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RailgunSendTerms {
+    /// The relayer's own 0zk address, which the fee note pays.
+    pub railgun_address: String,
+    /// Railgun's proxy on the relayer's chain, which the transaction calls.
+    pub railgun_proxy: Address,
+    /// The token the fee is paid in.
+    pub token: Address,
+    /// Token base units the fee note must carry at least, as a decimal string.
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    pub max_gas_limit: u64,
+    /// The highest gas price the relayer pays, and so the highest minimum a proof may set.
+    #[serde(with = "decimal")]
+    pub max_gas_price_wei: u128,
+    pub max_calldata_bytes: usize,
 }
 
 /// Sponsored Sepolia funding uses the V2 Relay Adapt ABI and no Railgun broadcaster fee note:
@@ -96,6 +120,19 @@ pub struct Note {
     pub npk: B256,
     pub encrypted_bundle: [B256; 3],
     pub shield_key: B256,
+}
+
+/// `POST /v1/railgun/transact`: a proved, unsigned Railgun `transact` call, as the wallet SDK
+/// populates it for a broadcaster. Persist the exact bytes before posting, and post the same
+/// bytes again after any answer but `200`, `400` or `409`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RailgunTransact {
+    pub chain_id: u64,
+    pub to: Address,
+    pub data: Bytes,
+    #[serde(with = "decimal")]
+    pub value: u128,
 }
 
 /// The transactions a request sent, in order.

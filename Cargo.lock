@@ -7069,6 +7069,7 @@ dependencies = [
  "rand 0.10.3",
  "reqwest",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "zcash_protocol",
@@ -7108,10 +7109,12 @@ dependencies = [
 name = "zecswap-e2e"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "axum",
  "hex",
  "rand 0.10.3",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -7119,6 +7122,7 @@ dependencies = [
  "zcash_address",
  "zcash_keys",
  "zcash_protocol",
+ "zecswap-api",
  "zecswap-chain",
  "zecswap-client",
  "zecswap-core",
@@ -7239,6 +7243,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

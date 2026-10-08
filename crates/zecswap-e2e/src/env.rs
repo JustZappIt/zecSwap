@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
@@ -27,6 +28,10 @@ pub(crate) const NOTE_ZAT: u64 = 300_000;
 const INVENTORY: u128 = 1_000_000_000;
 /// What the relayer keeps from each Railgun payout: 0.02 of the test token.
 pub(crate) const RELAYER_FEE: u64 = 20_000;
+/// What a private send or withdrawal pays the relayer, in a fee note: 0.25 of the test token.
+pub(crate) const SEND_FEE: u64 = 250_000;
+/// The highest gas price the relayer pays for one, which the proofs' minimum may not exceed.
+pub(crate) const SEND_MAX_GAS_PRICE: u64 = 200_000_000_000;
 /// Gas each account is funded for, at the chain's gas price and `GAS_MARGIN` times over. The
 /// deployer's covers both contracts, the silent maker's its inventory and moves, a payout
 /// account's a claim lock, claim and withdrawal, the relayer's a lock, claim and payout each.
@@ -34,6 +39,17 @@ const DEPLOY_GAS: u64 = 5_000_000;
 const MAKER_GAS: u64 = 1_500_000;
 const PAYOUT_GAS: u64 = 500_000;
 const RELAYED_GAS: u64 = 1_500_000;
+/// The most gas the relayer pays for a private send, which takes about 1.1M on a fork and 1.35M
+/// on Sepolia.
+const SEND_GAS_LIMIT: u64 = 3_000_000;
+/// The private sends of one scenario, two Railgun transactions.
+const SEND_GAS: u64 = 2 * SEND_GAS_LIMIT;
+/// Approving Railgun and shielding one note, about 3.8M gas on Sepolia.
+const SHIELD_GAS: u64 = 8_000_000;
+/// Each note a send scenario shields into its sender's Railgun wallet: five of the test token.
+pub(crate) const SHIELDED: u128 = 5_000_000;
+/// The notes a send scenario shields: one for the private send, one for the withdrawal.
+const SHIELDS: u64 = 2;
 const GAS_MARGIN: u128 = 4;
 const SYNC_INTERVAL: Duration = Duration::from_secs(15);
 /// Testnet's target block interval, in seconds.
@@ -43,6 +59,9 @@ pub(crate) struct Settings {
     evm_rpc: String,
     /// Railgun's proxy on that chain, which enables the Railgun scenarios.
     railgun: Option<Address>,
+    /// Where Railgun's wallet SDK reads the chain: it scans logs, so not a node that caps their
+    /// range. The fork itself, or a public Sepolia node.
+    railgun_rpc: String,
     /// Confirmations a note needs before it counts; the wallets' default, 10, unless set.
     confirmations: Option<NonZeroU32>,
     lightwalletd: String,
@@ -50,6 +69,7 @@ pub(crate) struct Settings {
     wallet_dir: PathBuf,
     work_dir: PathBuf,
     artifacts: PathBuf,
+    workspace: PathBuf,
 }
 
 impl Settings {
@@ -85,8 +105,10 @@ impl Settings {
             .map(|count| count.parse())
             .transpose()
             .context("ZECSWAP_E2E_CONFIRMATIONS")?;
+        let evm_rpc = var_or("ZECSWAP_E2E_EVM_RPC", "https://sepolia.base.org");
         Ok(Some(Self {
-            evm_rpc: var_or("ZECSWAP_E2E_EVM_RPC", "https://sepolia.base.org"),
+            railgun_rpc: var_or("ZECSWAP_E2E_RAILGUN_RPC", &evm_rpc),
+            evm_rpc,
             railgun,
             confirmations,
             lightwalletd: var_or("ZECSWAP_E2E_LIGHTWALLETD", "https://testnet.zec.rocks:443"),
@@ -94,6 +116,7 @@ impl Settings {
             wallet_dir: workspace.join(wallet_dir),
             work_dir,
             artifacts: workspace.join("contracts/out"),
+            workspace: workspace.to_path_buf(),
         }))
     }
 
@@ -140,6 +163,8 @@ pub(crate) struct Needs {
     pub(crate) accounts: usize,
     /// Scenarios paid into Railgun, whose transactions the relayer pays for.
     pub(crate) relayed: usize,
+    /// Private Railgun sends the relayer sends as their broadcaster.
+    pub(crate) sends: usize,
     pub(crate) deposits: usize,
 }
 
@@ -149,9 +174,14 @@ pub(crate) struct Env {
     started: Instant,
     pub(crate) network: Network,
     pub(crate) evm_rpc: String,
+    pub(crate) railgun_rpc: String,
     pub(crate) contract: Address,
     pub(crate) token: Address,
     pub(crate) relayer_url: String,
+    /// A relayer of its own for the private sends, so what it sends is theirs alone.
+    pub(crate) sends: Option<SendsNode>,
+    pub(crate) workspace: PathBuf,
+    pub(crate) work_dir: PathBuf,
     /// The token issuer, which gives each device one accept a day, and the key the makers hand
     /// tokens back under.
     issuer_url: String,
@@ -171,6 +201,16 @@ pub(crate) struct Env {
 pub(crate) struct Zcash {
     pub(crate) wallet: Wallet,
     pub(crate) client: Lightwalletd,
+}
+
+pub(crate) struct SendsNode {
+    pub(crate) relayer_url: String,
+    /// The same relayer, key and journal, on an RPC that swallows its first broadcast.
+    pub(crate) lossy_relayer_url: String,
+    /// The seed of the relayer's own Railgun wallet, which the fee notes pay.
+    pub(crate) railgun_seed: [u8; 64],
+    /// A public account holding the token to shield, `SHIELDED` a note, and gas.
+    pub(crate) shielder: PrivateKeySigner,
 }
 
 impl Env {
@@ -237,7 +277,45 @@ impl Env {
                 .await?;
         }
         let (issuer_url, return_key, gate) = start_issuer(&settings.work_dir).await?;
-        let relayer_url = start_relayer(&settings, contract, token, relayer_key).await?;
+        let relayer_url = start_relayer(
+            &settings,
+            &settings.evm_rpc,
+            contract,
+            token,
+            relayer_key,
+            None,
+        )
+        .await?;
+        let sends = match needs.sends {
+            0 => None,
+            count => {
+                let (key, shielder) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+                chain
+                    .send_eth(key.address(), fund(SEND_GAS * count as u64))
+                    .await?;
+                let shields = SHIELDS * count as u64;
+                chain
+                    .send_eth(shielder.address(), fund(SHIELD_GAS * shields))
+                    .await?;
+                chain
+                    .mint_test_token(token, shielder.address(), SHIELDED * u128::from(shields))
+                    .await?;
+                let mut railgun_seed = [0; 64];
+                UnwrapErr(SysRng).fill_bytes(&mut railgun_seed);
+                let seed = Some(&railgun_seed);
+                let (rpc, lossy_rpc) = (&settings.evm_rpc, lossy_rpc(settings.evm_rpc.clone()));
+                let relayer_url =
+                    start_relayer(&settings, rpc, contract, token, key.clone(), seed).await?;
+                let lossy_relayer_url =
+                    start_relayer(&settings, &lossy_rpc.await?, contract, token, key, seed).await?;
+                Some(SendsNode {
+                    relayer_url,
+                    lossy_relayer_url,
+                    railgun_seed,
+                    shielder,
+                })
+            }
+        };
         log(
             started,
             "setup",
@@ -307,9 +385,13 @@ impl Env {
             started,
             network,
             evm_rpc: settings.evm_rpc,
+            railgun_rpc: settings.railgun_rpc,
             contract,
             token,
             relayer_url,
+            sends,
+            workspace: settings.workspace,
+            work_dir: settings.work_dir.clone(),
             issuer_url,
             return_key,
             min_time_to_t0: pace.min_time_to_t0,
@@ -556,7 +638,8 @@ async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address
     let gas = DEPLOY_GAS
         + MAKER_GAS * 2
         + PAYOUT_GAS * needs.accounts as u64
-        + RELAYED_GAS * needs.relayed as u64;
+        + RELAYED_GAS * needs.relayed as u64
+        + (SEND_GAS + SHIELD_GAS * SHIELDS) * needs.sends as u64;
     let needed = U256::from(u128::from(gas) * gas_price * GAS_MARGIN);
     let balance = chain.eth_balance(funder).await?;
     ensure!(
@@ -617,16 +700,19 @@ async fn start_issuer(
     Ok((url, returns.token_key().to_base64(), gate))
 }
 
-/// Runs a relayer in-process, with its own key: it must never be a maker.
+/// Runs a relayer in-process on `evm_rpc`, with its own key: it must never be a maker. With the
+/// seed of its own Railgun wallet, it sends private Railgun sends for a fee note.
 async fn start_relayer(
     settings: &Settings,
+    evm_rpc: &str,
     contract: Address,
     token: Address,
     key: PrivateKeySigner,
+    railgun_seed: Option<&[u8; 64]>,
 ) -> Result<String> {
     // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
-        evm_rpc: settings.evm_rpc.clone(),
+        evm_rpc: evm_rpc.into(),
         contract,
         token,
         maker: settings.funder.address(),
@@ -634,11 +720,57 @@ async fn start_relayer(
         fee: RELAYER_FEE,
         claim_margin: 3 * 60,
         reverse_funding: None,
+        railgun_sends: railgun_seed.map(|_| zecswap_relayer::RailgunSendsConfig {
+            fee: SEND_FEE,
+            max_gas_limit: SEND_GAS_LIMIT,
+            max_gas_price_wei: SEND_MAX_GAS_PRICE,
+            journal: settings.work_dir.join("relayer-sends.sqlite"),
+        }),
     };
-    let relayer = Arc::new(Relayer::new(config, key).await?);
+    let railgun = railgun_seed.map(|seed| zecswap_railgun::Keys::from_seed(seed, 0));
+    let relayer = Arc::new(Relayer::new(config, key, railgun).await?);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
     let router = zecswap_relayer::api::router(relayer);
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+    Ok(url)
+}
+
+/// Passes JSON-RPC through to `upstream`, but swallows the first transaction broadcast, as a
+/// connection lost mid-send would: whoever sends through it cannot know if that one went out.
+async fn lossy_rpc(upstream: String) -> Result<String> {
+    use axum::http::{StatusCode, header};
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let http = reqwest::Client::new();
+    let swallowed = Arc::new(AtomicBool::new(false));
+    let router = axum::Router::new().fallback(move |body: axum::body::Bytes| {
+        let (http, upstream, swallowed) = (http.clone(), upstream.clone(), swallowed.clone());
+        async move {
+            let broadcast = serde_json::from_slice::<serde_json::Value>(&body)
+                .is_ok_and(|request| request["method"] == "eth_sendRawTransaction");
+            let (status, body) = if broadcast && !swallowed.swap(true, Ordering::SeqCst) {
+                (StatusCode::BAD_GATEWAY, Vec::new())
+            } else {
+                match http
+                    .post(&upstream)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .send()
+                    .await
+                {
+                    Ok(response) => (
+                        response.status(),
+                        response.bytes().await.map(Vec::from).unwrap_or_default(),
+                    ),
+                    Err(_) => (StatusCode::BAD_GATEWAY, Vec::new()),
+                }
+            };
+            (status, [(header::CONTENT_TYPE, "application/json")], body)
+        }
+    });
     tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });

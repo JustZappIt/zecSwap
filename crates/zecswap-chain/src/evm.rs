@@ -2,6 +2,7 @@
 
 mod events;
 pub mod funding;
+pub mod railgun;
 pub use events::{SwapEvent, SwapEventKind};
 
 use std::time::Duration;
@@ -257,6 +258,8 @@ pub struct Settlement {
     provider: DynProvider,
     contract: IZecSwap::IZecSwapInstance<DynProvider>,
     account: Option<Address>,
+    /// The account's key, for transactions recorded before they are broadcast.
+    wallet: Option<EthereumWallet>,
     sending: Mutex<()>,
 }
 
@@ -267,10 +270,11 @@ impl Settlement {
         signer: PrivateKeySigner,
     ) -> Result<Self, Error> {
         let account = signer.address();
+        let wallet = EthereumWallet::from(signer);
         Ok(Self::new(
-            signing_provider(rpc_url, Some(signer))?,
+            signing_provider(rpc_url, Some(wallet.clone()))?,
             contract,
-            Some(account),
+            Some((account, wallet)),
         ))
     }
 
@@ -279,11 +283,17 @@ impl Settlement {
         Ok(Self::new(signing_provider(rpc_url, None)?, contract, None))
     }
 
-    fn new(provider: DynProvider, contract: Address, account: Option<Address>) -> Self {
+    fn new(
+        provider: DynProvider,
+        contract: Address,
+        account: Option<(Address, EthereumWallet)>,
+    ) -> Self {
+        let (account, wallet) = account.unzip();
         Self {
             contract: IZecSwap::new(contract, provider.clone()),
             provider,
             account,
+            wallet,
             sending: Mutex::new(()),
         }
     }
@@ -826,7 +836,7 @@ pub async fn deploy(
     signer: PrivateKeySigner,
     init_code: Vec<u8>,
 ) -> Result<Address, Error> {
-    let provider = signing_provider(rpc_url, Some(signer))?;
+    let provider = signing_provider(rpc_url, Some(EthereumWallet::from(signer)))?;
     let tx = TransactionRequest::default().with_deploy_code(init_code);
     let pending = provider
         .send_transaction(tx)
@@ -838,7 +848,7 @@ pub async fn deploy(
         .ok_or_else(|| Error::Contract("deployment created no contract".into()))
 }
 
-fn signing_provider(rpc_url: &str, signer: Option<PrivateKeySigner>) -> Result<DynProvider, Error> {
+fn signing_provider(rpc_url: &str, wallet: Option<EthereumWallet>) -> Result<DynProvider, Error> {
     let url = rpc_url
         .parse()
         .map_err(|e| Error::Config(format!("RPC URL {rpc_url}: {e}")))?;
@@ -846,7 +856,7 @@ fn signing_provider(rpc_url: &str, signer: Option<PrivateKeySigner>) -> Result<D
         .timeout(RPC_TIMEOUT)
         .build()
         .map_err(Error::contract)?;
-    let Some(signer) = signer else {
+    let Some(wallet) = wallet else {
         return Ok(ProviderBuilder::new()
             .disable_recommended_fillers()
             .connect_reqwest(http, url)
@@ -859,7 +869,7 @@ fn signing_provider(rpc_url: &str, signer: Option<PrivateKeySigner>) -> Result<D
         .with_gas_estimation()
         .with_simple_nonce_management()
         .fetch_chain_id()
-        .wallet(EthereumWallet::from(signer))
+        .wallet(wallet)
         .connect_reqwest(http, url)
         .erased())
 }
