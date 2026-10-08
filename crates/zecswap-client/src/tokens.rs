@@ -12,16 +12,37 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::StatusCode;
-use zecswap_api::tokens::{TokenKey as Published, TokenRequests, TokenResponses};
+use zecswap_api::tokens::{
+    Attestation, AttestationChallenge, TokenKey as Published, TokenRequests, TokenResponses,
+};
 use zecswap_tokens::{Challenge, Pending, Token, TokenKey, day, read_www_authenticate};
 
 /// How far the maker's clock may be from ours around midnight, when the day it asks tokens
 /// for turns.
 const CLOCK_SKEW: u64 = 10 * 60;
 
+/// How this install proves to the issuer that it is genuine: its attestation of a request
+/// carrying `blinded`, for the issuer's `challenge` (base64url, as given).
+pub trait Attest: Send + Sync {
+    fn attest(&self, challenge: &str, blinded: &[Vec<u8>]) -> Result<Attestation>;
+}
+
+/// A device id the issuer's `insecure-test` mode takes on trust: for tests.
+pub struct Unattested(pub Vec<u8>);
+
+impl Attest for Unattested {
+    fn attest(&self, challenge: &str, _: &[Vec<u8>]) -> Result<Attestation> {
+        Ok(Attestation {
+            challenge: challenge.into(),
+            chain: vec![URL_SAFE_NO_PAD.encode(&self.0)],
+            signature: String::new(),
+        })
+    }
+}
+
 pub struct Tokens {
     issuer: String,
-    attestation: Vec<u8>,
+    attest: Box<dyn Attest>,
     batch: usize,
     /// The key the maker hands tokens back under, pinned: one a maker gave only some devices
     /// would mark their returned tokens.
@@ -50,19 +71,19 @@ pub(crate) struct Payment {
 }
 
 impl Tokens {
-    /// Fetches `batch` tokens at a time from the issuer API at `issuer`, for the device
-    /// `attestation` vouches for, and asks for tokens back under `return_key` (base64url
-    /// SPKI), the maker's published one.
+    /// Fetches `batch` tokens at a time from the issuer API at `issuer`, for the install
+    /// `attest` speaks for, and asks for tokens back under `return_key` (base64url SPKI), the
+    /// maker's published one.
     pub fn new(
         issuer: impl Into<String>,
-        attestation: Vec<u8>,
+        attest: impl Attest + 'static,
         batch: usize,
         return_key: &str,
     ) -> Result<Self> {
         ensure!(batch > 0, "a token batch of none");
         Ok(Self {
             issuer: issuer.into(),
-            attestation,
+            attest: Box::new(attest),
             batch,
             return_key: TokenKey::from_base64(return_key).context("the return key")?,
             http: reqwest::Client::builder()
@@ -194,17 +215,22 @@ impl Tokens {
             published.token_key == key.to_base64() && published.issuer == challenge.issuer(),
             "the service asks for tokens its issuer does not sign"
         );
-        let (pending, blinded): (Vec<Pending>, Vec<String>) = (0..self.batch)
-            .map(|_| {
-                let (pending, blinded) = Pending::new(key, challenge)?;
-                Ok((pending, URL_SAFE_NO_PAD.encode(blinded)))
-            })
+        let (pending, blinded): (Vec<Pending>, Vec<Vec<u8>>) = (0..self.batch)
+            .map(|_| Pending::new(key, challenge))
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .unzip();
+        let attesting: AttestationChallenge = self
+            .http
+            .get(format!("{}/v1/challenge", self.issuer))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
         let request = TokenRequests {
-            attestation: URL_SAFE_NO_PAD.encode(&self.attestation),
-            blinded,
+            attestation: self.attest.attest(&attesting.challenge, &blinded)?,
+            blinded: blinded.iter().map(|b| URL_SAFE_NO_PAD.encode(b)).collect(),
         };
         let response = self
             .http
@@ -300,6 +326,7 @@ mod tests {
             data_dir: dir.into(),
             tokens_per_day: 2,
             attestation: Attestation::InsecureTest,
+            allow_insecure: true,
         })
         .unwrap()
     }
@@ -397,7 +424,8 @@ mod tests {
         let issuer = serve(zecswap_issuer::router(Arc::new(issuer(dir.path(), &key)))).await;
         let (fake, url) = maker(dir.path(), &key).await;
         let return_key = fake.gate.return_key().clone();
-        let tokens = Tokens::new(&issuer, b"phone".to_vec(), 2, &return_key.to_base64()).unwrap();
+        let phone = Unattested(b"phone".to_vec());
+        let tokens = Tokens::new(&issuer, phone, 2, &return_key.to_base64()).unwrap();
         let tokens = Arc::new(tokens);
         let api = MakerApi::new(url.clone())
             .unwrap()
@@ -456,7 +484,8 @@ mod tests {
         assert!(refused.contains("another day"), "{refused}");
         let marking = IssuerKey::generate().unwrap();
         let (elsewhere, url) = maker(dir.path(), &marking).await;
-        let fresh = Tokens::new(&issuer, b"tablet".to_vec(), 2, &return_key.to_base64());
+        let tablet = Unattested(b"tablet".to_vec());
+        let fresh = Tokens::new(&issuer, tablet, 2, &return_key.to_base64());
         let api = MakerApi::new(url)
             .unwrap()
             .with_tokens(Arc::new(fresh.unwrap()));

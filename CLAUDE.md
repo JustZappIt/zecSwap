@@ -52,7 +52,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
 | `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker; never run by a maker |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
-| `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, behind a pluggable attestation check (`docs/tokens.md`) |
+| `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors` |
@@ -111,8 +111,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
     before taking the quote or importing an account; `max_awaiting_deposit` caps swaps waiting
     on users.
   - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).
-    Attestation is `insecure-test` until the Zapp identity exists, so the limit binds only
-    then; the cap is what holds until then.
+    The issuer's `android-key` mode checks Android hardware key attestation (one key per
+    install); `insecure-test` starts only with `allow_insecure = true`, and the hosted testnet
+    issuer still runs it, so there the cap is what holds.
 - Tokens count walk-aways (2026-10-07): a device walks away from at most `tokens_per_day` swaps
   a day (3) and makes as many as it pays into. The gate holds an accept's token while it runs
   and keeps it only once the quote is taken (`Spend::keep`): a refused accept leaves it

@@ -331,7 +331,7 @@ impl Env {
 
     /// What `device` pays for its accepts with.
     pub(crate) fn tokens(&self, device: &str) -> Result<Arc<zecswap_client::Tokens>> {
-        let device = device.as_bytes().to_vec();
+        let device = zecswap_client::Unattested(device.as_bytes().to_vec());
         let tokens = zecswap_client::Tokens::new(&self.issuer_url, device, 1, &self.return_key)?;
         Ok(Arc::new(tokens))
     }
@@ -598,6 +598,7 @@ async fn start_issuer(
         data_dir: work_dir.join("issuer"),
         tokens_per_day: 1,
         attestation: zecswap_issuer::Attestation::InsecureTest,
+        allow_insecure: true,
     })?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
