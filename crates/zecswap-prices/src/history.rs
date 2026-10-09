@@ -1,9 +1,11 @@
-//! What an asset was worth at a past time, by Alchemy's five-minute candles.
+//! What an asset was worth at a past time, by Alchemy's five-minute candles. Its series has
+//! gaps of a candle or two, so the nearest within a quarter hour stands in; a time with none is
+//! asked about again only an hour on.
 
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -15,6 +17,10 @@ use crate::{ALCHEMY_PRICES, Asset, read};
 
 /// Alchemy's finest history: one price every five minutes.
 pub const CANDLE: u64 = 300;
+/// How far the candle that prices a time may be from it.
+const REACH: u64 = 3 * CANDLE;
+/// How long a time with no price waits before it is asked about again.
+const RETRY: Duration = Duration::from_secs(3600);
 const CACHED: usize = 4096;
 
 /// Alchemy's price history, each candle asked for once.
@@ -22,6 +28,17 @@ pub struct History {
     client: reqwest::Client,
     url: String,
     candles: Mutex<HashMap<(Asset, u64), String>>,
+    /// Times Alchemy had no price for, by when that was asked.
+    misses: Mutex<HashMap<(Asset, u64), Instant>>,
+}
+
+/// Why a time has no price.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unpriced {
+    /// Asked now: Alchemy has none near it, or failed.
+    Now(String),
+    /// Asked within the hour, and had none then.
+    Recently,
 }
 
 impl History {
@@ -40,6 +57,7 @@ impl History {
                 .build()?,
             url: ALCHEMY_PRICES.to_owned(),
             candles: Mutex::default(),
+            misses: Mutex::default(),
         })
     }
 
@@ -49,18 +67,27 @@ impl History {
         self
     }
 
-    /// What `asset` was worth in USD at `at`, by the five-minute candle nearest it: an error
-    /// rather than another time's price when none is within five minutes.
-    pub async fn usd_at(&self, asset: Asset, at: u64) -> Result<String, String> {
-        // Keyed by the candle nearest `at`, which is the one it takes.
+    /// What `asset` was worth in USD at `at`, by the five-minute candle nearest it: none rather
+    /// than a price further than a quarter hour off.
+    pub async fn usd_at(&self, asset: Asset, at: u64) -> Result<String, Unpriced> {
+        // Keyed by the candle nearest `at`, which is the one it takes where Alchemy has it.
         let key = (asset, (at + CANDLE / 2) / CANDLE);
         if let Some(price) = self.candles.lock().unwrap().get(&key) {
             return Ok(price.clone());
         }
+        if self
+            .misses
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_some_and(|asked| asked.elapsed() < RETRY)
+        {
+            return Err(Unpriced::Recently);
+        }
         let body = serde_json::json!({
             "symbol": asset.symbol(),
-            "startTime": at.saturating_sub(CANDLE),
-            "endTime": at.saturating_add(CANDLE),
+            "startTime": at.saturating_sub(REACH),
+            "endTime": at.saturating_add(REACH),
             "interval": "5m",
         });
         let request = self
@@ -68,12 +95,18 @@ impl History {
             .post(format!("{}/historical", self.url))
             .header(CONTENT_TYPE, "application/json")
             .body(body.to_string());
-        let price = nearest(&read(request, "Alchemy").await?, asset, at)?;
-        let mut candles = self.candles.lock().unwrap();
-        if candles.len() >= CACHED {
-            candles.clear();
-        }
-        candles.insert(key, price.clone());
+        let found = match read(request, "Alchemy").await {
+            Ok(body) => nearest(&body, asset, at),
+            Err(error) => Err(error),
+        };
+        let price = match found {
+            Ok(price) => price,
+            Err(error) => {
+                remember(&self.misses, key, Instant::now());
+                return Err(Unpriced::Now(error));
+            }
+        };
+        remember(&self.candles, key, price.clone());
         Ok(price)
     }
 }
@@ -88,6 +121,14 @@ struct Candles {
 struct Candle {
     value: String,
     timestamp: String,
+}
+
+fn remember<V>(cache: &Mutex<HashMap<(Asset, u64), V>>, key: (Asset, u64), value: V) {
+    let mut cache = cache.lock().unwrap();
+    if cache.len() >= CACHED {
+        cache.clear();
+    }
+    cache.insert(key, value);
 }
 
 fn nearest(body: &[u8], asset: Asset, at: u64) -> Result<String, String> {
@@ -108,7 +149,7 @@ fn nearest(body: &[u8], asset: Asset, at: u64) -> Result<String, String> {
             .ok_or_else(|| format!("Alchemy {symbol} history timestamp invalid"))?;
         let distance = time.abs_diff(at);
         if price > Decimal::ZERO
-            && distance <= CANDLE
+            && distance <= REACH
             && nearest.is_none_or(|(closest, _)| distance < closest)
         {
             nearest = Some((distance, price));
@@ -116,7 +157,7 @@ fn nearest(body: &[u8], asset: Asset, at: u64) -> Result<String, String> {
     }
     nearest
         .map(|(_, price)| price.normalize().to_string())
-        .ok_or_else(|| format!("Alchemy has no {symbol} price within five minutes"))
+        .ok_or_else(|| format!("Alchemy has no {symbol} price within a quarter hour"))
 }
 
 #[cfg(test)]
@@ -129,7 +170,11 @@ mod tests {
 
     use super::*;
 
-    /// A stand-in for Alchemy's history: a price a dollar higher each candle, asked for counted.
+    /// Candles missing from the stand-in's history, end exclusive: ten minutes, then two hours.
+    const GAPS: [(u64, u64); 2] = [(6_000_010, 6_000_012), (6_000_100, 6_000_124)];
+
+    /// A stand-in for Alchemy's history: a price a dollar higher each candle, but for `GAPS`,
+    /// asked for counted.
     async fn alchemy() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
         let asked = Arc::new(AtomicUsize::new(0));
         let counter = asked.clone();
@@ -141,6 +186,7 @@ mod tests {
                 let request: serde_json::Value = serde_json::from_str(&body).unwrap();
                 let (start, end) = (request["startTime"].as_u64().unwrap(), request["endTime"].as_u64().unwrap());
                 let data: Vec<_> = (start.div_ceil(CANDLE)..=end / CANDLE)
+                    .filter(|candle| !GAPS.iter().any(|(from, to)| (*from..*to).contains(candle)))
                     .map(|candle| json!({
                         "value": format!("{}.5", 2000 + candle % 1000),
                         "timestamp": chrono::DateTime::from_timestamp((candle * CANDLE) as i64, 0).unwrap().to_rfc3339(),
@@ -158,35 +204,44 @@ mod tests {
         )
     }
 
-    /// The nearest candle prices a time, each candle is asked for once, and a time with no
-    /// candle within five minutes has no price rather than a neighbour's.
+    /// The nearest candle prices a time and each is asked for once; a gap of a candle or two is
+    /// bridged by the nearest within a quarter hour; a time with none that near has no price
+    /// rather than a further one's, and is asked about again only an hour on.
     #[tokio::test]
-    async fn a_time_takes_its_nearest_candle_and_none_further_than_five_minutes() {
+    async fn a_time_takes_its_nearest_candle_within_a_quarter_hour_and_a_miss_waits_an_hour() {
         let (url, asked, server) = alchemy().await;
         let history = History::new("key").unwrap().served_by(&url);
         // Twenty seconds into candle 6,000,000, then 160 seconds in: nearer the next.
         let at = 6_000_000 * CANDLE + 20;
-        assert_eq!(
-            history.usd_at(Asset::Eth, at).await.as_deref(),
-            Ok("2000.5")
-        );
-        assert_eq!(
-            history.usd_at(Asset::Eth, at + 1).await.as_deref(),
-            Ok("2000.5")
-        );
+        let price = |at| history.usd_at(Asset::Eth, at);
+        assert_eq!(price(at).await.as_deref(), Ok("2000.5"));
+        assert_eq!(price(at + 1).await.as_deref(), Ok("2000.5"));
         assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(price(at + 140).await.as_deref(), Ok("2001.5"));
+        // Candles 6,000,010 and 6,000,011 are missing: 6,000,009, six minutes off, stands in.
         assert_eq!(
-            history.usd_at(Asset::Eth, at + 140).await.as_deref(),
-            Ok("2001.5")
+            price(6_000_010 * CANDLE + 60).await.as_deref(),
+            Ok("2009.5")
         );
+        // Two hours without one: no price, and no second asking within the hour.
+        let gap = 6_000_112 * CANDLE;
+        let before = asked.load(Ordering::SeqCst);
+        assert_eq!(
+            price(gap).await,
+            Err(Unpriced::Now(
+                "Alchemy has no ETH price within a quarter hour".into()
+            ))
+        );
+        assert_eq!(price(gap).await, Err(Unpriced::Recently));
+        assert_eq!(asked.load(Ordering::SeqCst), before + 1);
         let far = json!({"symbol": "ETH", "currency": "usd", "data": [
-            {"value": "2400", "timestamp": "2026-01-01T00:10:00Z"},
+            {"value": "2400", "timestamp": "2026-01-01T00:20:00Z"},
         ]});
         assert_eq!(
             nearest(far.to_string().as_bytes(), Asset::Eth, 1_767_225_600)
                 .err()
                 .as_deref(),
-            Some("Alchemy has no ETH price within five minutes")
+            Some("Alchemy has no ETH price within a quarter hour")
         );
         let other = json!({"symbol": "ZEC", "currency": "usd", "data": []});
         assert!(nearest(other.to_string().as_bytes(), Asset::Eth, 0).is_err());
