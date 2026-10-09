@@ -387,6 +387,35 @@ release and restart the maker and relayer; the earlier binaries ignore the new t
 stores stay. Apps from before zapp-android `5f6a4529b` cap a send's fee at 0.25 and so see private
 sends as unavailable while the floor is 0.50.
 
+## October 9 swap fees
+
+At 04:40 UTC the maker and relayer restarted on builds of `546faa8` in
+`/opt/zecswap/releases/20261009-swap-fees-546faa8`, now `/opt/zecswap/current`; the issuer was not
+restarted. Every swap now pays its way ([Each swap pays its own network
+cost](#each-swap-pays-its-own-network-cost)): the maker's config gained `[pricing.costs]`
+(450,000 gas forward, 400,000 reverse, 15,000 zatoshis, 20% margin), and the relayer's
+`providers` and `fee_margin_bps` moved from `[railgun_sends]` to the top level beside
+`fee_gas = 1800000`, with `[reverse_funding] fee_gas = 2300000`. With the old maker stopped, its
+ledger forgot the 26 relayer transactions it had read as paying nothing, and the new one read
+them again from the escrow's events: the eight payouts now carry the relayer's 0.10 fee, which
+the test token's missing `Transfer` logs had hidden.
+
+The deploy script checked the staged files, that the Droplet was as `8c81c9a` left it and both
+configs' shape, backed up both configs and `maker.sqlite`, and after the restart saw the
+relayer's terms quote its payout and funding fees for an hour (at their floors, 100000 and
+250000, with Sepolia's gas that cheap) and its sends' rate, directly and through nginx; a test
+quote for one unit charge a network cost of 221,484 (18,294 zatoshis in all); the maker's
+monitor show the costs; and both exports answer through nginx. Through the public gateway the
+terms quote the fees with an hour to run, and the dashboard reads the maker's costs and the
+relayer's expiry. [sepolia-swap-fees.json](../deployments/sepolia-swap-fees.json) records the
+checksums. Apps from before the change to the relayer's fee (the 0.10 `MAX_RELAYER_FEE` cap)
+refuse to claim once gas lifts the payout fee over 0.10, about 0.02 gwei on Sepolia.
+
+Rollback files are in `/var/backups/zecswap/20261009-swap-fees-546faa8` (root-only): both
+configs, `maker.sqlite` and `previous-current`. Restore the configs with `cp -a`, point
+`/opt/zecswap/current` back at the previous release and restart the maker and relayer: the
+previous relayer refuses this config, and the previous maker ignores `quote_costs`.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
