@@ -354,6 +354,39 @@ release, restore the unit and the relayer's secrets with `cp -a`, remove
 restore and reload nginx; restore Alloy's files and restart it. The earlier maker ignores the two
 new tables, and the dashboard reads both monitor schemas.
 
+## October 9 profitability
+
+At 03:37 UTC the maker and relayer restarted on builds of `8c81c9a` in
+`/opt/zecswap/releases/20261009-profitability-8c81c9a`, now `/opt/zecswap/current`; the release
+carries the `991e16f` issuer byte for byte, and it did not restart. The maker's `[pricing.market]`
+gained `providers = ["coinmarketcap", "alchemy"]`, and it records what each swap earned and cost
+(`GET /maker/v1/monitor/economics`). The relayer records what each sponsored send cost
+(`GET /relayer/v1/monitor/sends`) and prices sends by gas: `[railgun_sends]` gained the same
+`providers` and `fee_margin_bps = 1000`, and its `fee`, now the floor, rose from 250000 to 500000.
+Both services' `secrets.env` gained `ALCHEMY_API_KEY`, the key of the Alchemy URL the maker's RPC
+already used, and the relayer's the maker's `ZCASH_CMC_KEY`. The gateway is unchanged.
+
+The deploy script checked the staged files, that the Droplet was as `5f82797` left it and that
+Alchemy's Prices API priced ZEC, USDC and ETH with that key, then backed up both configs and
+secrets, `maker.sqlite` and the relayer's sends journal. After the restart the relayer's terms
+quoted the 500000 floor and 2,736 test tokens an ETH of gas, margin included, for ten minutes,
+directly and through nginx; its ledger had costed both sends it had sent; the maker priced from
+CoinMarketCap, fresh, with neither provider failing, and its economics export listed eleven swaps
+of the last 30 days; both exports answered through nginx, and a send for another chain was
+refused. Through the public gateway the terms quote the floor and the rate, and maker health
+returns 204. zapp-dashboard's `/bridge/profit`, deployed first (`d4a12d8`, production deployment
+`aue6rmdyt`), charts both. The test token emits no `Transfer` events, and the export reads a
+relayer's fee from the transfers to it, so here it counts the relayer's payout fees (0.10 each) as
+nothing. [sepolia-profitability.json](../deployments/sepolia-profitability.json) records the
+checksums and checks.
+
+Rollback files are in `/var/backups/zecswap/20261009-profitability-8c81c9a` (root-only): both
+configs and `secrets.env` files, `maker.sqlite`, `railgun-sends.sqlite` and `previous-current`.
+Restore the configs and secrets with `cp -a`, point `/opt/zecswap/current` back at the previous
+release and restart the maker and relayer; the earlier binaries ignore the new tables, so the
+stores stay. Apps from before zapp-android `5f6a4529b` cap a send's fee at 0.25 and so see private
+sends as unavailable while the floor is 0.50.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
