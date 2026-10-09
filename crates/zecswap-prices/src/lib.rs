@@ -11,7 +11,7 @@ pub mod stand_in;
 use serde::{Deserialize, Serialize};
 
 pub use feed::{Feed, Keys, Prices, Quote, Status};
-pub use history::{CANDLE, History};
+pub use history::{CANDLE, History, Unpriced};
 
 pub const ALCHEMY_PRICES: &str = "https://api.g.alchemy.com/prices/v1/tokens";
 const CMC_QUOTES: &str = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/latest";

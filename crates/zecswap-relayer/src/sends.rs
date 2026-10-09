@@ -14,7 +14,7 @@ use serde::Serialize;
 use tracing::warn;
 use zecswap_api::relayer::{RailgunTransact, Sent};
 use zecswap_chain::evm::railgun::{SendError, SendPolicy, Signed, Status};
-use zecswap_prices::Asset;
+use zecswap_prices::{Asset, Unpriced};
 use zecswap_railgun::Keys;
 
 use crate::{Relayer, RelayerError, Result};
@@ -217,13 +217,15 @@ impl Relayer {
                     history.usd_at(Asset::Usdc, at).await,
                 ) {
                     (Ok(eth), Ok(token)) => sends.journal.value(chain_id, hash, &eth, &token)?,
-                    (Err(error), _) | (_, Err(error)) => {
+                    (Err(Unpriced::Now(error)), _) | (_, Err(Unpriced::Now(error))) => {
                         warn!(
                             operation = "send_costs",
                             "price history unavailable: {error}"
                         );
                         break;
                     }
+                    // Asked within the hour, and had none: another send's time may.
+                    _ => {}
                 }
             }
         }

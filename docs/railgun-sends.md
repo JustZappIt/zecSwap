@@ -202,8 +202,8 @@ once a send mines, a background pass reads its receipt (whether it succeeded, th
 the effective gas price) and reads from the send's own journaled bytes whether it was a private
 send or an unshield and the fee its notes pay the relayer. A send that reverts burns its gas and
 pays nothing. With `ALCHEMY_API_KEY` set, the pass values the gas in ETH and the fee in USDC at
-the five-minute candle around the send's block; without it they are recorded unvalued. Sends
-journaled before this ledger existed are read the same way.
+Alchemy's nearest five-minute candle within a quarter hour of the send's block; without it they
+are recorded unvalued. Sends journaled before this ledger existed are read the same way.
 
 `GET /relayer/v1/monitor/sends?since=<unix seconds>` (with `RELAYER_MONITOR_TOKEN`) lists them,
 newest first, at most 1,000: `kind` (`send` or `unshield`), `fee` (token base units), `succeeded`,

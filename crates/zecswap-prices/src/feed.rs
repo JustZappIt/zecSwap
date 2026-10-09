@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use crate::{ALCHEMY_PRICES, Asset, CMC_QUOTES, History, Provider, read};
+use crate::{ALCHEMY_PRICES, Asset, CMC_QUOTES, History, Provider, Unpriced, read};
 
 const USD_ID: u64 = 2781;
 /// An event this recent is valued at the feed's own price; an older one at the candle around it.
@@ -270,8 +270,8 @@ impl Feed {
     }
 
     /// What `asset` was worth in USD at `at`, and how that is known: the feed's own price if
-    /// `at` is recent, else the five-minute candle around it, where Alchemy is a provider. None
-    /// when neither is available.
+    /// `at` is recent, else Alchemy's five-minute candle nearest it within a quarter hour, where
+    /// Alchemy is a provider. None when neither is available.
     pub async fn usd_at(&self, asset: Asset, at: u64) -> Option<(String, &'static str)> {
         let now = unix_now();
         if at <= now.saturating_add(30) && now.saturating_sub(at) <= LIVE_WINDOW {
@@ -282,10 +282,11 @@ impl Feed {
         }
         match self.history.as_ref()?.usd_at(asset, at).await {
             Ok(price) => Some((price, "history")),
-            Err(error) => {
+            Err(Unpriced::Now(error)) => {
                 tracing::warn!(provider = "alchemy", "price history unavailable: {error}");
                 None
             }
+            Err(Unpriced::Recently) => None,
         }
     }
 

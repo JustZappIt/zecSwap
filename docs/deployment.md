@@ -696,10 +696,11 @@ or the maker sent it for the swap, a reverted send included: its sender, success
 effective gas price, the escrow token it moved to its sender (a relayer's fee) and ETH/USD at
 its block's time. A Zcash send (`sweep`, reverse `deposit`, or `recovery` after a refund) has
 its exact fee and ZEC/USD when it was sent. Prices are the maker's own when it saw the event
-within five minutes (`live`), else Alchemy's five-minute candle around it (`history`; only
-with `alchemy` among the providers); a value that is neither stays missing. The maker's
-transaction observer records all of this as it goes, a bounded amount a pass, reading each
-receipt once; swaps from before this release are filled in the same way.
+within five minutes (`live`), else Alchemy's nearest five-minute candle within a quarter hour
+(`history`; only with `alchemy` among the providers): its series has gaps of a candle or two. A
+value that is neither stays missing, and a time Alchemy has no price for is asked about again an
+hour on. The maker's transaction observer records all of this as it goes, a bounded amount a
+pass, reading each receipt once; swaps from before this release are filled in the same way.
 
 The endpoint reads nothing from the chain: contract states, USDC and ETH balances are the
 dashboard's to read, on its own RPC, so monitoring never spends the RPC the watchtower needs.
