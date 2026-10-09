@@ -159,6 +159,62 @@ pub struct TransactionFacts {
     pub paid_to_sender: U256,
 }
 
+/// What a transaction paid its sender in `token`. Its transfers to the sender count, or, where
+/// the token logs no transfers (Sepolia's test token logs none), the fees the escrow's `PaidOut`
+/// and `Rescued` name the sender for and the transfers to it that a Relay Adapt call makes.
+fn paid_to(
+    sender: Address,
+    token: Address,
+    escrow: Address,
+    logs: &[alloy::rpc::types::Log],
+    input: Option<&[u8]>,
+) -> U256 {
+    let transferred = logs
+        .iter()
+        .filter(|log| {
+            log.address() == token
+                && log.topics().first() == Some(&IErc20::Transfer::SIGNATURE_HASH)
+        })
+        .filter_map(|log| IErc20::Transfer::decode_log_data(log.data()).ok())
+        .filter(|transfer| transfer.to == sender)
+        .fold(U256::ZERO, |total, transfer| {
+            total.saturating_add(transfer.value)
+        });
+    let escrow_fees = logs
+        .iter()
+        .filter(|log| log.address() == escrow)
+        .filter_map(|log| match log.topics().first() {
+            Some(&IZecSwap::PaidOut::SIGNATURE_HASH) => {
+                IZecSwap::PaidOut::decode_log_data(log.data())
+                    .ok()
+                    .map(|paid| (paid.relayer, paid.fee))
+            }
+            Some(&IZecSwap::Rescued::SIGNATURE_HASH) => {
+                IZecSwap::Rescued::decode_log_data(log.data())
+                    .ok()
+                    .map(|rescued| (rescued.relayer, rescued.fee))
+            }
+            _ => None,
+        })
+        .filter(|(relayer, _)| *relayer == sender)
+        .fold(U256::ZERO, |total, (_, fee)| total.saturating_add(fee));
+    let relayed = input
+        .and_then(|input| railgun::IRelayAdapt::relayCall::abi_decode(input).ok())
+        .map_or(U256::ZERO, |relay| {
+            relay
+                ._actionData
+                .calls
+                .iter()
+                .filter(|call| call.to == token)
+                .filter_map(|call| IErc20::transferCall::abi_decode(&call.data).ok())
+                .filter(|payment| payment.to == sender)
+                .fold(U256::ZERO, |total, payment| {
+                    total.saturating_add(payment.amount)
+                })
+        });
+    transferred.max(escrow_fees.saturating_add(relayed))
+}
+
 /// A swap as the contract and the terms it opened with describe it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnChainSwap {
@@ -462,6 +518,17 @@ impl Settlement {
         };
         let railgun = self.railgun().await?;
         let logs = receipt.inner.logs();
+        let uses_railgun = !railgun.is_zero() && logs.iter().any(|log| log.address() == railgun);
+        // A sponsored reverse funding pays its fee by a call in its Relay Adapt calldata.
+        let input = match uses_railgun && receipt.to != Some(self.contract()) {
+            true => self
+                .provider
+                .get_transaction_by_hash(tx)
+                .await
+                .map_err(Error::contract)?
+                .map(|transaction| alloy::consensus::Transaction::input(&transaction).clone()),
+            false => None,
+        };
         Ok(Some(TransactionFacts {
             sender: receipt.from,
             succeeded: receipt.status(),
@@ -469,18 +536,14 @@ impl Settlement {
             block_hash,
             gas_used: receipt.gas_used,
             gas_price: receipt.effective_gas_price,
-            uses_railgun: !railgun.is_zero() && logs.iter().any(|log| log.address() == railgun),
-            paid_to_sender: logs
-                .iter()
-                .filter(|log| {
-                    log.address() == token
-                        && log.topics().first() == Some(&IErc20::Transfer::SIGNATURE_HASH)
-                })
-                .filter_map(|log| IErc20::Transfer::decode_log_data(log.data()).ok())
-                .filter(|transfer| transfer.to == receipt.from)
-                .fold(U256::ZERO, |total, transfer| {
-                    total.saturating_add(transfer.value)
-                }),
+            uses_railgun,
+            paid_to_sender: paid_to(
+                receipt.from,
+                token,
+                self.contract(),
+                logs,
+                input.as_deref().map(|input| &input[..]),
+            ),
         }))
     }
 
@@ -1021,4 +1084,91 @@ fn on_chain(
         payout_note: (terms.payout_note != [0; 32]).then(|| terms.payout_note.into()),
         paid_out: state.paid_out,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::address;
+    use alloy::rpc::types::Log;
+
+    use super::*;
+
+    fn log(address: Address, event: &impl SolEvent) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address,
+                data: event.encode_log_data(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_relayers_fee_counts_once_whether_or_not_the_token_logs_transfers() {
+        let relayer = address!("0x00000000000000000000000000000000000000a1");
+        let token = address!("0x00000000000000000000000000000000000000b2");
+        let escrow = address!("0x00000000000000000000000000000000000000c3");
+        let vault = address!("0x00000000000000000000000000000000000000d4");
+        let paid_out = IZecSwap::PaidOut {
+            id: B256::ZERO,
+            relayer,
+            fee: U256::from(100_000),
+        };
+        let transfer = |to, value: u64| IErc20::Transfer {
+            from: vault,
+            to,
+            value: U256::from(value),
+        };
+        let paid = |sender, logs: &[Log], input: Option<&[u8]>| {
+            paid_to(sender, token, escrow, logs, input)
+        };
+
+        // Sepolia's test token logs no transfers: the escrow's event names the fee.
+        assert_eq!(
+            paid(relayer, &[log(escrow, &paid_out)], None),
+            U256::from(100_000)
+        );
+        // A token that logs them: the transfer and the event are the same fee.
+        let logs = [
+            log(token, &transfer(relayer, 100_000)),
+            log(token, &transfer(escrow, 9_000_000)),
+            log(escrow, &paid_out),
+        ];
+        assert_eq!(paid(relayer, &logs, None), U256::from(100_000));
+        assert_eq!(paid(vault, &[log(escrow, &paid_out)], None), U256::ZERO);
+
+        // A sponsored funding pays its fee by a call in its Relay Adapt calldata.
+        let call = |data: Vec<u8>| railgun::IRelayAdapt::Call {
+            to: token,
+            data: data.into(),
+            value: U256::ZERO,
+        };
+        let relay = railgun::IRelayAdapt::relayCall {
+            _transactions: vec![],
+            _actionData: railgun::IRelayAdapt::ActionData {
+                random: Default::default(),
+                requireSuccess: true,
+                minGasLimit: U256::ZERO,
+                calls: vec![
+                    call(
+                        IErc20::approveCall {
+                            spender: escrow,
+                            amount: U256::from(5_000_000),
+                        }
+                        .abi_encode(),
+                    ),
+                    call(
+                        IErc20::transferCall {
+                            to: relayer,
+                            amount: U256::from(250_000),
+                        }
+                        .abi_encode(),
+                    ),
+                ],
+            },
+        }
+        .abi_encode();
+        assert_eq!(paid(relayer, &[], Some(&relay)), U256::from(250_000));
+        assert_eq!(paid(vault, &[], Some(&relay)), U256::ZERO);
+    }
 }
