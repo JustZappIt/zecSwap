@@ -1,5 +1,7 @@
+mod economics;
 mod flow;
 mod monitoring;
+pub(crate) use economics::SwapEconomics;
 pub(crate) use flow::{FlowObservation, FlowStatus, ZecTransaction};
 mod notifications;
 mod reverse;
@@ -133,6 +135,7 @@ impl Store {
         conn.execute_batch(notifications::SCHEMA)?;
         conn.execute_batch(transactions::SCHEMA)?;
         conn.execute_batch(flow::SCHEMA)?;
+        conn.execute_batch(economics::SCHEMA)?;
         Ok(Self(Mutex::new(conn)))
     }
 

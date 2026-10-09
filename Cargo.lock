@@ -7128,6 +7128,7 @@ dependencies = [
  "zecswap-core",
  "zecswap-issuer",
  "zecswap-maker",
+ "zecswap-prices",
  "zecswap-railgun",
  "zecswap-relayer",
  "zecswap-tokens",
@@ -7208,7 +7209,24 @@ dependencies = [
  "zecswap-api",
  "zecswap-chain",
  "zecswap-core",
+ "zecswap-prices",
  "zecswap-tokens",
+ "zeroize",
+]
+
+[[package]]
+name = "zecswap-prices"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "reqwest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "zeroize",
 ]
 
@@ -7244,8 +7262,10 @@ dependencies = [
  "axum",
  "clap",
  "rusqlite",
+ "rust_decimal",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml",
@@ -7255,6 +7275,7 @@ dependencies = [
  "zecswap-api",
  "zecswap-chain",
  "zecswap-core",
+ "zecswap-prices",
  "zecswap-railgun",
  "zeroize",
 ]

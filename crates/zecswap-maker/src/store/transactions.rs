@@ -89,6 +89,17 @@ impl Store {
         }))?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    pub(crate) fn block_time(&self, scope: &str, block_hash: B256) -> Result<Option<u64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT time FROM evm_block_times WHERE scope = ?1 AND block_hash = ?2",
+                params![scope, block_hash.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub(crate) fn save_block_time(&self, scope: &str, block_hash: B256, time: u64) -> Result<()> {
         self.conn().execute(
             "INSERT OR IGNORE INTO evm_block_times (scope, block_hash, time) VALUES (?1, ?2, ?3)",

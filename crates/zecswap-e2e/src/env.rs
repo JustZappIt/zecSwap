@@ -46,8 +46,9 @@ const SEND_GAS_LIMIT: u64 = 3_000_000;
 const SEND_GAS: u64 = 2 * SEND_GAS_LIMIT;
 /// Approving Railgun and shielding one note, about 3.8M gas on Sepolia.
 const SHIELD_GAS: u64 = 8_000_000;
-/// Each note a send scenario shields into its sender's Railgun wallet: five of the test token.
-pub(crate) const SHIELDED: u128 = 5_000_000;
+/// Each note a send scenario shields into its sender's Railgun wallet: twenty of the test token,
+/// room for a send and a fee priced by its gas.
+pub(crate) const SHIELDED: u128 = 20_000_000;
 /// The notes a send scenario shields: one for the private send, one for the withdrawal.
 const SHIELDS: u64 = 2;
 const GAS_MARGIN: u128 = 4;
@@ -205,6 +206,8 @@ pub(crate) struct Zcash {
 
 pub(crate) struct SendsNode {
     pub(crate) relayer_url: String,
+    /// That relayer itself, whose ledger records what each send cost and earned.
+    pub(crate) relayer: Arc<Relayer>,
     /// The same relayer, key and journal, on an RPC that swallows its first broadcast.
     pub(crate) lossy_relayer_url: String,
     /// The same relayer and key on an empty journal, as after losing it.
@@ -279,7 +282,7 @@ impl Env {
                 .await?;
         }
         let (issuer_url, return_key, gate) = start_issuer(&settings.work_dir).await?;
-        let relayer_url = start_relayer(
+        let (relayer_url, _) = start_relayer(
             &settings,
             &settings.evm_rpc,
             contract,
@@ -306,9 +309,9 @@ impl Env {
                 UnwrapErr(SysRng).fill_bytes(&mut railgun_seed);
                 let journal = Some((&railgun_seed, "relayer-sends.sqlite"));
                 let (rpc, lossy_rpc) = (&settings.evm_rpc, lossy_rpc(settings.evm_rpc.clone()));
-                let relayer_url =
+                let (relayer_url, relayer) =
                     start_relayer(&settings, rpc, contract, token, key.clone(), journal).await?;
-                let lossy_relayer_url = start_relayer(
+                let (lossy_relayer_url, _) = start_relayer(
                     &settings,
                     &lossy_rpc.await?,
                     contract,
@@ -318,10 +321,11 @@ impl Env {
                 )
                 .await?;
                 let forgetful = Some((&railgun_seed, "relayer-sends-forgotten.sqlite"));
-                let forgetful_relayer_url =
+                let (forgetful_relayer_url, _) =
                     start_relayer(&settings, rpc, contract, token, key, forgetful).await?;
                 Some(SendsNode {
                     relayer_url,
+                    relayer,
                     lossy_relayer_url,
                     forgetful_relayer_url,
                     railgun_seed,
@@ -714,7 +718,8 @@ async fn start_issuer(
 }
 
 /// Runs a relayer in-process on `evm_rpc`, with its own key: it must never be a maker. With the
-/// seed of its own Railgun wallet and a journal, it sends private Railgun sends for a fee note.
+/// seed of its own Railgun wallet and a journal, it sends private Railgun sends for a fee note,
+/// and records what each cost and earned, as the relayer's binary does.
 async fn start_relayer(
     settings: &Settings,
     evm_rpc: &str,
@@ -722,7 +727,7 @@ async fn start_relayer(
     token: Address,
     key: PrivateKeySigner,
     sends: Option<(&[u8; 64], &str)>,
-) -> Result<String> {
+) -> Result<(String, Arc<Relayer>)> {
     // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
         evm_rpc: evm_rpc.into(),
@@ -735,6 +740,13 @@ async fn start_relayer(
         reverse_funding: None,
         railgun_sends: sends.map(|(_, journal)| zecswap_relayer::RailgunSendsConfig {
             fee: SEND_FEE,
+            // With an Alchemy key in the environment, sends are priced by their gas as well.
+            providers: std::env::var("ALCHEMY_API_KEY")
+                .is_ok()
+                .then_some(zecswap_prices::Provider::Alchemy)
+                .into_iter()
+                .collect(),
+            fee_margin_bps: 1_000,
             max_gas_limit: SEND_GAS_LIMIT,
             max_gas_price_wei: SEND_MAX_GAS_PRICE,
             journal: settings.work_dir.join(journal),
@@ -744,11 +756,12 @@ async fn start_relayer(
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
-    let router = zecswap_relayer::api::router(relayer);
+    tokio::spawn(relayer.clone().run_costs());
+    let router = zecswap_relayer::api::router(relayer.clone());
     tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });
-    Ok(url)
+    Ok((url, relayer))
 }
 
 /// Passes JSON-RPC through to `upstream`, but swallows the first transaction broadcast, as a

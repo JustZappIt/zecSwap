@@ -1023,6 +1023,70 @@ async fn settlement_events_carry_their_block_time() {
     );
 }
 
+/// A send that reverts on-chain burns gas yet emits no event for the indexer to find: the
+/// journal still puts it in its swap's costs, beside the `open` the indexer found, each with
+/// the sender, gas and price its receipt shows.
+#[tokio::test]
+async fn a_reverted_send_is_costed_with_its_swap() {
+    use serde_json::json;
+    let Some((anvil, _dir, maker)) = on_anvil().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    let swap = recorded_swap(&maker, 1, None).await;
+    let terms = maker.terms(&swap).unwrap();
+    let opened = maker
+        .journal(swap.id, "open", maker.settlement.open(&terms).await)
+        .unwrap();
+    // Sent past the estimate, as when the chain moves between estimate and mining: it mines,
+    // and fails.
+    let reverted: B256 = anvil_rpc(
+        &url,
+        "eth_sendTransaction",
+        json!([{"from": maker.account, "to": maker.config.contract, "data": "0xdeadbeef", "gas": "0x186a0"}]),
+    )
+    .await
+    .as_str()
+    .unwrap()
+    .parse()
+    .unwrap();
+    let sent = Err(zecswap_chain::Error::Reverted(reverted));
+    assert!(maker.journal(swap.id, "ready", sent).is_err());
+    anvil_rpc(&url, "anvil_mine", json!(["0x3"])).await;
+    maker.transaction_pass().await.unwrap();
+    maker.enrich_evm_history().await.unwrap();
+
+    let ledger = serde_json::to_value(maker.economics(Some(0)).unwrap()).unwrap();
+    assert_eq!(ledger["maker"], json!(maker.account));
+    let costs = &ledger["swaps"][0]["evm"];
+    assert_eq!(costs.as_array().unwrap().len(), 2);
+    let number = |value: &serde_json::Value| {
+        u128::from_str_radix(value.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+    };
+    for (cost, hash, events, operation, succeeded) in [
+        (&costs[0], opened, json!(["opened"]), "open", true),
+        (&costs[1], reverted, json!([]), "ready", false),
+    ] {
+        let receipt = anvil_rpc(&url, "eth_getTransactionReceipt", json!([hash])).await;
+        assert_eq!(cost["transactionHash"], json!(hash));
+        assert_eq!(
+            (&cost["events"], &cost["operation"]),
+            (&events, &json!(operation))
+        );
+        assert_eq!(cost["sender"], json!(maker.account));
+        assert_eq!(cost["succeeded"], succeeded);
+        assert!(number(&receipt["gasUsed"]) > 21_000);
+        assert_eq!(
+            cost["gasUsed"].as_u64().map(u128::from),
+            Some(number(&receipt["gasUsed"]))
+        );
+        assert_eq!(
+            cost["gasPriceWei"],
+            number(&receipt["effectiveGasPrice"]).to_string()
+        );
+    }
+}
+
 /// Restarted on another account, root secret or, with a reverse swap pending, token, a maker
 /// refuses to run rather than fail every call on its live swaps, cancels included.
 #[tokio::test]

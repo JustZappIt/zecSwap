@@ -49,6 +49,8 @@ struct NewWallet {
 #[derive(Deserialize)]
 struct Proved {
     transactions: Vec<RailgunTransact>,
+    /// What each pays the relayer, in its token's base units.
+    fees: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,28 +111,46 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
     let mut recipient_seed = [0; 64];
     UnwrapErr(SysRng).fill_bytes(&mut recipient_seed);
     let recipient = Keys::from_seed(&recipient_seed, 0).address();
-    let withdrawn_to = PrivateKeySigner::random().address();
+    let withdrawn_to = PrivateKeySigner::random().address().to_string();
     let gas_price = shielder.gas_price().await?.min(terms.max_gas_price_wei);
-    // All three spend the shielded note.
-    let first = prove(
-        env,
-        &sender,
-        from_block,
-        &terms,
-        gas_price,
-        &[
-            (recipient.as_str(), terms.fee),
-            (&withdrawn_to.to_string(), terms.fee),
-            (recipient.as_str(), terms.fee - 1),
-        ],
-    )
-    .await?;
-    let [transfer, withdrawal, underpaid] = first.as_slice() else {
+    // All of them spend the shielded note: two priced as the app prices them, one a unit under
+    // the fixed fee, and where the relayer prices gas, one paying the fixed fee alone.
+    let mut proofs = vec![
+        (recipient.as_str(), None),
+        (withdrawn_to.as_str(), None),
+        (recipient.as_str(), Some(terms.fee - 1)),
+    ];
+    if terms.fee_per_unit_gas.is_some() {
+        proofs.push((recipient.as_str(), Some(terms.fee)));
+    }
+    let first = prove(env, &sender, from_block, &terms, gas_price, &proofs).await?;
+    let [
+        (transfer, transfer_fee),
+        (withdrawal, _),
+        (underpaid, _),
+        short @ ..,
+    ] = first.as_slice()
+    else {
         bail!("the SDK proved {} sends", first.len());
     };
+    if terms.fee_per_unit_gas.is_some() {
+        ensure!(
+            *transfer_fee > terms.fee,
+            "a send priced by its gas paid only the fixed fee, {transfer_fee}"
+        );
+    }
 
     let sent_before = nonce(all_terms.relayer).await?;
-    for (request, what) in altered(transfer, underpaid, env.token, &terms)? {
+    let short = short.iter().map(|(request, _)| {
+        (
+            request.clone(),
+            "paying the fixed fee alone, short of its gas",
+        )
+    });
+    for (request, what) in altered(transfer, underpaid, env.token, &terms)?
+        .into_iter()
+        .chain(short)
+    {
         match relayer.railgun_transact(&request).await {
             Broadcast::Refused(reason) => env.log(NAME, format!("{what}: refused, {reason}")),
             other => bail!("{what}: {other:?}"),
@@ -154,6 +174,7 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
     let Broadcast::Sent(sent) = lossy.railgun_transact(transfer).await else {
         bail!("the lost broadcast was not sent again");
     };
+    let transferred = sent[0];
     ensure!(
         relayer.railgun_transact(transfer).await == Broadcast::Sent(sent.clone()),
         "the same bytes posted to the other relayer on the journal did not name the send"
@@ -174,10 +195,11 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         from_block,
         &terms,
         gas_price,
-        &[(&withdrawn_to.to_string(), terms.fee)],
+        &[(withdrawn_to.as_str(), None)],
     )
     .await?;
-    let Broadcast::Sent(withdrawn) = relayer.railgun_transact(&second[0]).await else {
+    let (withdrawal, withdrawal_fee) = &second[0];
+    let Broadcast::Sent(withdrawn) = relayer.railgun_transact(withdrawal).await else {
         bail!("the withdrawal was not sent");
     };
     mined(&shielder, withdrawn[0]).await?;
@@ -200,7 +222,9 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         .call()
         .await?
         .to::<u128>();
-    let received = shielder.token_balance(env.token, withdrawn_to).await?;
+    let received = shielder
+        .token_balance(env.token, withdrawn_to.parse()?)
+        .await?;
     ensure!(
         received == SENT - SENT * unshield_bps / 10_000,
         "the withdrawal paid {received}, less Railgun's {unshield_bps} basis points of {SENT}"
@@ -226,10 +250,56 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         bail!("the SDK read {} balances", balances.balances.len());
     };
     ensure!(
-        fees.total == (2 * terms.fee).to_string() && delivered.total == SENT.to_string(),
+        fees.total == (transfer_fee + withdrawal_fee).to_string()
+            && delivered.total == SENT.to_string(),
         "Railgun's SDK finds {} in the relayer's wallet and {} in the recipient's",
         fees.total,
         delivered.total
+    );
+
+    // The relayer's ledger names both: what each was, the fee it paid, and the gas it burned.
+    let started = Instant::now();
+    let costed = loop {
+        let ledger = serde_json::to_value(node.relayer.sends_snapshot(Some(0))?)?;
+        let record = |hash: B256| {
+            ledger["sends"]
+                .as_array()
+                .and_then(|sends| {
+                    sends
+                        .iter()
+                        .find(|send| send["transactionHash"] == json!(hash))
+                })
+                .filter(|send| !send["kind"].is_null())
+                .cloned()
+        };
+        if let (Some(transfer), Some(withdrawal)) = (record(transferred), record(withdrawn[0])) {
+            break [transfer, withdrawal];
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(150),
+            "the relayer never recorded what its sends cost"
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    };
+    for ((record, kind), fee) in costed
+        .iter()
+        .zip(["send", "unshield"])
+        .zip([transfer_fee, withdrawal_fee])
+    {
+        ensure!(
+            record["kind"] == kind
+                && record["succeeded"] == true
+                && record["fee"] == fee.to_string()
+                && record["gasUsed"].as_u64().is_some_and(|gas| gas > 21_000),
+            "the relayer's ledger recorded the {kind} as {record}"
+        );
+    }
+    env.log(
+        NAME,
+        format!(
+            "the relayer's ledger costs the send at {} gas paying {transfer_fee}, and the withdrawal at {} paying {withdrawal_fee}",
+            costed[0]["gasUsed"], costed[1]["gasUsed"]
+        ),
     );
     env.log(
         NAME,
@@ -243,14 +313,16 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
 
 /// Each send, `(to, fee)`, proved by Railgun's SDK from the sender's notes as they stand: to a
 /// 0zk address a private send, to an account a withdrawal.
+/// Each send to `to` proved with the SDK, paying the fee given, or if none the fee the app works
+/// out from the terms; with the fee each pays.
 async fn prove(
     env: &Env,
     sender: &NewWallet,
     from_block: u64,
     terms: &RailgunSendTerms,
     gas_price: u128,
-    sends: &[(&str, u128)],
-) -> Result<Vec<RailgunTransact>> {
+    sends: &[(&str, Option<u128>)],
+) -> Result<Vec<(RailgunTransact, u128)>> {
     let proved: Proved = sdk(
         env,
         "prove",
@@ -264,20 +336,33 @@ async fn prove(
                 "railgunAddress": terms.railgun_address,
                 "token": terms.token.to_string(),
                 "fee": terms.fee.to_string(),
+                "feePerUnitGas": terms.fee_per_unit_gas.map(|rate| rate.to_string()),
             },
             "minGasPrice": gas_price.to_string(),
             "waitSeconds": SCREENING_WITHIN.as_secs(),
             "sends": sends.iter().map(|(to, fee)| json!({
                 "to": to,
                 "amount": SENT.to_string(),
-                "fee": fee.to_string(),
+                "fee": fee.map(|fee| fee.to_string()),
             })).collect::<Vec<_>>(),
         })),
     )
     .await?;
-    ensure!(proved.transactions.len() == sends.len());
-    env.log(NAME, format!("Railgun's SDK proved {} sends", sends.len()));
-    Ok(proved.transactions)
+    ensure!(proved.transactions.len() == sends.len() && proved.fees.len() == sends.len());
+    env.log(
+        NAME,
+        format!(
+            "Railgun's SDK proved {} sends, paying {}",
+            sends.len(),
+            proved.fees.join(", ")
+        ),
+    );
+    proved
+        .transactions
+        .into_iter()
+        .zip(proved.fees)
+        .map(|(transaction, fee)| Ok((transaction, fee.parse()?)))
+        .collect()
 }
 
 /// The send as it might arrive altered, each of which the relayer must refuse unsent.

@@ -2,9 +2,10 @@
 #   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
 #   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
-#   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor and
-#                       /v1/monitor/swaps/{id}
-#   ZCASH_CMC_KEY       required when [pricing.market] is enabled; server-side only
+#   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor,
+#                       /v1/monitor/swaps/{id} and /v1/monitor/economics
+#   ZCASH_CMC_KEY       required when [pricing.market] lists coinmarketcap; server-side only
+#   ALCHEMY_API_KEY     required when [pricing.market] lists alchemy; server-side only
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
@@ -32,11 +33,14 @@ max_units = 20
 
 # Enable live USD quotes for a six-decimal USDC token. This ignores price_per_zec.
 # Prices are fetched on quote/dashboard requests, with a shared cache; no cron or polling.
-# Never fall back to the fixed price if the provider fails or a price becomes stale.
+# Each refresh asks the providers in order and keeps the first answer, so quotes pause only
+# while every one fails. Never fall back to the fixed price once the last price is too old.
+# Alchemy also keeps history: listed, it values swap costs the maker saw after the fact.
 # [pricing.market]
 # token_decimals = 6
 # refresh_seconds = 60
 # max_age_seconds = 300
+# providers = ["coinmarketcap", "alchemy"]
 
 [timing]
 quote_ttl = 120

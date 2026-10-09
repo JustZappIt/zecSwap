@@ -576,13 +576,19 @@ Live USD pricing is enabled by `[pricing.market]` in the maker configuration:
 token_decimals = 6
 refresh_seconds = 60
 max_age_seconds = 300
+providers = ["coinmarketcap", "alchemy"]
 ```
 
-Set `ZCASH_CMC_KEY` only in the maker's protected environment file. It is never a
-dashboard variable or part of a browser response. Quote and monitoring requests fetch
-CoinMarketCap's ZEC (ID 1437) and USDC (ID 3408) USD prices together, using a shared
-60-second cache and a single in-flight request. The same request carries ETH (ID 1027) for
-the dashboard's gas values alone: missing or stale, it is left out and never touches quotes.
+`providers` is required and ordered: each refresh asks the first, and only while it fails the
+next, so quotes keep their price through one provider's outage. Each listed provider needs
+its key in the maker's protected environment file: `ZCASH_CMC_KEY` for CoinMarketCap,
+`ALCHEMY_API_KEY` for Alchemy's Prices API (the key of an Alchemy app; it is sent as a bearer
+header, never in a URL). Neither is ever a dashboard variable or part of a browser response.
+Quote and monitoring requests fetch ZEC and USDC USD prices together (CoinMarketCap by ID,
+1437 and 3408; Alchemy by symbol), using a shared 60-second cache and a single in-flight
+request. The same request carries ETH (CoinMarketCap ID 1027) for gas values alone: missing
+or stale, it is left out and never touches quotes. The monitor's `pricing.source` names the
+provider behind the current price, and `pricing.providers` each provider's last error.
 There is no cron or background polling.
 ZEC/USDC is ZEC/USD divided by USDC/USD, converted to six-decimal token units with decimal
 arithmetic; the existing spread and zatoshi rounding apply in both swap directions.
@@ -594,8 +600,10 @@ their exact stored amounts until expiry; settlement and watchtower recovery cont
 independently of the price feed. Omitting `[pricing.market]` retains fixed pricing for
 local tests. Production and mainnet should explicitly enable market pricing.
 
-`GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`, and
-`GET /maker/v1/monitor/swaps/{id}` the same record for any one swap, old or new. Both are
+`GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`,
+`GET /maker/v1/monitor/swaps/{id}` the same record for any one swap, old or new, and
+`GET /maker/v1/monitor/economics?since=<unix seconds>` what each swap accepted since then
+(30 days back by default, newest first, at most 1,000) earned and cost. All three are
 disabled unless `MAKER_MONITOR_TOKEN` is set (at least 32 characters), and require
 `Authorization: Bearer <token>`. Use the same value as `BRIDGE_TESTNET_MONITOR_TOKEN`
 in the dashboard's server environment. No seed, spending share, viewing key, user
@@ -616,6 +624,19 @@ include expired and refunded swaps; they are not successful-trade counts. Per-sw
 from the last completed watchtower pass; the counter resets when the maker restarts. Detailed
 errors remain in the maker logs.
 
+The economics export (`schemaVersion` 1) gives each swap its amounts, the market prices its
+quote was made at (`quote`: `source` is the provider, or `live`/`history` for a swap accepted
+before quotes kept their prices, valued afterwards), every Ethereum transaction on it and
+the maker's Zcash sends on it. A transaction is listed if one of the swap's events was in it
+or the maker sent it for the swap, a reverted send included: its sender, success, gas used,
+effective gas price, the escrow token it moved to its sender (a relayer's fee) and ETH/USD at
+its block's time. A Zcash send (`sweep`, reverse `deposit`, or `recovery` after a refund) has
+its exact fee and ZEC/USD when it was sent. Prices are the maker's own when it saw the event
+within five minutes (`live`), else Alchemy's five-minute candle around it (`history`; only
+with `alchemy` among the providers); a value that is neither stays missing. The maker's
+transaction observer records all of this as it goes, a bounded amount a pass, reading each
+receipt once; swaps from before this release are filled in the same way.
+
 The endpoint reads nothing from the chain: contract states, USDC and ETH balances are the
 dashboard's to read, on its own RPC, so monitoring never spends the RPC the watchtower needs.
 It never syncs the wallet, generates proofs, sends transactions, or writes inventory. A busy
@@ -625,10 +646,13 @@ readings remain unknown while busy.
 The relayer's `GET /relayer/v1/monitor` (`RELAYER_MONITOR_TOKEN`) counts, for each operation
 since it started, the transactions sent, the requests refused and those that failed (by kind:
 `reverted`, `unconfirmed` or `internal`, never a message), and the gas and wei its sent
-transactions burned, from which the dashboard works out how long its ETH lasts. The issuer's
-`GET /issuer/v1/monitor` (`ISSUER_MONITOR_TOKEN`, in `/etc/zecswap-issuer/secrets.env`)
-shows the day's token totals, its refusals by reason and its status list's age. Both are
-closed while their token is unset and take tokens of at least 32 characters. All three
+transactions burned, from which the dashboard works out how long its ETH lasts. With
+`[railgun_sends]`, its `GET /relayer/v1/monitor/sends` lists each private send and withdrawal it
+paid the gas of, with what it burned and the fee it was paid ([railgun-sends.md](railgun-sends.md)).
+The issuer's `GET /issuer/v1/monitor` (`ISSUER_MONITOR_TOKEN`, in
+`/etc/zecswap-issuer/secrets.env`) shows the day's token totals, its refusals by reason and its
+status list's age. Both are closed while their token is unset and take tokens of at least 32
+characters. All three
 monitors share a gateway allowance of their own (one a second, a burst of ten), apart from the
 apps'.
 

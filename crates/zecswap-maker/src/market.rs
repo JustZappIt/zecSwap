@@ -1,51 +1,33 @@
-use std::str::FromStr;
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
-
-use anyhow::{Context, Result, ensure};
-use reqwest::header::{HeaderMap, HeaderValue};
+use anyhow::{Result, ensure};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use zecswap_prices::{Feed, Keys, Prices};
 
-use crate::pricing::{MarketConfig, Pricing};
+pub(crate) use zecswap_prices::Asset;
 
-const CMC_QUOTES: &str = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/latest";
-const ZEC_ID: u64 = 1437;
-const USDC_ID: u64 = 3408;
-/// For the dashboard's gas values only: never part of a quote.
-const ETH_ID: u64 = 1027;
-const USD_ID: u64 = 2781;
+use crate::pricing::Pricing;
+
+/// What every quote's price needs; ETH rides along for gas values only.
+const QUOTED: [Asset; 2] = [Asset::Zec, Asset::Usdc];
 
 pub(crate) struct PriceBook {
     policy: Pricing,
-    client: Option<reqwest::Client>,
-    state: RwLock<State>,
-    refresh_lock: tokio::sync::Mutex<()>,
-}
-
-#[derive(Default)]
-struct State {
-    price: Option<MarketPrice>,
-    last_attempt_at: Option<u64>,
-    last_error: Option<String>,
-}
-
-#[derive(Clone)]
-struct MarketPrice {
-    price_per_zec: u128,
-    zec_usd: String,
-    usdc_usd: String,
-    zec_updated_at: u64,
-    usdc_updated_at: u64,
-    eth_usd: Option<String>,
-    eth_updated_at: Option<u64>,
-    fetched_at: u64,
-    fetched: Instant,
+    /// With `[pricing.market]`; a fixed price needs none.
+    feed: Option<Feed>,
 }
 
 pub(crate) struct QuotePricing {
     pub policy: Pricing,
-    observed: Option<MarketPrice>,
+    observed: Option<Prices>,
+    max_age: u64,
+}
+
+/// The market prices a quote was made at, and where they came from.
+pub(crate) struct QuoteMark {
+    pub source: &'static str,
+    pub zec_usd: String,
+    pub usdc_usd: String,
+    pub eth_usd: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -67,17 +49,22 @@ pub(crate) struct PriceSnapshot {
     pub refresh_seconds: Option<u64>,
     pub max_age_seconds: Option<u64>,
     pub token_decimals: Option<u8>,
+    pub providers: Vec<ProviderStatus>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderStatus {
+    pub provider: &'static str,
+    pub last_error: Option<String>,
 }
 
 impl PriceBook {
     pub fn from_env(policy: &Pricing) -> Result<Self> {
-        let key = std::env::var("ZCASH_CMC_KEY")
-            .ok()
-            .map(zeroize::Zeroizing::new);
-        Self::new(policy, key.as_ref().map(|v| v.as_str()))
+        Self::new(policy, &Keys::from_env())
     }
 
-    fn new(policy: &Pricing, key: Option<&str>) -> Result<Self> {
+    fn new(policy: &Pricing, keys: &Keys) -> Result<Self> {
         ensure!(
             policy.unit > 0 && policy.max_units > 0,
             "pricing denominations must be positive"
@@ -86,321 +73,188 @@ impl PriceBook {
             policy.spread_bps < 10_000,
             "pricing spread must be below 100%"
         );
-        let client = if let Some(config) = &policy.market {
-            // USDC uses six decimals. Test tokens must explicitly use that same precision.
-            ensure!(
-                config.token_decimals == 6,
-                "CMC pricing requires a six-decimal USDC token"
-            );
-            ensure!(
-                (60..=3600).contains(&config.refresh_seconds),
-                "price refresh must be 60 to 3600 seconds"
-            );
-            ensure!(
-                config.max_age_seconds > config.refresh_seconds && config.max_age_seconds <= 3600,
-                "price max age must exceed refresh interval and be at most one hour"
-            );
-            let mut value = HeaderValue::from_str(
-                key.filter(|v| !v.trim().is_empty())
-                    .context("ZCASH_CMC_KEY is required for market pricing")?,
-            )
-            .context("invalid ZCASH_CMC_KEY header")?;
-            value.set_sensitive(true);
-            let mut headers = HeaderMap::new();
-            headers.insert("X-CMC_PRO_API_KEY", value);
-            Some(
-                reqwest::Client::builder()
-                    .default_headers(headers)
-                    .timeout(Duration::from_secs(8))
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()?,
-            )
-        } else {
-            ensure!(policy.price_per_zec > 0, "fixed price must be positive");
-            None
+        let feed = match &policy.market {
+            Some(config) => {
+                // USDC uses six decimals. Test tokens must explicitly use that same precision.
+                ensure!(
+                    config.token_decimals == 6,
+                    "market pricing requires a six-decimal USDC token"
+                );
+                Some(Feed::new(
+                    &config.providers,
+                    keys,
+                    &QUOTED,
+                    &[Asset::Eth],
+                    config.refresh_seconds,
+                    config.max_age_seconds,
+                )?)
+            }
+            None => {
+                ensure!(policy.price_per_zec > 0, "fixed price must be positive");
+                None
+            }
         };
         Ok(Self {
             policy: policy.clone(),
-            client,
-            state: RwLock::new(State::default()),
-            refresh_lock: tokio::sync::Mutex::new(()),
+            feed,
         })
     }
 
     pub fn quote(&self, now: u64) -> Option<QuotePricing> {
         let mut policy = self.policy.clone();
-        let observed = if let Some(config) = &policy.market {
-            let price = self.state.read().unwrap().price.clone()?;
-            if !price.fresh(config, now) {
-                return None;
-            }
-            policy.price_per_zec = price.price_per_zec;
-            Some(price)
-        } else {
-            None
+        let Some(feed) = &self.feed else {
+            return Some(QuotePricing {
+                policy,
+                observed: None,
+                max_age: 0,
+            });
         };
-        Some(QuotePricing { policy, observed })
+        let prices = feed.fresh(now)?;
+        policy.price_per_zec = price_per_zec(&prices, self.decimals())?;
+        Some(QuotePricing {
+            policy,
+            observed: Some(prices),
+            max_age: feed.max_age_seconds(),
+        })
     }
 
     pub fn snapshot(&self, now: u64) -> PriceSnapshot {
-        let state = self.state.read().unwrap();
-        let config = self.policy.market.as_ref();
-        let price = state.price.as_ref();
-        let status = match config {
-            None => "fixed",
-            Some(config) => match price {
-                Some(price) if price.fresh(config, now) => "fresh",
-                Some(_) => "stale",
-                None => "unavailable",
-            },
+        let Some(feed) = &self.feed else {
+            return PriceSnapshot {
+                source: "fixed",
+                status: "fixed",
+                quotes_available: true,
+                price_per_zec: Some(self.policy.price_per_zec.to_string()),
+                zec_usd: None,
+                usdc_usd: None,
+                zec_updated_at: None,
+                usdc_updated_at: None,
+                eth_usd: None,
+                eth_updated_at: None,
+                fetched_at: None,
+                last_attempt_at: None,
+                last_error: None,
+                refresh_seconds: None,
+                max_age_seconds: None,
+                token_decimals: None,
+                providers: Vec::new(),
+            };
+        };
+        let status = feed.status();
+        let prices = status.prices.as_ref();
+        let rate = prices.and_then(|prices| price_per_zec(prices, self.decimals()));
+        let fresh = prices.is_some_and(|p| p.fresh(&QUOTED, feed.max_age_seconds(), now));
+        let usd = |asset| {
+            prices
+                .and_then(|p| p.usd(asset))
+                .map(|usd: Decimal| usd.normalize().to_string())
+        };
+        let at = |asset| {
+            prices
+                .and_then(|p| p.quote(asset))
+                .map(|quote| quote.updated_at)
         };
         PriceSnapshot {
-            source: if config.is_some() {
-                "coinmarketcap"
-            } else {
-                "fixed"
+            source: prices.map_or(status.providers[0].0, |p| p.provider).name(),
+            status: match (prices, fresh) {
+                (None, _) => "unavailable",
+                (Some(_), true) => "fresh",
+                (Some(_), false) => "stale",
             },
-            status,
-            quotes_available: matches!(status, "fresh" | "fixed"),
-            price_per_zec: if config.is_some() {
-                price.map(|p| p.price_per_zec.to_string())
-            } else {
-                Some(self.policy.price_per_zec.to_string())
-            },
-            zec_usd: price.map(|p| p.zec_usd.clone()),
-            usdc_usd: price.map(|p| p.usdc_usd.clone()),
-            zec_updated_at: price.map(|p| p.zec_updated_at),
-            usdc_updated_at: price.map(|p| p.usdc_updated_at),
-            eth_usd: price.and_then(|p| p.eth_usd.clone()),
-            eth_updated_at: price.and_then(|p| p.eth_updated_at),
-            fetched_at: price.map(|p| p.fetched_at),
-            last_attempt_at: state.last_attempt_at,
-            last_error: state.last_error.clone(),
-            refresh_seconds: config.map(|c| c.refresh_seconds),
-            max_age_seconds: config.map(|c| c.max_age_seconds),
-            token_decimals: config.map(|c| c.token_decimals),
+            quotes_available: fresh && rate.is_some(),
+            price_per_zec: rate.map(|rate| rate.to_string()),
+            zec_usd: usd(Asset::Zec),
+            usdc_usd: usd(Asset::Usdc),
+            zec_updated_at: at(Asset::Zec),
+            usdc_updated_at: at(Asset::Usdc),
+            eth_usd: usd(Asset::Eth),
+            eth_updated_at: at(Asset::Eth),
+            fetched_at: prices.map(|p| p.fetched_at),
+            last_attempt_at: status.last_attempt_at,
+            last_error: status.last_error,
+            refresh_seconds: Some(feed.refresh_seconds()),
+            max_age_seconds: Some(feed.max_age_seconds()),
+            token_decimals: Some(self.decimals()),
+            providers: status
+                .providers
+                .into_iter()
+                .map(|(provider, last_error)| ProviderStatus {
+                    provider: provider.name(),
+                    last_error,
+                })
+                .collect(),
         }
     }
 
     /// Requests share one short-lived cache and one in-flight fetch; there is no polling task.
     pub async fn refresh(&self) {
-        self.refresh_from(CMC_QUOTES).await;
-    }
-
-    async fn refresh_from(&self, url: &str) {
-        let Some(config) = &self.policy.market else {
-            return;
-        };
-        let due = |now: u64| {
-            let state = self.state.read().unwrap();
-            let since_attempt = state.last_attempt_at.map(|at| now.saturating_sub(at));
-            // Bound retries after an outage, without accepting a price beyond max_age_seconds.
-            let interval = if state.last_error.is_some() {
-                10
-            } else {
-                config.refresh_seconds
-            };
-            since_attempt.is_none_or(|age| age >= interval)
-                || state.price.as_ref().is_some_and(|p| {
-                    p.fetched.elapsed() >= Duration::from_secs(interval)
-                        && state.last_error.is_none()
-                })
-        };
-        if !due(crate::maker::unix_now()) {
-            return;
-        }
-        let _guard = self.refresh_lock.lock().await;
-        if !due(crate::maker::unix_now()) {
-            return;
-        }
-        let result = self.fetch(url).await;
-        self.record(result, crate::maker::unix_now());
-    }
-
-    fn record(&self, result: Result<MarketPrice, String>, now: u64) {
-        let mut state = self.state.write().unwrap();
-        state.last_attempt_at = Some(now);
-        match result {
-            Ok(price) => {
-                state.price = Some(price);
-                state.last_error = None;
-            }
-            Err(error) => {
-                // Provider response bodies and request objects can contain sensitive data.
-                tracing::warn!("market price refresh failed: {error}");
-                state.last_error = Some(error);
-            }
+        if let Some(feed) = &self.feed {
+            feed.refresh().await;
         }
     }
 
-    async fn fetch(&self, url: &str) -> Result<MarketPrice, String> {
-        let client = self.client.as_ref().expect("market client configured");
-        let mut response = client
-            .get(url)
-            .query(&[("id", "1437,3408,1027"), ("convert", "USD")])
-            .send()
-            .await
-            .map_err(|_| "CMC request failed or timed out".to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("CMC HTTP {}", response.status().as_u16()));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| "CMC response body unavailable".to_string())?
-        {
-            if body.len().saturating_add(chunk.len()) > 256 * 1024 {
-                return Err("CMC response too large".into());
-            }
-            body.extend_from_slice(&chunk);
-        }
-        parse_price(
-            &body,
-            crate::maker::unix_now(),
-            self.policy.market.as_ref().unwrap(),
-        )
+    /// What `asset` was worth in USD at `at`, and how that is known: `live` from the maker's
+    /// own price if recent, `history` from Alchemy's candle around it. None when neither is.
+    pub async fn usd_at(&self, asset: Asset, at: u64) -> Option<(String, &'static str)> {
+        self.feed.as_ref()?.usd_at(asset, at).await
     }
+
+    fn decimals(&self) -> u8 {
+        self.policy.market.as_ref().map_or(6, |c| c.token_decimals)
+    }
+
+    /// Points the feed at a local stand-in.
+    #[cfg(test)]
+    fn served_by(mut self, base: &str) -> Self {
+        self.feed = self.feed.map(|feed| feed.served_by(base));
+        self
+    }
+}
+
+/// ZEC/USDC: ZEC/USD over USDC/USD, in token units per whole ZEC.
+fn price_per_zec(prices: &Prices, decimals: u8) -> Option<u128> {
+    let scale = Decimal::from(10u64.pow(decimals.into()));
+    prices
+        .usd(Asset::Zec)?
+        .checked_div(prices.usd(Asset::Usdc)?)?
+        .checked_mul(scale)?
+        .trunc()
+        .to_u128()
+        .filter(|rate| *rate > 0)
 }
 
 impl QuotePricing {
     // Recheck the captured price after RPCs or a wait for the wallet, before issuing a quote.
     pub fn fresh(&self, now: u64) -> bool {
-        match (&self.observed, &self.policy.market) {
-            (Some(price), Some(config)) => price.fresh(config, now),
-            (None, None) => true,
-            _ => false,
+        match &self.observed {
+            Some(prices) => prices.fresh(&QUOTED, self.max_age, now),
+            None => self.policy.market.is_none(),
         }
     }
-}
 
-impl MarketPrice {
-    fn fresh(&self, config: &MarketConfig, now: u64) -> bool {
-        [self.zec_updated_at, self.usdc_updated_at, self.fetched_at]
-            .iter()
-            .all(|at| {
-                *at <= now.saturating_add(30) && now.saturating_sub(*at) <= config.max_age_seconds
-            })
-            && self.fetched.elapsed() <= Duration::from_secs(config.max_age_seconds)
+    /// The market prices behind this quote; none for a fixed price.
+    pub fn mark(&self) -> Option<QuoteMark> {
+        let prices = self.observed.as_ref()?;
+        let usd = |asset| prices.usd(asset).map(|usd| usd.normalize().to_string());
+        Some(QuoteMark {
+            source: prices.provider.name(),
+            zec_usd: usd(Asset::Zec)?,
+            usdc_usd: usd(Asset::Usdc)?,
+            eth_usd: usd(Asset::Eth),
+        })
     }
-}
-
-#[derive(Deserialize)]
-struct CmcResponse {
-    status: CmcStatus,
-    /// Each asset read on its own, so an ETH entry that doesn't read can be left out.
-    data: Vec<serde_json::Value>,
-}
-#[derive(Deserialize)]
-struct CmcStatus {
-    #[serde(deserialize_with = "status_code")]
-    error_code: u32,
-}
-
-fn status_code<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Code {
-        Number(u32),
-        Text(String),
-    }
-    match Code::deserialize(deserializer)? {
-        Code::Number(code) => Ok(code),
-        Code::Text(code) => code
-            .parse()
-            .map_err(|_| serde::de::Error::custom("invalid CMC status code")),
-    }
-}
-#[derive(Deserialize)]
-struct CmcAsset {
-    id: u64,
-    symbol: String,
-    quote: Vec<CmcQuote>,
-}
-#[derive(Deserialize)]
-struct CmcQuote {
-    id: u64,
-    symbol: String,
-    price: serde_json::Number,
-    last_updated: String,
-}
-
-fn parse_price(body: &[u8], now: u64, config: &MarketConfig) -> Result<MarketPrice, String> {
-    let data: CmcResponse =
-        serde_json::from_slice(body).map_err(|_| "CMC response invalid".to_string())?;
-    if data.status.error_code != 0 {
-        return Err(format!("CMC error {}", data.status.error_code));
-    }
-    let mut listed = Vec::new();
-    for asset in data.data {
-        let id = asset.get("id").and_then(serde_json::Value::as_u64);
-        match serde_json::from_value::<CmcAsset>(asset) {
-            Ok(asset) => listed.push(asset),
-            // ETH only values gas on the dashboard: quotes never wait on it.
-            Err(_) if id == Some(ETH_ID) => {}
-            Err(_) => return Err("CMC response invalid".into()),
-        }
-    }
-    let asset = |id, symbol: &str| -> Result<(Decimal, u64), String> {
-        let assets: Vec<_> = listed
-            .iter()
-            .filter(|a| a.id == id && a.symbol == symbol)
-            .collect();
-        if assets.len() != 1 {
-            return Err(format!("CMC {symbol} asset missing or duplicated"));
-        }
-        let quotes: Vec<_> = assets[0]
-            .quote
-            .iter()
-            .filter(|q| q.id == USD_ID && q.symbol == "USD")
-            .collect();
-        if quotes.len() != 1 {
-            return Err(format!("CMC {symbol}/USD quote missing or duplicated"));
-        }
-        let quote = quotes[0];
-        let raw = quote.price.to_string();
-        let price = Decimal::from_str(&raw)
-            .or_else(|_| Decimal::from_scientific(&raw))
-            .map_err(|_| format!("CMC {symbol}/USD price invalid"))?;
-        if price <= Decimal::ZERO {
-            return Err(format!("CMC {symbol}/USD price must be positive"));
-        }
-        let at = chrono::DateTime::parse_from_rfc3339(&quote.last_updated)
-            .ok()
-            .and_then(|value| u64::try_from(value.timestamp()).ok())
-            .ok_or_else(|| format!("CMC {symbol} timestamp invalid"))?;
-        if at > now.saturating_add(30) || now.saturating_sub(at) > config.max_age_seconds {
-            return Err(format!("CMC {symbol}/USD quote is stale or ahead of clock"));
-        }
-        Ok((price, at))
-    };
-    let (zec, zec_updated_at) = asset(ZEC_ID, "ZEC")?;
-    let (usdc, usdc_updated_at) = asset(USDC_ID, "USDC")?;
-    let eth = asset(ETH_ID, "ETH").ok();
-    let scale = Decimal::from(10u64.pow(config.token_decimals.into()));
-    let price_per_zec = zec
-        .checked_div(usdc)
-        .and_then(|v| v.checked_mul(scale))
-        .and_then(|v| v.trunc().to_u128())
-        .filter(|v| *v > 0)
-        .ok_or_else(|| "CMC ZEC/USDC rate is outside the supported range".to_string())?;
-    Ok(MarketPrice {
-        price_per_zec,
-        zec_usd: zec.normalize().to_string(),
-        usdc_usd: usdc.normalize().to_string(),
-        zec_updated_at,
-        usdc_updated_at,
-        eth_usd: eth.map(|(price, _)| price.normalize().to_string()),
-        eth_updated_at: eth.map(|(_, at)| at),
-        fetched_at: now,
-        fetched: Instant::now(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use axum::http::StatusCode;
+    use zecswap_prices::stand_in::{self, StandIn};
+    use zecswap_prices::{Provider, Quote};
+
     use super::*;
-    use serde_json::json;
+    use crate::pricing::MarketConfig;
 
     fn policy() -> Pricing {
         Pricing {
@@ -412,27 +266,35 @@ mod tests {
                 token_decimals: 6,
                 refresh_seconds: 60,
                 max_age_seconds: 300,
+                providers: vec![Provider::CoinMarketCap, Provider::Alchemy],
             }),
         }
     }
-    fn sample(zec: &str, usdc: &str, at: &str) -> Vec<u8> {
-        format!(r#"{{"status":{{"error_code":"0"}},"data":[{{"id":1437,"symbol":"ZEC","quote":[{{"id":2781,"symbol":"USD","price":{zec},"last_updated":"{at}"}}]}},{{"id":3408,"symbol":"USDC","quote":[{{"id":2781,"symbol":"USD","price":{usdc},"last_updated":"{at}"}}]}}]}}"#).into_bytes()
+
+    fn book() -> PriceBook {
+        PriceBook::new(&policy(), &stand_in::keys()).unwrap()
     }
-    const NOW: u64 = 1_767_225_600; // 2026-01-01
-    const AT: &str = "2026-01-01T00:00:00.000Z";
 
     #[test]
     fn prices_both_directions_with_exact_decimals_and_actual_usdc_usd() {
-        let p = parse_price(
-            &sample("1334.6563794177857", "0.9999", AT),
-            NOW,
-            policy().market.as_ref().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(p.zec_usd, "1334.6563794177857");
-        assert_eq!(p.price_per_zec, 1_334_789_858);
-        let mut pricing = policy();
-        pricing.price_per_zec = p.price_per_zec;
+        let quote = |usd: &str| Quote {
+            usd: Decimal::from_str(usd).unwrap(),
+            updated_at: 0,
+        };
+        let prices = Prices::new(
+            Provider::CoinMarketCap,
+            &[
+                (Asset::Zec, quote("1334.6563794177857")),
+                (Asset::Usdc, quote("0.9999")),
+            ],
+            0,
+        );
+        let rate = price_per_zec(&prices, 6).unwrap();
+        assert_eq!(rate, 1_334_789_858);
+        let pricing = Pricing {
+            price_per_zec: rate,
+            ..policy()
+        };
         let forward = pricing.terms(20).unwrap();
         let reverse = pricing.reverse_terms(20).unwrap();
         assert_eq!(forward.amount, 20_000_000);
@@ -441,212 +303,90 @@ mod tests {
         assert!(forward.deposit_zat > reverse.deposit_zat);
     }
 
-    #[test]
-    fn supports_live_v3_text_status_codes_and_documented_numeric_status_codes() {
-        let mut body: serde_json::Value = serde_json::from_slice(&sample("40", "1", AT)).unwrap();
-        for code in [json!("0"), json!(0)] {
-            body["status"]["error_code"] = code;
-            assert!(
-                parse_price(
-                    &serde_json::to_vec(&body).unwrap(),
-                    NOW,
-                    policy().market.as_ref().unwrap()
-                )
-                .is_ok()
-            );
-        }
-        for code in [
-            json!("1001"),
-            json!(1001),
-            json!("invalid"),
-            json!(-1),
-            json!(null),
-        ] {
-            body["status"]["error_code"] = code;
-            assert!(
-                parse_price(
-                    &serde_json::to_vec(&body).unwrap(),
-                    NOW,
-                    policy().market.as_ref().unwrap()
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn stale_or_invalid_provider_values_are_rejected() {
-        let config = policy().market.unwrap();
-        for (zec, usdc, at, now) in [
-            ("0", "1", AT, NOW),
-            ("-1", "1", AT, NOW),
-            ("40", "0", AT, NOW),
-            ("40", "1", AT, NOW + 301),
-            ("40", "1", AT, NOW - 31),
-            ("40", "1", "bad date", NOW),
-            ("1e100", "1", AT, NOW),
-        ] {
-            assert!(parse_price(&sample(zec, usdc, at), now, &config).is_err());
-        }
-        let body = sample("40", "1", AT);
-        let mut data: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        data["data"][0]["id"] = json!(1);
-        assert!(parse_price(&serde_json::to_vec(&data).unwrap(), NOW, &config).is_err());
-        assert!(parse_price(b"invalid json", NOW, &config).is_err());
-        let scientific = parse_price(&sample("4e1", "1e0", AT), NOW, &config).unwrap();
-        assert_eq!(scientific.price_per_zec, 40_000_000);
-    }
-
-    #[test]
-    fn never_falls_back_to_fixed_price_and_honors_captured_rate_until_expiry() {
-        let book = PriceBook::new(&policy(), Some("test-key")).unwrap();
-        assert!(book.quote(NOW).is_none());
-        assert_eq!(book.snapshot(NOW).status, "unavailable");
-        let price = parse_price(
-            &sample("40", "1", AT),
-            NOW,
-            policy().market.as_ref().unwrap(),
-        )
-        .unwrap();
-        book.record(Ok(price), NOW);
-        let locked = book.quote(NOW).unwrap();
-        assert_eq!(locked.policy.price_per_zec, 40_000_000);
-        let repriced = parse_price(
-            &sample("80", "1", AT),
-            NOW,
-            policy().market.as_ref().unwrap(),
-        )
-        .unwrap();
-        book.record(Ok(repriced), NOW);
-        assert_eq!(book.quote(NOW).unwrap().policy.price_per_zec, 80_000_000);
-        assert_eq!(locked.policy.price_per_zec, 40_000_000);
-        book.record(Err("CMC HTTP 429".into()), NOW + 60);
-        assert_eq!(
-            book.quote(NOW + 60).unwrap().policy.price_per_zec,
-            80_000_000
-        );
-        assert!(book.quote(NOW + 301).is_none());
-        assert!(!locked.fresh(NOW + 301));
-        assert_eq!(book.snapshot(NOW + 301).status, "stale");
-        assert_eq!(
-            book.snapshot(NOW + 301).last_error.as_deref(),
-            Some("CMC HTTP 429")
-        );
-    }
-
+    /// A quote is priced only while the market price is fresh, never at the fixed price, and a
+    /// quote's captured price goes stale on its own however the market moves after.
     #[tokio::test]
-    async fn concurrent_requests_share_one_fetch_and_provider_errors_never_expose_the_key() {
-        use axum::{
-            Router,
-            http::{HeaderMap, StatusCode},
-            routing::get,
-        };
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-        let count = Arc::new(AtomicUsize::new(0));
-        let hits = count.clone();
-        let server = Router::new()
-            .route(
-                "/quotes",
-                get(move |headers: HeaderMap| {
-                    let hits = hits.clone();
-                    async move {
-                        assert_eq!(headers["X-CMC_PRO_API_KEY"], "private-test-key");
-                        hits.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                        let at =
-                            chrono::DateTime::from_timestamp(crate::maker::unix_now() as i64, 0)
-                                .unwrap()
-                                .to_rfc3339();
-                        (StatusCode::OK, sample("40", "0.99", &at))
-                    }
-                }),
+    async fn never_falls_back_to_fixed_price_and_holds_a_captured_rate_until_it_expires() {
+        let cmc_only = || {
+            PriceBook::new(
+                &Pricing {
+                    market: Some(MarketConfig {
+                        providers: vec![Provider::CoinMarketCap],
+                        ..policy().market.unwrap()
+                    }),
+                    ..policy()
+                },
+                &stand_in::keys(),
             )
-            .route(
-                "/error",
-                get(|| async { (StatusCode::TOO_MANY_REQUESTS, "private-test-key") }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            axum::serve(listener, server).await.unwrap();
-        });
-        let book = PriceBook::new(&policy(), Some("private-test-key")).unwrap();
-        let url = format!("http://{addr}/quotes");
-        tokio::join!(
-            book.refresh_from(&url),
-            book.refresh_from(&url),
-            book.refresh_from(&url)
+            .unwrap()
+        };
+        let down = stand_in::start(StatusCode::SERVICE_UNAVAILABLE).await;
+        let book = cmc_only().served_by(&down.url);
+        let now = crate::maker::unix_now();
+        book.refresh().await;
+        assert!(book.quote(now).is_none());
+        let snapshot = book.snapshot(now);
+        assert_eq!(
+            (snapshot.status, snapshot.quotes_available),
+            ("unavailable", false)
         );
-        book.refresh_from(&url).await;
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert!(book.quote(crate::maker::unix_now()).is_some());
-        book.state.write().unwrap().last_attempt_at = None;
-        book.refresh_from(&format!("http://{addr}/error")).await;
-        let snapshot = book.snapshot(crate::maker::unix_now());
-        assert_eq!(snapshot.last_error.as_deref(), Some("CMC HTTP 429"));
-        assert!(
-            !serde_json::to_string(&snapshot)
-                .unwrap()
-                .contains("private-test-key")
-        );
-        task.abort();
+        assert_eq!(snapshot.last_error.as_deref(), Some("CMC HTTP 503"));
+
+        let up = stand_in::start(StatusCode::OK).await;
+        let book = cmc_only().served_by(&up.url);
+        book.refresh().await;
+        let now = crate::maker::unix_now();
+        let locked = book.quote(now).unwrap();
+        // ZEC at $40 over USDC at $0.99.
+        assert_eq!(locked.policy.price_per_zec, 40_404_040);
+        assert!(locked.fresh(now + 300) && !locked.fresh(now + 301));
+        assert!(book.quote(now + 301).is_none());
+        assert_eq!(book.snapshot(now + 301).status, "stale");
     }
 
-    /// ETH's price rides along for the dashboard: missing, invalid or stale, it is left out and
-    /// the ZEC/USDC rate, its freshness and quotes are as they would be without it.
-    #[test]
-    fn eth_never_holds_up_the_rate_quotes_use() {
-        let config = policy().market.unwrap();
-        let with_eth = |price: serde_json::Value, at: &str| {
-            let mut body: serde_json::Value =
-                serde_json::from_slice(&sample("40", "1", AT)).unwrap();
-            body["data"].as_array_mut().unwrap().push(json!({
-                "id": 1027, "symbol": "ETH",
-                "quote": [{"id": 2781, "symbol": "USD", "price": price, "last_updated": at}],
-            }));
-            parse_price(&serde_json::to_vec(&body).unwrap(), NOW, &config).unwrap()
-        };
-        let priced = with_eth(json!(2500.5), AT);
-        assert_eq!(priced.eth_usd.as_deref(), Some("2500.5"));
-        assert_eq!(priced.eth_updated_at, Some(NOW));
-        for (price, at) in [
-            (json!(-1), AT),
-            (json!(0), AT),
-            (json!("2500"), AT),
-            (json!(2500), "2025-12-31T23:00:00.000Z"),
-        ] {
-            let price = with_eth(price, at);
-            assert_eq!((price.eth_usd, price.eth_updated_at), (None, None));
-            assert_eq!(price.price_per_zec, 40_000_000);
-        }
-        // An entry that doesn't read fails the response as before, unless it is ETH's.
-        let mut body: serde_json::Value = serde_json::from_slice(&sample("40", "1", AT)).unwrap();
-        body["data"][0]["quote"][0]["price"] = json!("40");
-        let error = parse_price(&serde_json::to_vec(&body).unwrap(), NOW, &config).err();
-        assert_eq!(error.as_deref(), Some("CMC response invalid"));
-        let book = PriceBook::new(&policy(), Some("test-key")).unwrap();
-        book.record(Ok(with_eth(json!(-1), AT)), NOW);
-        assert_eq!(book.quote(NOW).unwrap().policy.price_per_zec, 40_000_000);
-        let snapshot = book.snapshot(NOW);
-        assert_eq!((snapshot.status, snapshot.eth_usd), ("fresh", None));
+    /// While CoinMarketCap fails, Alchemy prices quotes, and the quote and the monitor say so.
+    #[tokio::test]
+    async fn a_failing_provider_hands_quotes_to_the_next() {
+        let down = stand_in::start(StatusCode::SERVICE_UNAVAILABLE).await;
+        let book = book().served_by(&down.url);
+        book.refresh().await;
+        let now = crate::maker::unix_now();
+        let quote = book.quote(now).unwrap();
+        assert_eq!(quote.policy.price_per_zec, 50_000_000);
+        let mark = quote.mark().unwrap();
+        assert_eq!(
+            (mark.source, mark.zec_usd.as_str(), mark.eth_usd.as_deref()),
+            ("alchemy", "50", Some("2500"))
+        );
+        let snapshot = book.snapshot(now);
+        assert_eq!((snapshot.source, snapshot.status), ("alchemy", "fresh"));
+        let errors: Vec<_> = snapshot
+            .providers
+            .iter()
+            .map(|p| (p.provider, p.last_error.as_deref()))
+            .collect();
+        assert_eq!(
+            errors,
+            [("coinmarketcap", Some("CMC HTTP 503")), ("alchemy", None)]
+        );
+        assert_eq!(StandIn::hits(&down.alchemy), 1);
     }
 
     #[test]
     fn validates_market_configuration_and_does_not_require_a_key_for_fixed_mode() {
-        assert!(PriceBook::new(&policy(), None).is_err());
         let mut p = policy();
         p.market.as_mut().unwrap().token_decimals = 18;
-        assert!(PriceBook::new(&p, Some("test-key")).is_err());
-        p = policy();
-        p.market.as_mut().unwrap().refresh_seconds = 0;
-        assert!(PriceBook::new(&p, Some("test-key")).is_err());
+        assert!(PriceBook::new(&p, &stand_in::keys()).is_err());
+        assert!(PriceBook::new(&policy(), &Keys::default()).is_err());
         p = policy();
         p.market = None;
-        let fixed = PriceBook::new(&p, None).unwrap();
-        assert_eq!(fixed.quote(NOW).unwrap().policy.price_per_zec, 500_000_000);
-        assert_eq!(fixed.snapshot(NOW).status, "fixed");
+        let fixed = PriceBook::new(&p, &Keys::default()).unwrap();
+        assert_eq!(fixed.quote(0).unwrap().policy.price_per_zec, 500_000_000);
+        let snapshot = fixed.snapshot(0);
+        assert_eq!(snapshot.status, "fixed");
+        assert!(snapshot.providers.is_empty());
+        assert!(fixed.quote(0).unwrap().mark().is_none());
+        p.price_per_zec = 0;
+        assert!(PriceBook::new(&p, &Keys::default()).is_err());
     }
 }

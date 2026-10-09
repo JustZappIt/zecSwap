@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -16,6 +16,7 @@ use crate::{Relayer, RelayerError, Sending};
 pub fn router(relayer: Arc<Relayer>) -> Router {
     let monitor = Router::new()
         .route("/v1/monitor", get(monitor))
+        .route("/v1/monitor/sends", get(sends))
         .route_layer(middleware::from_fn_with_state(
             relayer.monitor.token.clone(),
             server::require_monitor,
@@ -47,11 +48,35 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
 }
 
 async fn terms(State(relayer): State<Arc<Relayer>>) -> Json<Terms> {
-    Json(relayer.terms())
+    Json(relayer.terms().await)
 }
 
 async fn monitor(State(relayer): State<Arc<Relayer>>) -> Json<MonitorSnapshot> {
     Json(relayer.monitor_snapshot())
+}
+
+#[derive(serde::Deserialize)]
+struct SendsQuery {
+    since: Option<u64>,
+}
+
+async fn sends(State(relayer): State<Arc<Relayer>>, Query(query): Query<SendsQuery>) -> Response {
+    match relayer.sends_snapshot(query.since) {
+        Ok(Some(snapshot)) => axum::Json(snapshot).into_response(),
+        Ok(None) => server::error(
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+            "this relayer sends no Railgun transactions",
+        ),
+        Err(e) => {
+            error!("sends snapshot: {e:#}");
+            server::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::Unavailable,
+                "monitoring temporarily unavailable",
+            )
+        }
+    }
 }
 
 async fn lock_claim(
@@ -167,6 +192,11 @@ impl IntoResponse for RelayerError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::Unavailable,
                 *reason,
+            ),
+            RelayerError::Unpriced => server::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::Unavailable,
+                self.to_string(),
             ),
             RelayerError::Internal(e) => {
                 error!("{e:#}");

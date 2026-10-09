@@ -9,7 +9,12 @@ use zecswap_chain::evm::B256;
 
 use super::Store;
 
-fn stored_txid(value: String, reverse: bool, column: usize) -> rusqlite::Result<String> {
+/// A Zcash txid as a swap stores it: a forward swap's as hex, a reverse swap's in its JSON.
+pub(super) fn stored_txid(
+    value: String,
+    reverse: bool,
+    column: usize,
+) -> rusqlite::Result<zecswap_chain::zcash::TxId> {
     let bytes: [u8; 32] = if reverse {
         serde_json::from_str(&value).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -36,7 +41,7 @@ fn stored_txid(value: String, reverse: bool, column: usize) -> rusqlite::Result<
                 )
             })?
     };
-    Ok(zecswap_chain::zcash::TxId::from_bytes(bytes).to_string())
+    Ok(zecswap_chain::zcash::TxId::from_bytes(bytes))
 }
 
 #[derive(Serialize)]
@@ -168,13 +173,15 @@ impl Store {
                         refund_after: row.get(7)?,
                         deposit_txid: row
                             .get::<_, Option<String>>(8)?
-                            .map(|value| stored_txid(value, true, 8))
+                            .map(|value| stored_txid(value, true, 8).map(|txid| txid.to_string()))
                             .transpose()?,
                         sweep_txid: {
                             let txid: Option<String> = row.get(9)?;
                             let reverse = row.get::<_, String>(1)? == "reverse";
-                            txid.map(|value| stored_txid(value, reverse, 9))
-                                .transpose()?
+                            txid.map(|value| {
+                                stored_txid(value, reverse, 9).map(|txid| txid.to_string())
+                            })
+                            .transpose()?
                         },
                         token_returned: row.get(18)?,
                         last_pass_failed: false,

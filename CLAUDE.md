@@ -51,6 +51,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
 | `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, and with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`); never run by a maker |
+| `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
@@ -97,6 +98,35 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Profitability (2026-10-08, branch `feature/profitability`): the price engine asks
+  `[pricing.market] providers` in order (`coinmarketcap`, `alchemy`; required; keys
+  `ZCASH_CMC_KEY`, `ALCHEMY_API_KEY`), so quotes pause only while every one fails; the
+  monitor's `pricing.source` names the provider and `pricing.providers` each one's error. The
+  maker records what each swap earned and cost: its quote's prices (`quote_prices`), every
+  Ethereum transaction on it from one receipt read (`evm_costs`: sender, gas, effective price,
+  the token paid to the sender, i.e. a relayer's fee), its own sends journaled first
+  (`sent_transactions`, so a reverted one, which emits no event, still counts), and the exact
+  fee of each of its Zcash sends (`zcash_costs`, `Wallet::fee`), each valued in USD when it
+  happened: `live` from its own price within five minutes, else `history` from Alchemy's
+  five-minute candles. `GET /v1/monitor/economics?since=` exports it and zapp-dashboard's
+  `/bridge/profit` charts it. The relayer keeps the same for the private sends and unshields it
+  sponsors (`send_costs` in its journal: gas from each receipt, kind and fee read back from the
+  send's journaled bytes, a reverted one earning nothing), at `GET /v1/monitor/sends`; the live
+  `railgun-send` checks it. Both value history through `crates/zecswap-prices` (Alchemy's
+  five-minute candles). A sponsored send burns about 1.07M gas (~$0.32 at 0.12 gwei, $2.65 at
+  1 gwei), so a fixed fee can't follow gas: with `[railgun_sends] providers` the relayer prices
+  each send by it, as Railgun's broadcasters do. Its terms add `feePerUnitGas` (USDC base units
+  per 10^18 wei, `fee_margin_bps` included) and `feeExpiresAt`; `fee` is now the floor. The app
+  prices a send with the SDK's broadcaster estimate and `calculateBroadcasterFeeERC20Amount`,
+  never under the floor (`engine/send.cjs`, `priced`); the relayer checks fee × 10^18 ≥ its own
+  gas estimate × the gas price it pays × the lowest rate it quoted in ten minutes, and answers
+  `503` while it can't price gas. The shared `crates/zecswap-prices` `Feed` (CoinMarketCap then
+  Alchemy) serves both maker and relayer; its `stand-in` feature is the providers' test double.
+  New tables only, so existing stores and journals open and backfill. Deploy the dashboard first
+  (an older one rejects `source: alchemy`), and add `providers` to the droplet's maker config
+  before its maker runs this build: without it the maker won't start. The app refuses terms
+  whose `fee` is above its pin (`MAX_SEND_FEE`, 0.25 USDC): raise the relayer's floor (to 0.50,
+  the owner's choice) only once an app that prices sends by gas has shipped.
 - Railgun broadcaster (2026-10-08, branch `feature/railgun-broadcaster`): `POST
   /v1/railgun/transact` sends a wallet's own proved `transact` (private send or withdrawal) for
   a fee note to the relayer's 0zk address, read as Railgun's public broadcasters read it

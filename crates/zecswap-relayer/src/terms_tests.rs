@@ -82,6 +82,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         settlement: Settlement::connect(&url, contract, relayer_key.clone()).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        history: None,
     };
     let relayer = relayer_for(config.clone());
     let strangers = || {

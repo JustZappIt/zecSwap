@@ -1,3 +1,4 @@
+mod economics;
 mod flow;
 mod gas_alerts;
 mod monitoring;
@@ -390,6 +391,7 @@ impl Maker {
             terms.deposit_zat,
             expires_at,
         )?;
+        self.record_quote_mark(&quote_id, pricing.mark());
         let e = self.maker_share(nonce)?;
         Ok(Quote {
             quote_id: quote_id.into(),
@@ -493,7 +495,8 @@ impl Maker {
             self.forget(zcash_account).await;
             return Err(e.into());
         }
-        let transaction_hash = self.settlement.open(&self.terms(&swap)?).await?;
+        let transaction_hash =
+            self.journal(id, "open", self.settlement.open(&self.terms(&swap)?).await)?;
         // The user can only deposit once it sees the swap, which on a slow chain can be minutes
         // after `now` when opens queue behind each other; `cancel_after` counts from here.
         self.store
@@ -807,16 +810,22 @@ impl Maker {
         match action {
             Action::Wait => {}
             Action::MarkReady => {
-                self.settlement.ready(swap.id, &terms).await?;
+                self.journal(
+                    swap.id,
+                    "ready",
+                    self.settlement.ready(swap.id, &terms).await,
+                )?;
             }
             Action::LockRefund => {
                 self.store.start_refund(&swap.id)?;
-                self.settlement.lock_refund(swap.id, &terms).await?;
+                let sent = self.settlement.lock_refund(swap.id, &terms).await;
+                self.journal(swap.id, "lock_refund", sent)?;
             }
             Action::Refund => {
                 self.store.start_refund(&swap.id)?;
                 let e = self.maker_share(swap.quote.nonce)?;
-                self.settlement.refund(swap.id, &terms, &e).await?;
+                let sent = self.settlement.refund(swap.id, &terms, &e).await;
+                self.journal(swap.id, "refund", sent)?;
             }
             Action::Sweep => {} // The Zcash worker builds and broadcasts sweeps.
             Action::Settle => self.settle(swap, Some(&observation.chain))?,

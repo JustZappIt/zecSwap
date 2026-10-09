@@ -29,7 +29,7 @@ use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_primitives::transaction::builder::BundlePadding;
 use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
-use zcash_protocol::value::Zatoshis;
+use zcash_protocol::value::{BalanceError, Zatoshis};
 use zcash_protocol::{ShieldedPool, TxId};
 use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
 
@@ -383,6 +383,16 @@ impl Wallet {
             "Zcash submission verified; awaiting mining"
         );
         Ok(())
+    }
+
+    /// The fee a stored transaction paid; none for one not stored, or with transparent inputs,
+    /// whose values the transaction doesn't carry.
+    pub fn fee(&self, txid: TxId) -> Result<Option<u64>, Error> {
+        Ok(self
+            .db
+            .get_transaction(txid)?
+            .and_then(|tx| tx.fee_paid(|_| Ok::<_, BalanceError>(None)).ok().flatten())
+            .map(u64::from))
     }
 
     pub fn is_mined(&self, txid: TxId) -> Result<bool, Error> {
