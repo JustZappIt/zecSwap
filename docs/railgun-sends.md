@@ -27,7 +27,9 @@ relayer does not; don't fall back to a phone-funded transaction.
     "railgunAddress": "0zk1…",
     "railgunProxy": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
     "token": "0x…",
-    "fee": "250000",
+    "fee": "500000",
+    "feePerUnitGas": "2729606000",
+    "feeExpiresAt": 1791504000,
     "maxGasLimit": 3000000,
     "maxGasPriceWei": "50000000000",
     "maxCalldataBytes": 65536
@@ -40,7 +42,9 @@ relayer does not; don't fall back to a phone-funded transaction.
 | `railgunAddress` | The relayer's own 0zk address: the broadcaster fee recipient. |
 | `railgunProxy` | Railgun's proxy, the transaction's `to`. Pin it, with `chainId`, against the SDK's own `NETWORK_CONFIG` for the network before proving. |
 | `token` | The token the fee is paid in. |
-| `fee` | Base units of `token` the fee note must carry at least (decimal string). |
+| `fee` | Base units of `token` the fee note must carry at least (decimal string): the floor. |
+| `feePerUnitGas` | Where the relayer prices gas, the rate its fee is held to: base units of `token` per 10^18 wei of gas cost, its margin included (decimal string), as Railgun's public broadcasters quote it. Absent while the relayer can't price gas, or where it prices none: then the fee is `fee` alone. |
+| `feeExpiresAt` | With `feePerUnitGas`: until when (Unix seconds) a proof whose fee was worked out at this rate is held to it rather than a later one. Ten minutes from the terms. |
 | `maxGasLimit` | The most gas the relayer pays for one send. |
 | `maxGasPriceWei` | The highest gas price the relayer pays (decimal string), so the highest `overallBatchMinGasPrice` a proof may set. |
 | `maxCalldataBytes` | The largest calldata it takes. |
@@ -54,8 +58,14 @@ With `@railgun-community/wallet` 11.1.0 (engine 9.8.0), `TXIDVersion.V2_Poseidon
 - A private send: `generateTransferProof`, then `populateProvedTransfer`. A withdrawal:
   `generateUnshieldProof`, then `populateProvedUnshield`, to the Ethereum address it pays.
 - `sendWithPublicWallet = false`.
-- `broadcasterFeeERC20AmountRecipient = { tokenAddress: token, amount: fee, recipientAddress:
-  railgunAddress }`, from the terms. The SDK makes it the first output of the first transaction.
+- The fee: with `feePerUnitGas`, estimate the send as the SDK does for a broadcaster,
+  `gasEstimateForUnprovenTransfer` (or `gasEstimateForUnprovenUnshield`) with `feeTokenDetails =
+  { tokenAddress: token, feePerUnitGas }` and `sendWithPublicWallet = false`, then
+  `calculateBroadcasterFeeERC20Amount(feeTokenDetails, gasDetails)` with that estimate and the
+  proof's gas price; pay that, or `fee` if it is more. Without `feePerUnitGas`, pay `fee`.
+  `crates/zecswap-railgun/engine/send.cjs` (`priced`) does exactly this.
+- `broadcasterFeeERC20AmountRecipient = { tokenAddress: token, amount: <that fee>,
+  recipientAddress: railgunAddress }`. The SDK makes it the first output of the first transaction.
 - `overallBatchMinGasPrice` no higher than `maxGasPriceWei`; the network's gas price when proving
   is a good choice. The relayer pays the higher of the network's price and this one.
 - `populateProved*` takes gas details it only copies into the populated transaction; the relayer
@@ -92,7 +102,7 @@ releases them. Post the same bytes again after any answer that says to.
 | `413` | none, from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
 | `404`, `405` | `notFound`, `methodNotAllowed` | This relayer has no such route. Nothing was sent. | As `rejected`. |
 | `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. `{"code": "alreadySpent", "error": "…", "transactions": ["0x…"]}` names the relayer's own transactions that spend them; it is empty when the notes went in one the relayer didn't send or no longer remembers. | Settle from the chain; don't free the notes. |
-| `503` | `unavailable` | An earlier send of these notes has no known outcome yet, or the gateway is busy. | Post the same bytes again later. |
+| `503` | `unavailable` | An earlier send of these notes has no known outcome yet, the relayer can't price gas right now, or the gateway is busy. | Post the same bytes again later. |
 | `500` | `internal` | The relayer could not read the chain or record the send. Nothing is known. | Post the same bytes again later. |
 
 A transport failure, a timeout or any other answer: post the same bytes again later. The relayer
@@ -114,7 +124,8 @@ The `rejected` reasons, in the `error` field, for the wallet's logs:
   notes`, `a proof is for another chain`, `a proof is bound to an adapt contract`, `redirected
   unshields are not supported`
 - `a proof's minimum gas price is above the relayer's cap`, `the transaction does not pay the
-  relayer's fee`
+  relayer's fee` (below `fee`, or, where it prices gas, below what the gas costs at the honored
+  rate: fetch the terms again and prove again)
 - `the network's gas price is above the relayer's cap`, `the transaction needs more gas than the
   relayer's cap`, `the relayer is low on ETH`, `the transaction fails in simulation`
 
@@ -131,7 +142,12 @@ first output of each Railgun transaction, decrypted with the relayer's viewing k
 note is the commitment the transaction adds and is in the relayer's token; the sum must reach
 `fee`. The proof binds those ciphertexts, so nobody can swap the note. It then simulates the call
 on the pending state at its gas price, which runs Railgun's own checks of the proofs, their roots,
-nullifiers and minimum gas prices, and sends it within its gas caps, with no retries.
+nullifiers and minimum gas prices, and estimates its gas. Where it prices gas, the fee must also
+cover that gas at the price it pays, at the lowest rate it quoted in the last ten minutes (so a
+proof made from terms fetched then still goes, though ETH rose since): fee × 10^18 ≥ gas × gas
+price × rate. The SDK's fee pays for 120% of its own estimate, which leaves room for the two
+estimates and a small rise in the gas price to differ. It sends within its gas caps, with no
+retries.
 
 ## Screening
 
@@ -156,14 +172,19 @@ wallet's own proofs there; a relayed send's outputs clear once the wallet has pr
 
 ```toml
 [railgun_sends]
-fee = 250000               # base units of the relayer's token
+fee = 500000               # base units of the relayer's token every send pays at least
+providers = ["coinmarketcap", "alchemy"]   # live ETH and USDC prices: sends priced by gas too
+fee_margin_bps = 1000      # the gas-based fee's margin over what the gas costs
 max_gas_limit = 3000000
 max_gas_price_wei = 50000000000
 journal = "/var/lib/zecswap-relayer/railgun-sends.sqlite"
 ```
 
 `RELAYER_RAILGUN_SEED` holds the 64-byte BIP-39 seed of the relayer's own Railgun wallet, in hex,
-beside `RELAYER_PRIVATE_KEY`: never the maker's, and never logged. Keep its mnemonic offline: the
+beside `RELAYER_PRIVATE_KEY`: never the maker's, and never logged. `providers` takes the maker's
+keys, `ZCASH_CMC_KEY` and `ALCHEMY_API_KEY`, and asks them in order as the maker does; without
+`providers` a send pays `fee` alone. `ALCHEMY_API_KEY` also values what each send cost and
+earned (below), with or without `providers`. Keep its mnemonic offline: the
 fees collect there. The relayer refuses to start without it, or when it is the maker's account.
 The journal records every send before its broadcast, which is what keeps a repeat from sending
 twice; keep it with the relayer's state, never delete it while sends are pending, and run one
@@ -171,8 +192,31 @@ relayer per key and journal. A one-note transfer with fee and change burns about
 fork of Sepolia and 1.34M on Sepolia itself, and the relayer's account must hold that at its gas
 price to send it.
 
+## What each send earns and costs
+
+The relayer pays each send's gas and is paid its fee note, so every send is a small trade of ETH
+for the relayer's token. Its journal keeps what each came to, beside the send (`send_costs`):
+once a send mines, a background pass reads its receipt (whether it succeeded, the gas it used and
+the effective gas price) and reads from the send's own journaled bytes whether it was a private
+send or an unshield and the fee its notes pay the relayer. A send that reverts burns its gas and
+pays nothing. With `ALCHEMY_API_KEY` set, the pass values the gas in ETH and the fee in USDC at
+the five-minute candle around the send's block; without it they are recorded unvalued. Sends
+journaled before this ledger existed are read the same way.
+
+`GET /relayer/v1/monitor/sends?since=<unix seconds>` (with `RELAYER_MONITOR_TOKEN`) lists them,
+newest first, at most 1,000: `kind` (`send` or `unshield`), `fee` (token base units), `succeeded`,
+`gasUsed`, `gasPriceWei`, `blockTime`, `ethUsd` and `tokenUsd`, all missing until the send mines and
+is read; and the current `fee` and gas caps. A relayer that sends no Railgun transactions answers
+`404`. zapp-dashboard's `/bridge/profit` charts what each send made and the fee that would cover
+today's gas.
+
+A one-note private send burned 1,069,971 gas and a withdrawal 1,120,796 on a fork of Sepolia
+(2026-10-08). With ETH at $2,481 that was about $0.32 at that day's 0.12 gwei on Ethereum, and
+$2.65 at 1 gwei: a fixed fee can't follow gas, which is why the relayer prices sends by it. `fee`
+is the floor, for when gas is cheap; the dashboard shows what each send made.
+
 To move to Ethereum, point `evm_rpc`, `contract` (a deployment whose `RAILGUN()` is Railgun's
 proxy there, `0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9`) and `token` at mainnet and set the
-caps and fee for its gas: nothing in the sending is Sepolia's. The fee is fixed in token units,
-so `fee` must cover `max_gas_limit` × `max_gas_price_wei` in ETH at its price; the relayer does
-not price gas itself. Wallets pin the new `chainId` and `railgunProxy` from the terms.
+caps for its gas: nothing in the sending is Sepolia's. Without `providers` the fee is fixed in
+token units, and `fee` must cover `max_gas_limit` × `max_gas_price_wei` in ETH at its price;
+with them it follows gas. Wallets pin the new `chainId` and `railgunProxy` from the terms.

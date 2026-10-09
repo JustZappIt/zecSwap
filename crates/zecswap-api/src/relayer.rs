@@ -41,6 +41,19 @@ pub struct RailgunSendTerms {
     /// Token base units the fee note must carry at least, as a decimal string.
     #[serde(with = "decimal")]
     pub fee: u128,
+    /// The fee's gas-based part, as Railgun's broadcasters quote `feePerUnitGas`: token base
+    /// units per 10^18 wei of gas cost, the relayer's margin included. A send pays the larger of
+    /// `fee` and this times the wei its gas costs, over 10^18. Absent while the relayer can't price
+    /// gas, or prices none: then `fee` alone.
+    #[serde(
+        default,
+        with = "crate::optional_decimal",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fee_per_unit_gas: Option<u128>,
+    /// Until when a proof whose fee was worked out at this rate is held to it, not a later one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_expires_at: Option<u64>,
     pub max_gas_limit: u64,
     /// The highest gas price the relayer pays, and so the highest minimum a proof may set.
     #[serde(with = "decimal")]

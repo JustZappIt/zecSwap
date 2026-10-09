@@ -197,3 +197,21 @@ pub(crate) mod decimal {
         String::deserialize(d)?.parse().map_err(D::Error::custom)
     }
 }
+
+pub(crate) mod optional_decimal {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(value: &Option<u128>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => s.collect_str(value),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u128>, D::Error> {
+        Option::<String>::deserialize(d)?
+            .map(|value| value.parse().map_err(D::Error::custom))
+            .transpose()
+    }
+}

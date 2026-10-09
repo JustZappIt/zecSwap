@@ -127,6 +127,7 @@ sol! {
 
     #[sol(rpc)]
     interface IErc20 {
+        event Transfer(address indexed from, address indexed to, uint256 value);
         function approve(address spender, uint256 amount) external returns (bool);
         function transfer(address to, uint256 amount) external returns (bool);
         function balanceOf(address owner) external view returns (uint256);
@@ -140,6 +141,22 @@ pub enum Stage {
     Ready,
     Claimed,
     Refunded,
+}
+
+/// A mined transaction, as its receipt tells it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionFacts {
+    pub sender: Address,
+    pub succeeded: bool,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub gas_used: u64,
+    /// Wei per gas, base fee and tip together.
+    pub gas_price: u128,
+    /// Whether the configured Railgun proxy emitted anything in it.
+    pub uses_railgun: bool,
+    /// The escrow token it moved to its own sender: a relayer's fee.
+    pub paid_to_sender: U256,
 }
 
 /// A swap as the contract and the terms it opened with describe it.
@@ -424,21 +441,47 @@ impl Settlement {
         }
     }
 
-    /// Whether the receipt includes activity emitted by the configured Railgun proxy.
-    pub async fn uses_railgun(&self, tx: B256) -> Result<bool, Error> {
-        let railgun = self.railgun().await?;
-        let receipt = self
+    /// What a mined transaction did, read from its receipt; none while it is unmined.
+    /// `token` is the escrow token, whose transfers to the sender are counted.
+    pub async fn transaction_facts(
+        &self,
+        tx: B256,
+        token: Address,
+    ) -> Result<Option<TransactionFacts>, Error> {
+        let Some(receipt) = self
             .provider
             .get_transaction_receipt(tx)
             .await
             .map_err(Error::contract)?
-            .ok_or_else(|| Error::Contract("transaction receipt unavailable".into()))?;
-        Ok(!railgun.is_zero()
-            && receipt
-                .inner
-                .logs()
+        else {
+            return Ok(None);
+        };
+        let (Some(block_number), Some(block_hash)) = (receipt.block_number, receipt.block_hash)
+        else {
+            return Ok(None);
+        };
+        let railgun = self.railgun().await?;
+        let logs = receipt.inner.logs();
+        Ok(Some(TransactionFacts {
+            sender: receipt.from,
+            succeeded: receipt.status(),
+            block_number,
+            block_hash,
+            gas_used: receipt.gas_used,
+            gas_price: receipt.effective_gas_price,
+            uses_railgun: !railgun.is_zero() && logs.iter().any(|log| log.address() == railgun),
+            paid_to_sender: logs
                 .iter()
-                .any(|log| log.address() == railgun))
+                .filter(|log| {
+                    log.address() == token
+                        && log.topics().first() == Some(&IErc20::Transfer::SIGNATURE_HASH)
+                })
+                .filter_map(|log| IErc20::Transfer::decode_log_data(log.data()).ok())
+                .filter(|transfer| transfer.to == receipt.from)
+                .fold(U256::ZERO, |total, transfer| {
+                    total.saturating_add(transfer.value)
+                }),
+        }))
     }
 
     /// What a mined transaction burned: its gas, and that gas at the price it paid, in wei.

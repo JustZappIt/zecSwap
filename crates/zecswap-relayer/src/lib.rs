@@ -35,7 +35,7 @@ use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, Settlement, Stage};
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
 
-pub use sends::Sending;
+pub use sends::{Sending, SendsSnapshot};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,8 +77,15 @@ pub struct ReverseFundingConfig {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RailgunSendsConfig {
-    /// Base units of the relayer's token that each send's fee notes must pay it.
+    /// Base units of the relayer's token that each send's fee notes must pay it at least.
     pub fee: u64,
+    /// Live ETH and USDC prices, asked in order, for the fee's gas-based part (keys as the
+    /// maker's: `ZCASH_CMC_KEY`, `ALCHEMY_API_KEY`). Without them a send pays `fee` alone.
+    #[serde(default)]
+    pub providers: Vec<zecswap_prices::Provider>,
+    /// The gas-based part's margin over what the gas costs, in basis points.
+    #[serde(default)]
+    pub fee_margin_bps: u32,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
     /// The SQLite file each send is recorded in before it is broadcast.
@@ -117,6 +124,10 @@ pub enum RelayerError {
     /// A send was attempted and its outcome is unknown: the same request is to be posted again.
     #[error("{0}")]
     Unsettled(&'static str),
+    /// Sends are priced by gas, and gas can't be priced now: the same request is to be posted
+    /// again later.
+    #[error("the relayer can't price gas right now; post the same request again later")]
+    Unpriced,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -139,6 +150,7 @@ impl RelayerError {
         match self {
             RelayerError::Rejected(_) | RelayerError::Spent(_) => None,
             RelayerError::Unsettled(_) => Some("unconfirmed"),
+            RelayerError::Unpriced => Some("internal"),
             RelayerError::Internal(error) => Some(
                 error
                     .downcast_ref()
@@ -157,6 +169,9 @@ pub struct Relayer {
     settlement: Settlement,
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
+    /// Alchemy's price history, from `ALCHEMY_API_KEY`: it values what each send cost and
+    /// earned. Without it they are recorded unvalued.
+    history: Option<zecswap_prices::History>,
 }
 
 impl Relayer {
@@ -198,10 +213,27 @@ impl Relayer {
                     max_gas_limit: sends.max_gas_limit,
                     max_gas_price_wei: sends.max_gas_price_wei.into(),
                 };
-                info!(railgun = %keys.address(), proxy = %railgun, "sending Railgun transactions");
-                Some(sends::Sends::open(policy, keys, &sends.journal)?)
+                let pricing = (!sends.providers.is_empty())
+                    .then(|| {
+                        sends::GasPricing::new(
+                            &sends.providers,
+                            &zecswap_prices::Keys::from_env(),
+                            sends.fee_margin_bps,
+                        )
+                    })
+                    .transpose()?;
+                info!(railgun = %keys.address(), proxy = %railgun, gas_priced = pricing.is_some(), "sending Railgun transactions");
+                Some(sends::Sends::open(policy, keys, pricing, &sends.journal)?)
             }
         };
+        let history = std::env::var("ALCHEMY_API_KEY")
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+            .map(|key| zecswap_prices::History::new(&zeroize::Zeroizing::new(key)))
+            .transpose()?;
+        if sends.is_some() && history.is_none() {
+            warn!("ALCHEMY_API_KEY is not set: send costs are recorded without USD values");
+        }
         Ok(Self {
             config,
             account,
@@ -209,6 +241,7 @@ impl Relayer {
             settlement,
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
+            history,
         })
     }
 
@@ -269,7 +302,17 @@ impl Relayer {
         })
     }
 
-    pub fn terms(&self) -> Terms {
+    /// What the relayer charges and offers now: asking prices the sends' gas, and that rate is
+    /// honored for a while to proofs made with it.
+    pub async fn terms(&self) -> Terms {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after 1970")
+            .as_secs();
+        let rate = match self.sends.as_ref().and_then(|sends| sends.pricing.as_ref()) {
+            Some(pricing) => pricing.quote(now).await,
+            None => None,
+        };
         Terms {
             relayer: self.account,
             chain_id: self.domain.chain_id,
@@ -292,6 +335,8 @@ impl Relayer {
                     railgun_proxy: sends.policy.railgun,
                     token: sends.policy.token,
                     fee: sends.policy.fee,
+                    fee_per_unit_gas: rate,
+                    fee_expires_at: rate.map(|_| now + sends::FEE_VALIDITY),
                     max_gas_limit: sends.policy.max_gas_limit,
                     max_gas_price_wei: sends.policy.max_gas_price_wei,
                     max_calldata_bytes: MAX_CALLDATA_BYTES,

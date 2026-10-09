@@ -64,7 +64,7 @@ impl Maker {
         if !pricing.fresh(unix_now()) {
             return Err(MakerError::PriceUnavailable);
         }
-        Ok(self.store.insert_reverse_quote(|nonce| {
+        let quote = self.store.insert_reverse_quote(|nonce| {
             let share = self.maker_share(nonce)?;
             Ok(reverse::Quote {
                 terms: Quote {
@@ -85,7 +85,9 @@ impl Maker {
                 ready_deadline: now + config.ready_after,
                 refund_after: now + config.refund_after,
             })
-        })?)
+        })?;
+        self.record_quote_mark(&quote.terms.quote_id.0, pricing.mark());
+        Ok(quote)
     }
 
     /// With `[tokens]`, `spend` is the accept's token: kept spent once the quote is taken,
@@ -449,15 +451,18 @@ impl Maker {
         self.verify_reverse(swap).await?;
         let now = self.settlement.now().await?;
         if now.saturating_add(self.config.timing.reveal_margin) < chain.claim_lock_until {
-            self.settlement
+            let sent = self
+                .settlement
                 .claim(swap.id, &terms, &self.maker_share(swap.nonce)?)
-                .await?;
+                .await;
+            self.journal(swap.id, "claim", sent)?;
         } else if now >= chain.claim_lock_until
             && now >= chain.refund_lock_until
             && !(chain.claim_lock_until > chain.refund_lock_until
                 && now < chain.claim_lock_until.saturating_add(self.lock_duration))
         {
-            self.settlement.lock_claim(swap.id, &terms).await?;
+            let sent = self.settlement.lock_claim(swap.id, &terms).await;
+            self.journal(swap.id, "lock_claim", sent)?;
         }
         Ok(())
     }

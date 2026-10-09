@@ -154,9 +154,10 @@ async function prove(request) {
   const sender = await W.createRailgunWallet(encryptionKey, request.mnemonic, {
     [NETWORK]: request.creationBlock,
   });
-  // Every send is proved from the same notes, so the largest must fit.
+  // Every send is proved from the same notes, so the largest must fit, its fee at least the floor.
+  const floor = BigInt(request.broadcaster.fee);
   const needed = request.sends
-    .map((send) => BigInt(send.amount) + BigInt(send.fee ?? request.broadcaster.fee))
+    .map((send) => BigInt(send.amount) + BigInt(send.fee ?? floor))
     .reduce((most, need) => (need > most ? need : most), 0n);
   const available = await spendable(sender.id, request.token, needed, fork, request.waitSeconds ?? 600);
 
@@ -167,15 +168,16 @@ async function prove(request) {
     gasPrice: minGasPrice,
   };
   const transactions = [];
+  const fees = [];
   for (const send of request.sends) {
+    const recipients = [{ tokenAddress: request.token, amount: BigInt(send.amount), recipientAddress: send.to }];
     const fee = {
       tokenAddress: request.broadcaster.token,
-      amount: BigInt(send.fee ?? request.broadcaster.fee),
+      amount: send.fee == null ? await priced(sender.id, encryptionKey, request.broadcaster, send.to, recipients, gasDetails) : BigInt(send.fee),
       recipientAddress: request.broadcaster.railgunAddress,
     };
-    const recipients = [{ tokenAddress: request.token, amount: BigInt(send.amount), recipientAddress: send.to }];
     let populated;
-    log(`proving ${send.to.startsWith('0zk') ? 'a private send' : 'a withdrawal'}`);
+    log(`proving ${send.to.startsWith('0zk') ? 'a private send' : 'a withdrawal'} paying a fee of ${fee.amount}`);
     if (send.to.startsWith('0zk')) {
       await W.generateTransferProof(V2, NETWORK, sender.id, encryptionKey, false, undefined, recipients, [], fee, false, minGasPrice, () => {});
       populated = await W.populateProvedTransfer(V2, NETWORK, sender.id, false, undefined, recipients, [], fee, false, minGasPrice, gasDetails);
@@ -185,8 +187,27 @@ async function prove(request) {
     }
     const { to, data, value } = populated.transaction;
     transactions.push({ chainId: chain.id, to, data, value: (value ?? 0n).toString() });
+    fees.push(fee.amount.toString());
   }
-  return { address: sender.railgunAddress, available: available.toString(), transactions };
+  return { address: sender.railgunAddress, available: available.toString(), transactions, fees };
+}
+
+/**
+ * The fee a send pays, as the app works it out from the relayer's terms: the fixed floor, or, where
+ * the relayer prices gas, what the SDK's own broadcaster estimate says its gas costs at
+ * `feePerUnitGas` and the proof's gas price, if more.
+ */
+async function priced(id, encryptionKey, broadcaster, to, recipients, gasDetails) {
+  const floor = BigInt(broadcaster.fee);
+  if (broadcaster.feePerUnitGas == null) return floor;
+  const feeTokenDetails = { tokenAddress: broadcaster.token, feePerUnitGas: BigInt(broadcaster.feePerUnitGas) };
+  const unpriced = { ...gasDetails, gasEstimate: 0n };
+  const { gasEstimate } = to.startsWith('0zk')
+    ? await W.gasEstimateForUnprovenTransfer(V2, NETWORK, id, encryptionKey, undefined, recipients, [], unpriced, feeTokenDetails, false)
+    : await W.gasEstimateForUnprovenUnshield(V2, NETWORK, id, encryptionKey, recipients, [], unpriced, feeTokenDetails, false);
+  const { amount } = W.calculateBroadcasterFeeERC20Amount(feeTokenDetails, { ...gasDetails, gasEstimate });
+  log(`the SDK estimates ${gasEstimate} gas: a fee of ${amount} at ${broadcaster.feePerUnitGas} per unit gas`);
+  return amount > floor ? amount : floor;
 }
 
 async function balancesOf(request) {

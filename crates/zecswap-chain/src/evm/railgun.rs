@@ -5,7 +5,8 @@
 //! @railgun-community/engine 9.8.0's (abi/V2/RelayAdapt.json, abi/V2.1/RailgunSmartWallet.json);
 //! both contracts take the same `Transaction`.
 
-use alloy::eips::{BlockId, Encodable2718};
+use alloy::consensus::{Transaction as _, TxEnvelope};
+use alloy::eips::{BlockId, Decodable2718, Encodable2718};
 use alloy::network::TransactionBuilder;
 use alloy::primitives::aliases::U120;
 use alloy::primitives::{Bytes, keccak256};
@@ -123,6 +124,19 @@ pub struct Signed {
     pub raw: Bytes,
 }
 
+impl Signed {
+    /// The call it makes: its destination, ETH value and calldata; none for bytes that are not a
+    /// signed transaction with a destination.
+    pub fn call(&self) -> Option<(Address, u128, Bytes)> {
+        let envelope = TxEnvelope::decode_2718(&mut self.raw.as_ref()).ok()?;
+        Some((
+            envelope.to()?,
+            envelope.value().try_into().ok()?,
+            envelope.input().clone(),
+        ))
+    }
+}
+
 /// What the chain knows of a transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -182,17 +196,19 @@ impl SendPolicy {
         })
     }
 
-    /// Whether `transact` pays this relayer's fee, and its proofs leave the gas price within the
-    /// cap: Railgun reverts below each proof's minimum.
-    pub fn check(&self, transact: &Transact, keys: &Keys) -> Result<()> {
+    /// Whether `transact` pays this relayer's fee, at least, and its proofs leave the gas price
+    /// within the cap: Railgun reverts below each proof's minimum. The fee it pays, if so.
+    pub fn check(&self, transact: &Transact, keys: &Keys) -> Result<u128> {
         require(
             transact.min_gas_price <= self.max_gas_price_wei,
             "a proof's minimum gas price is above the relayer's cap",
         )?;
+        let paid = transact.fee_paid(keys, self.token);
         require(
-            transact.fee_paid(keys, self.token) >= self.fee,
+            paid >= self.fee,
             "the transaction does not pay the relayer's fee",
-        )
+        )?;
+        Ok(paid)
     }
 }
 
@@ -213,6 +229,13 @@ impl Transact {
                     .map(move |nullifier| (tree, *nullifier))
             })
             .collect()
+    }
+
+    /// Whether it pays out of Railgun to a public address: a withdrawal, not a private send.
+    pub fn unshields(&self) -> bool {
+        self.transactions
+            .iter()
+            .any(|tx| tx.boundParams.unshield == 1)
     }
 
     /// What it pays the wallet of `keys` in `token`, read as Railgun's public broadcasters read
@@ -256,12 +279,14 @@ impl Settlement {
 
     /// Sends `transact` as its broadcaster. It is simulated on the pending state at the network's
     /// gas price or the proofs' minimum, whichever is higher, within the policy's caps and this
-    /// account's ETH; then signed, handed to `record`, and broadcast once. No retries: a failed
-    /// broadcast's outcome is unknown, and what `record` kept says what to look for.
+    /// account's ETH, and sent only if its fee `covers` the gas it is estimated to burn at that
+    /// price; then signed, handed to `record`, and broadcast once. No retries: a failed broadcast's
+    /// outcome is unknown, and what `record` kept says what to look for.
     pub async fn send_transact(
         &self,
         policy: &SendPolicy,
         transact: &Transact,
+        covers: impl FnOnce(u64, u128) -> bool,
         record: impl FnOnce(&Signed) -> Result<(), Error>,
     ) -> Result<B256> {
         require(
@@ -319,6 +344,10 @@ impl Settlement {
         require(
             estimate <= policy.max_gas_limit,
             "the transaction needs more gas than the relayer's cap",
+        )?;
+        require(
+            covers(estimate, gas_price),
+            "the transaction does not pay the relayer's fee",
         )?;
         let gas_limit = estimate
             .saturating_add(estimate / 5)

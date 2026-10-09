@@ -31,6 +31,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        history: None,
     }
 }
 
@@ -84,13 +85,13 @@ async fn funding_route_rejects_disabled_wrong_chain_and_malformed_requests_witho
     assert_eq!(body["code"], "invalidRequest");
 }
 
-#[test]
-fn funding_capability_is_opt_in_and_old_config_still_loads() {
+#[tokio::test]
+async fn funding_capability_is_opt_in_and_old_config_still_loads() {
     let config: Config = toml::from_str(include_str!("../relayer.example.toml")).unwrap();
     assert!(config.reverse_funding.is_none());
-    let old = serde_json::to_value(relayer(false).terms()).unwrap();
+    let old = serde_json::to_value(relayer(false).terms().await).unwrap();
     assert!(old.get("reverseFunding").is_none());
-    let enabled = serde_json::to_value(relayer(true).terms()).unwrap();
+    let enabled = serde_json::to_value(relayer(true).terms().await).unwrap();
     assert_eq!(enabled["reverseFunding"]["maxGasPriceWei"], "20000000000");
     assert_eq!(enabled["reverseFunding"]["maxCalldataBytes"], 65536);
     assert_eq!(enabled["reverseFunding"]["fee"], "250000");

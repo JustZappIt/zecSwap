@@ -1,4 +1,5 @@
 use serde::Deserialize;
+pub use zecswap_prices::Provider;
 
 const ZATOSHIS_PER_ZEC: u128 = 100_000_000;
 const BASIS_POINTS: u128 = 10_000;
@@ -26,6 +27,8 @@ pub struct MarketConfig {
     pub token_decimals: u8,
     pub refresh_seconds: u64,
     pub max_age_seconds: u64,
+    /// Tried in order on each refresh: the first to answer prices quotes.
+    pub providers: Vec<Provider>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

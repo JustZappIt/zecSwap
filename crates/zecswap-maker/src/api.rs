@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_primitives::B256;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -30,6 +30,7 @@ pub fn router(maker: Arc<Maker>) -> Router {
     let monitor = Router::new()
         .route("/v1/monitor", get(monitor))
         .route("/v1/monitor/swaps/{swap_id}", get(monitor_swap))
+        .route("/v1/monitor/economics", get(economics))
         .route_layer(middleware::from_fn_with_state(
             maker.monitor_token(),
             server::require_monitor,
@@ -69,6 +70,21 @@ async fn monitor_swap(State(maker): State<Arc<Maker>>, Path(swap_id): Path<B256>
     match maker.monitor_swap(swap_id) {
         Ok(Some(swap)) => axum::Json(swap).into_response(),
         Ok(None) => MakerError::UnknownSwap.into_response(),
+        Err(e) => monitor_unavailable(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct EconomicsQuery {
+    since: Option<u64>,
+}
+
+async fn economics(
+    State(maker): State<Arc<Maker>>,
+    Query(query): Query<EconomicsQuery>,
+) -> Response {
+    match maker.economics(query.since) {
+        Ok(snapshot) => axum::Json(snapshot).into_response(),
         Err(e) => monitor_unavailable(e),
     }
 }

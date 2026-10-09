@@ -37,6 +37,7 @@ async fn main() -> Result<()> {
         None => None,
     };
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);
+    tokio::spawn(relayer.clone().run_costs());
 
     let listener = tokio::net::TcpListener::bind(relayer.listen()).await?;
     info!("relaying on {}", listener.local_addr()?);
