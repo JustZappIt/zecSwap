@@ -16,9 +16,15 @@ pub struct Terms {
     pub relayer: Address,
     pub chain_id: u64,
     pub contract: Address,
-    /// Token base units the relayer keeps from a payout, as a decimal string.
+    /// Token base units the relayer keeps from a payout, as a decimal string. Where the relayer
+    /// prices gas, the larger of its floor and the gas a swap's claim and payout (or refund and
+    /// its payout) burn, at the gas price and ETH price now.
     #[serde(with = "decimal")]
     pub fee: u128,
+    /// Until when this `fee` and `reverseFunding.fee` are honored: the relayer takes any fee at
+    /// or above the lowest it quoted in the hour before. Absent where it prices no gas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_expires_at: Option<u64>,
     /// Absent when initial reverse funding is not sponsored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverse_funding: Option<ReverseFundingTerms>,
@@ -73,6 +79,8 @@ pub struct ReverseFundingTerms {
     #[serde(with = "decimal")]
     pub max_gas_price_wei: u128,
     pub max_calldata_bytes: usize,
+    /// What the funding must pay the relayer, priced like a payout's fee: its floor, or the gas
+    /// of the funding and its ready at the prices now if more.
     #[serde(with = "decimal")]
     pub fee: u128,
 }

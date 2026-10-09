@@ -4,15 +4,17 @@ use zecswap_chain::evm::{B256, OnChainSwap, Stage};
 use zecswap_core::{SecretShare, Terms, signer};
 use zecswap_railgun::ShieldNote;
 
+use crate::pricing::SwapFee;
 use crate::{Relayer, RelayerError, Result};
 
 impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "fund_reverse"), err(level = "warn"))]
     pub async fn fund_reverse(&self, request: zecswap_api::reverse::Funding) -> Result<Sent> {
         use zecswap_chain::evm::funding::FundingError;
-        let policy = self.config.funding_policy(self.account).ok_or_else(|| {
+        let mut policy = self.config.funding_policy(self.account).ok_or_else(|| {
             RelayerError::Rejected("initial reverse funding sponsorship is disabled".into())
         })?;
+        policy.fee = self.honored_swap_fee(SwapFee::Funding).await;
         if request.chain_id != self.domain.chain_id {
             return Err(RelayerError::Rejected("wrong funding chain".into()));
         }
@@ -107,7 +109,9 @@ impl Relayer {
             ));
         }
         let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
-        let note = self.check_reverse_payout(&swap, commitment, &request.payout)?;
+        let note = self
+            .check_reverse_payout(&swap, commitment, &request.payout)
+            .await?;
         if swap.stage == Stage::Refunded {
             return self.reverse_refund_payout(request.payout).await;
         }
@@ -160,7 +164,9 @@ impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "reverse_refund_payout"), err(level = "warn"))]
     pub async fn reverse_refund_payout(&self, request: Payout) -> Result<Sent> {
         let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
-        let note = self.check_reverse_payout(&swap, commitment, &request)?;
+        let note = self
+            .check_reverse_payout(&swap, commitment, &request)
+            .await?;
         if swap.stage != Stage::Refunded {
             return Err(RelayerError::Rejected("swap has not refunded".into()));
         }
@@ -201,7 +207,7 @@ impl Relayer {
                 "rescue approval is expired or already consumed".into(),
             ));
         }
-        self.check_fee(request.fee)?;
+        self.check_fee(request.fee).await?;
         let note = ShieldNote::from(&request.note);
         self.check_reverse_signature(
             &swap,
@@ -230,7 +236,7 @@ impl Relayer {
         })
     }
 
-    fn check_reverse_payout(
+    async fn check_reverse_payout(
         &self,
         swap: &OnChainSwap,
         commitment: B256,
@@ -240,7 +246,7 @@ impl Relayer {
         if commitment != B256::from(note.commitment()) || request.fee >= swap.amount {
             return Err(RelayerError::Rejected("invalid refund note or fee".into()));
         }
-        self.check_fee(request.fee)?;
+        self.check_fee(request.fee).await?;
         self.check_reverse_signature(
             swap,
             &self

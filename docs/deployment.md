@@ -633,6 +633,37 @@ their exact stored amounts until expiry; settlement and watchtower recovery cont
 independently of the price feed. Omitting `[pricing.market]` retains fixed pricing for
 local tests. Production and mainnet should explicitly enable market pricing.
 
+### Each swap pays its own network cost
+
+The spread is a share of the swap, but the maker's gas and Zcash fee are the same whatever its
+size, so a small swap's spread can't cover them. With `[pricing.costs]` every quote charges them
+on top of the spread, at the chain's gas price when it is made (read at most every fifteen
+seconds) and the quote's own ZEC, USDC and ETH prices:
+
+```toml
+[pricing.costs]
+forward_gas = 450000      # ZEC to USDC: the maker's open and ready (412k on Sepolia)
+reverse_gas = 400000      # USDC to ZEC: its claim lock and claim (362k on Sepolia)
+zcash_fee_zat = 15000     # the forward sweep, or the reverse deposit (10,000 so far)
+margin_bps = 2000         # for gas prices that rise before the sends land
+```
+
+A ZEC to USDC quote asks that much more ZEC for the same USDC; a USDC to ZEC quote pays that much
+less ZEC, and a swap too small to carry its cost gets no quote. Quotes say what they charged
+(`networkCost`, token base units), and the economics export keeps it with the quote's prices
+(`quote.networkCost`, `quote.gasPriceWei`). It needs `[pricing.market]`, which then needs ETH's
+price as well: quotes pause while ETH's price or the gas price can't be read, as they do for ZEC.
+Measure the gas on the chain served, from the dashboard's costs by operation: Sepolia reprices
+new state, so its budgets overstate Ethereum's.
+
+The relayer's fees follow gas the same way. With `providers` at the top of its config, a
+payout's fee is the larger of `fee` and `fee_gas` (the claim lock, the claim and the payout:
+1.65M on Sepolia) at the gas price and ETH price when it is quoted, `fee_margin_bps` on top;
+`[reverse_funding]` has its own `fee` and `fee_gas` (the funding and its ready: 2.06M). The terms
+quote both, with `feeExpiresAt`: the relayer takes any fee at or above the lowest it quoted in
+the hour before, so the fee a wallet shows when a swap starts is the fee its claim pays. Where it
+can't price gas, it takes the floor rather than hold a claim up.
+
 `GET /maker/v1/monitor` is a read-only operations export for `zapp-dashboard`,
 `GET /maker/v1/monitor/swaps/{id}` the same record for any one swap, old or new, and
 `GET /maker/v1/monitor/economics?since=<unix seconds>` what each swap accepted since then

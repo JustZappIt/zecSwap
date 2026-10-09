@@ -42,6 +42,17 @@ max_units = 20
 # max_age_seconds = 300
 # providers = ["coinmarketcap", "alchemy"]
 
+# Charge each swap the maker's own gas and Zcash fee, on top of the spread, at the chain's gas
+# price and the market prices of its quote: a ZEC to USDC swap deposits that much more ZEC, a
+# USDC to ZEC swap is paid that much less. Needs [pricing.market]. Measured on Sepolia, where new
+# state is repriced: an open and a ready burn 412k gas, a claim lock and a claim 362k, and a
+# sweep or a reverse deposit pays 10,000 zatoshis.
+# [pricing.costs]
+# forward_gas = 450000
+# reverse_gas = 400000
+# zcash_fee_zat = 15000
+# margin_bps = 2000
+
 [timing]
 quote_ttl = 120
 t0_after = 2700

@@ -2,9 +2,9 @@
 #   RELAYER_PRIVATE_KEY   pays the gas; keep it apart from any maker's key
 #   RELAYER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor and
 #                         /v1/monitor/sends
-#   ALCHEMY_API_KEY       optional, with [railgun_sends]: values each send's gas and fee in USD,
-#                         and prices sends by gas when its `providers` names alchemy
-#   ZCASH_CMC_KEY         needed when [railgun_sends] `providers` names coinmarketcap
+#   ALCHEMY_API_KEY       optional, with [railgun_sends]: values each send's gas and fee in USD;
+#                         needed when `providers` names alchemy
+#   ZCASH_CMC_KEY         needed when `providers` names coinmarketcap
 #
 # On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
 # the public mempool while its lock is held, but it invites griefing.
@@ -15,8 +15,16 @@ contract = "0x0000000000000000000000000000000000000000"
 token = "0x0000000000000000000000000000000000000000"
 maker = "0x0000000000000000000000000000000000000000"
 listen = "127.0.0.1:8788"
-# Token base units kept from each payout (1 USDC).
-fee = 1000000
+# Token base units kept from each payout at least (0.10 USDC): the floor of its fee.
+fee = 100000
+# With `providers`, every fee follows gas: the larger of its floor and the gas it pays for at
+# the gas price and ETH price when it is quoted, with `fee_margin_bps` on top. A quoted swap fee
+# is honored for an hour, a send's rate for ten minutes. A payout's fee pays for the claim lock,
+# the claim and the payout (on a refund, its lock, the refund and its payout): 1.65M gas on
+# Sepolia, where new state is repriced.
+fee_gas = 1800000
+providers = ["coinmarketcap", "alchemy"]
+fee_margin_bps = 1000
 claim_margin = 300
 
 # Initial Railgun-to-escrow gas sponsorship, Sepolia only. Disabled when absent.
@@ -28,3 +36,4 @@ claim_margin = 300
 # max_gas_limit = 4000000
 # max_gas_price_wei = 20000000000
 # fee = 250000
+# fee_gas = 2300000          # the funding (2.0M on Sepolia) and its ready

@@ -231,6 +231,7 @@ mod tests {
                         amount: u128::from(u64::MAX) + 1,
                         deposit_zat: 100_000,
                         expires_at: 200,
+                        network_cost: None,
                     },
                     user: user.auth.address().into(),
                     refund_note: B256::repeat_byte(5),

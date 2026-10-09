@@ -19,6 +19,10 @@ pub(super) const SCHEMA: &str = "
         quote_id BLOB PRIMARY KEY, at INTEGER NOT NULL, source TEXT NOT NULL,
         zec_usd TEXT NOT NULL, usdc_usd TEXT NOT NULL, eth_usd TEXT
     );
+    -- What a quote charged for the maker's own gas and Zcash fee, and the gas price it used.
+    CREATE TABLE IF NOT EXISTS quote_costs (
+        quote_id BLOB PRIMARY KEY, network_cost TEXT NOT NULL, gas_price TEXT NOT NULL
+    );
     -- The maker's own sends, reverted ones included: those emit no event to find them by.
     CREATE TABLE IF NOT EXISTS sent_transactions (
         scope TEXT NOT NULL, transaction_hash BLOB NOT NULL, swap_id BLOB NOT NULL,
@@ -74,6 +78,10 @@ pub(crate) struct QuotePrices {
     pub zec_usd: String,
     pub usdc_usd: String,
     pub eth_usd: Option<String>,
+    /// Token base units it charged for the maker's own gas and Zcash fee, and the gas price
+    /// that was charged at; missing where it charged none.
+    pub network_cost: Option<String>,
+    pub gas_price_wei: Option<String>,
 }
 
 /// A transaction on the swap. Everything its receipt says is missing until that is read.
@@ -118,7 +126,8 @@ impl Store {
         at: u64,
         mark: &QuoteMark,
     ) -> Result<()> {
-        self.conn().execute(
+        let conn = self.conn();
+        conn.execute(
             "INSERT OR IGNORE INTO quote_prices VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 quote,
@@ -129,6 +138,12 @@ impl Store {
                 mark.eth_usd
             ],
         )?;
+        if let Some((cost, gas_price)) = mark.network_cost {
+            conn.execute(
+                "INSERT OR IGNORE INTO quote_costs VALUES (?1, ?2, ?3)",
+                params![quote, cost.to_string(), gas_price.to_string()],
+            )?;
+        }
         Ok(())
     }
 
@@ -316,15 +331,18 @@ impl Store {
             "SELECT * FROM (
                 SELECT s.id, 'forward' AS direction, q.amount, q.deposit_zat, s.settled,
                     s.settled_at, coalesce(a.at, s.opened_at) AS accepted_at, q.nonce,
-                    p.at, p.source, p.zec_usd, p.usdc_usd, p.eth_usd
+                    p.at, p.source, p.zec_usd, p.usdc_usd, p.eth_usd, c.network_cost, c.gas_price
                 FROM swaps s JOIN quotes q USING (quote_id) LEFT JOIN swap_accepted a ON a.id = s.id
                     LEFT JOIN quote_prices p ON p.quote_id = q.quote_id
+                    LEFT JOIN quote_costs c ON c.quote_id = q.quote_id
                 UNION ALL
                 SELECT s.id, 'reverse', q.amount, q.deposit_zat, s.settled, s.settled_at, a.at,
-                    q.nonce, p.at, p.source, p.zec_usd, p.usdc_usd, p.eth_usd
+                    q.nonce, p.at, p.source, p.zec_usd, p.usdc_usd, p.eth_usd, c.network_cost,
+                    c.gas_price
                 FROM reverse_swaps s JOIN quotes q USING (quote_id)
                     LEFT JOIN swap_accepted a ON a.id = s.id
                     LEFT JOIN quote_prices p ON p.quote_id = q.quote_id
+                    LEFT JOIN quote_costs c ON c.quote_id = q.quote_id
             ) WHERE coalesce(accepted_at, ?1) >= ?1 ORDER BY nonce DESC LIMIT ?2",
         )?;
         let mut swaps = statement
@@ -344,6 +362,8 @@ impl Store {
                             zec_usd: row.get(10)?,
                             usdc_usd: row.get(11)?,
                             eth_usd: row.get(12)?,
+                            network_cost: row.get(13)?,
+                            gas_price_wei: row.get(14)?,
                         }),
                         None => None,
                     },
@@ -599,9 +619,25 @@ mod tests {
             zec_usd: "1185.19".into(),
             usdc_usd: "1.0006".into(),
             eth_usd: None,
+            network_cost: Some((973_738, 1_000_000_000)),
         };
         store.record_quote_price(&[2; 32], 2_000, &mark).unwrap();
         assert_eq!(store.unpriced_quotes(10).unwrap(), [([1; 32], 1_000)]);
+        let (swaps, _) = store.economics(SCOPE, 0, 10).unwrap();
+        let charged = |id| {
+            let quote = swaps
+                .iter()
+                .find(|s| s.id == B256::repeat_byte(id))
+                .unwrap()
+                .quote
+                .as_ref();
+            quote.map(|q| (q.network_cost.clone(), q.gas_price_wei.clone()))
+        };
+        assert_eq!(
+            charged(2),
+            Some((Some("973738".into()), Some("1000000000".into())))
+        );
+        assert_eq!(charged(1), None);
 
         let swap = B256::repeat_byte(1);
         let (read, dropped, fresh) = (

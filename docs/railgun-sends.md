@@ -171,18 +171,20 @@ wallet's own proofs there; a relayed send's outputs clear once the wallet has pr
 ## Running a relayer that sends them
 
 ```toml
+providers = ["coinmarketcap", "alchemy"]   # top level: live ETH and USDC prices, every fee by gas
+fee_margin_bps = 1000      # a fee's margin over what its gas costs
+
 [railgun_sends]
 fee = 500000               # base units of the relayer's token every send pays at least
-providers = ["coinmarketcap", "alchemy"]   # live ETH and USDC prices: sends priced by gas too
-fee_margin_bps = 1000      # the gas-based fee's margin over what the gas costs
 max_gas_limit = 3000000
 max_gas_price_wei = 50000000000
 journal = "/var/lib/zecswap-relayer/railgun-sends.sqlite"
 ```
 
 `RELAYER_RAILGUN_SEED` holds the 64-byte BIP-39 seed of the relayer's own Railgun wallet, in hex,
-beside `RELAYER_PRIVATE_KEY`: never the maker's, and never logged. `providers` takes the maker's
-keys, `ZCASH_CMC_KEY` and `ALCHEMY_API_KEY`, and asks them in order as the maker does; without
+beside `RELAYER_PRIVATE_KEY`: never the maker's, and never logged. `providers`, at the top of
+the config because the relayer's swap fees follow gas the same way, takes the maker's keys,
+`ZCASH_CMC_KEY` and `ALCHEMY_API_KEY`, and asks them in order as the maker does; without
 `providers` a send pays `fee` alone. `ALCHEMY_API_KEY` also values what each send cost and
 earned (below), with or without `providers`. Keep its mnemonic offline: the
 fees collect there. The relayer refuses to start without it, or when it is the maker's account.

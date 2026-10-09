@@ -13,6 +13,7 @@ mod logging_tests;
 mod monitor;
 #[cfg(test)]
 mod monitor_tests;
+mod pricing;
 mod reverse;
 mod sends;
 #[cfg(test)]
@@ -37,6 +38,8 @@ use zecswap_railgun::{Keys, ShieldNote};
 
 pub use sends::{Sending, SendsSnapshot};
 
+use crate::pricing::SwapFee;
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -48,9 +51,22 @@ pub struct Config {
     /// The one maker whose swaps it sends for.
     pub maker: Address,
     pub listen: SocketAddr,
-    /// Token base units kept from each payout, for the gas of the lock, the claim and the
-    /// payout.
+    /// Token base units each payout keeps at least, for the gas of the lock, the claim and the
+    /// payout: the floor of its fee.
     pub fee: u64,
+    /// With `providers`, the gas a payout's fee pays for, priced at the gas price and ETH price
+    /// when it is quoted: the claim lock, the claim and the payout, or a refund's lock, the
+    /// refund and its payout. None leaves the fee at `fee`.
+    #[serde(default)]
+    pub fee_gas: u64,
+    /// Live ETH and USDC prices, asked in order (keys as the maker's: `ZCASH_CMC_KEY`,
+    /// `ALCHEMY_API_KEY`): with them each fee follows gas, never under its floor. Without them
+    /// every fee is its floor.
+    #[serde(default)]
+    pub providers: Vec<zecswap_prices::Provider>,
+    /// The margin of a fee priced by gas over what the gas costs, in basis points.
+    #[serde(default)]
+    pub fee_margin_bps: u32,
     /// Seconds a claim lock must still have when the relayer reveals under it: less, and the
     /// claim could land after the lock lapses, handing the maker the next turn knowing both
     /// halves.
@@ -70,22 +86,19 @@ pub struct ReverseFundingConfig {
     pub relay_adapt: Address,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
-    /// Escrow-token base units each funding pays this relayer for its gas.
+    /// Escrow-token base units each funding pays this relayer for its gas at least.
     pub fee: u64,
+    /// With `providers`, the gas the funding fee pays for: the funding and its ready.
+    #[serde(default)]
+    pub fee_gas: u64,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RailgunSendsConfig {
-    /// Base units of the relayer's token that each send's fee notes must pay it at least.
+    /// Base units of the relayer's token that each send's fee notes must pay it at least; with
+    /// `providers`, its gas at the quoted rate if more.
     pub fee: u64,
-    /// Live ETH and USDC prices, asked in order, for the fee's gas-based part (keys as the
-    /// maker's: `ZCASH_CMC_KEY`, `ALCHEMY_API_KEY`). Without them a send pays `fee` alone.
-    #[serde(default)]
-    pub providers: Vec<zecswap_prices::Provider>,
-    /// The gas-based part's margin over what the gas costs, in basis points.
-    #[serde(default)]
-    pub fee_margin_bps: u32,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
     /// The SQLite file each send is recorded in before it is broadcast.
@@ -169,6 +182,8 @@ pub struct Relayer {
     settlement: Settlement,
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
+    /// With `providers`: every fee priced by gas.
+    pricing: Option<pricing::GasPricing>,
     /// Alchemy's price history, from `ALCHEMY_API_KEY`: it values what each send cost and
     /// earned. Without it they are recorded unvalued.
     history: Option<zecswap_prices::History>,
@@ -213,19 +228,20 @@ impl Relayer {
                     max_gas_limit: sends.max_gas_limit,
                     max_gas_price_wei: sends.max_gas_price_wei.into(),
                 };
-                let pricing = (!sends.providers.is_empty())
-                    .then(|| {
-                        sends::GasPricing::new(
-                            &sends.providers,
-                            &zecswap_prices::Keys::from_env(),
-                            sends.fee_margin_bps,
-                        )
-                    })
-                    .transpose()?;
-                info!(railgun = %keys.address(), proxy = %railgun, gas_priced = pricing.is_some(), "sending Railgun transactions");
-                Some(sends::Sends::open(policy, keys, pricing, &sends.journal)?)
+                info!(railgun = %keys.address(), proxy = %railgun, "sending Railgun transactions");
+                Some(sends::Sends::open(policy, keys, &sends.journal)?)
             }
         };
+        let pricing = (!config.providers.is_empty())
+            .then(|| {
+                pricing::GasPricing::new(
+                    &config.providers,
+                    &zecswap_prices::Keys::from_env(),
+                    config.fee_margin_bps,
+                )
+            })
+            .transpose()?;
+        info!(gas_priced = pricing.is_some(), "fees");
         let history = std::env::var("ALCHEMY_API_KEY")
             .ok()
             .filter(|key| !key.trim().is_empty())
@@ -241,6 +257,7 @@ impl Relayer {
             settlement,
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
+            pricing,
             history,
         })
     }
@@ -302,33 +319,38 @@ impl Relayer {
         })
     }
 
-    /// What the relayer charges and offers now: asking prices the sends' gas, and that rate is
-    /// honored for a while to proofs made with it.
+    /// What the relayer charges and offers now. Where it prices gas, asking quotes each fee at
+    /// the gas price and ETH price now, and a quote is honored for a while to whatever was
+    /// signed or proved with it.
     pub async fn terms(&self) -> Terms {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock is after 1970")
-            .as_secs();
-        let rate = match self.sends.as_ref().and_then(|sends| sends.pricing.as_ref()) {
-            Some(pricing) => pricing.quote(now).await,
+        let now = sends::now();
+        let (fee, priced) = self.quote_swap_fee(SwapFee::Payout, now).await;
+        let funding = match self.config.reverse_funding {
+            Some(_) => Some(self.quote_swap_fee(SwapFee::Funding, now).await),
             None => None,
         };
+        let rate = match (&self.sends, &self.pricing) {
+            (Some(_), Some(pricing)) => pricing.quote_rate(now).await,
+            _ => None,
+        };
+        let swap_fees_priced = priced || funding.is_some_and(|(_, priced)| priced);
         Terms {
             relayer: self.account,
             chain_id: self.domain.chain_id,
             contract: self.config.contract,
-            fee: self.config.fee.into(),
-            reverse_funding: self.config.reverse_funding.as_ref().map(|funding| {
-                zecswap_api::relayer::ReverseFundingTerms {
-                    relay_adapt: funding.relay_adapt,
+            fee,
+            fee_expires_at: swap_fees_priced.then_some(now + pricing::SWAP_FEE_VALIDITY),
+            reverse_funding: self.config.reverse_funding.as_ref().zip(funding).map(
+                |(config, (fee, _))| zecswap_api::relayer::ReverseFundingTerms {
+                    relay_adapt: config.relay_adapt,
                     token: self.config.token,
                     maker: self.config.maker,
-                    max_gas_limit: funding.max_gas_limit,
-                    max_gas_price_wei: funding.max_gas_price_wei.into(),
+                    max_gas_limit: config.max_gas_limit,
+                    max_gas_price_wei: config.max_gas_price_wei.into(),
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
-                    fee: funding.fee.into(),
-                }
-            }),
+                    fee,
+                },
+            ),
             railgun_sends: self.sends.as_ref().map(|sends| {
                 zecswap_api::relayer::RailgunSendTerms {
                     railgun_address: sends.keys.address(),
@@ -336,13 +358,67 @@ impl Relayer {
                     token: sends.policy.token,
                     fee: sends.policy.fee,
                     fee_per_unit_gas: rate,
-                    fee_expires_at: rate.map(|_| now + sends::FEE_VALIDITY),
+                    fee_expires_at: rate.map(|_| now + pricing::SEND_FEE_VALIDITY),
                     max_gas_limit: sends.policy.max_gas_limit,
                     max_gas_price_wei: sends.policy.max_gas_price_wei,
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
                 }
             }),
         }
+    }
+
+    /// A swap fee's floor and the gas it pays for.
+    fn swap_fee(&self, fee: SwapFee) -> (u128, u64) {
+        match fee {
+            SwapFee::Payout => (self.config.fee.into(), self.config.fee_gas),
+            SwapFee::Funding => self
+                .config
+                .reverse_funding
+                .as_ref()
+                .map_or((0, 0), |funding| (funding.fee.into(), funding.fee_gas)),
+        }
+    }
+
+    /// The gas price now, read at most every fifteen seconds; none where it isn't needed or
+    /// can't be read.
+    async fn gas_price(&self, pricing: &pricing::GasPricing, gas: u64, now: u64) -> Option<u128> {
+        if gas == 0 {
+            return None;
+        }
+        if let Some(price) = pricing.cached_gas_price(now) {
+            return Some(price);
+        }
+        match self.settlement.gas_price().await {
+            Ok(price) => {
+                pricing.cache_gas_price(now, price);
+                Some(price)
+            }
+            Err(e) => {
+                warn!("could not read the gas price: {e:#}");
+                None
+            }
+        }
+    }
+
+    /// A swap fee now, quoted, and whether gas priced it.
+    async fn quote_swap_fee(&self, fee: SwapFee, now: u64) -> (u128, bool) {
+        let (floor, gas) = self.swap_fee(fee);
+        let Some(pricing) = &self.pricing else {
+            return (floor, false);
+        };
+        let gas_price = self.gas_price(pricing, gas, now).await;
+        pricing.quote_fee(fee, now, floor, gas, gas_price).await
+    }
+
+    /// The least a swap fee signed or proved now must pay.
+    async fn honored_swap_fee(&self, fee: SwapFee) -> u128 {
+        let (floor, gas) = self.swap_fee(fee);
+        let Some(pricing) = &self.pricing else {
+            return floor;
+        };
+        let now = sends::now();
+        let gas_price = self.gas_price(pricing, gas, now).await;
+        pricing.honored_fee(fee, now, floor, gas, gas_price).await
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_claim"), err(level = "warn"))]
@@ -381,7 +457,7 @@ impl Relayer {
                 swap.stage
             )));
         }
-        let note = self.check_payout(&swap, &request.payout)?;
+        let note = self.check_payout(&swap, &request.payout).await?;
         let now = self.settlement.now().await?;
         if swap.claim_lock_until < now + self.config.claim_margin {
             return Err(RelayerError::Rejected(
@@ -420,7 +496,7 @@ impl Relayer {
                 "nothing is waiting to be paid out".into(),
             ));
         }
-        let note = self.check_payout(&swap, &request)?;
+        let note = self.check_payout(&swap, &request).await?;
         Ok(Sent {
             transactions: vec![self.send_payout(&request, &terms, &note).await?],
         })
@@ -444,7 +520,7 @@ impl Relayer {
                 "rescue approval is expired or already consumed".into(),
             ));
         }
-        self.check_fee(request.fee)?;
+        self.check_fee(request.fee).await?;
         let note = ShieldNote::from(&request.note);
         let digest = self.domain.rescue(
             &request.swap_id,
@@ -493,14 +569,14 @@ impl Relayer {
 
     /// A payout that can land: to the committed note, for at least the relayer's fee and less
     /// than the amount, signed by the swap's user for this relayer.
-    fn check_payout(&self, swap: &OnChainSwap, request: &Payout) -> Result<ShieldNote> {
+    async fn check_payout(&self, swap: &OnChainSwap, request: &Payout) -> Result<ShieldNote> {
         let note = ShieldNote::from(&request.note);
         if swap.payout_note != Some(note.commitment().into()) {
             return Err(RelayerError::Rejected(
                 "the note is not the one the swap pays".into(),
             ));
         }
-        self.check_fee(request.fee)?;
+        self.check_fee(request.fee).await?;
         if request.fee >= swap.amount {
             return Err(RelayerError::Rejected(format!(
                 "a fee of {} leaves nothing to shield",
@@ -514,11 +590,11 @@ impl Relayer {
         Ok(note)
     }
 
-    fn check_fee(&self, fee: u128) -> Result<()> {
-        if fee < self.config.fee.into() {
+    async fn check_fee(&self, fee: u128) -> Result<()> {
+        let least = self.honored_swap_fee(SwapFee::Payout).await;
+        if fee < least {
             return Err(RelayerError::Rejected(format!(
-                "a fee of {fee} is less than the relayer's {}",
-                self.config.fee
+                "a fee of {fee} is less than the relayer's {least}"
             )));
         }
         Ok(())

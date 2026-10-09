@@ -14,12 +14,16 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
             maker: Address::repeat_byte(4),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
+            fee_gas: 0,
+            providers: vec![],
+            fee_margin_bps: 0,
             claim_margin: 30,
             reverse_funding: enabled.then_some(ReverseFundingConfig {
                 relay_adapt: Address::repeat_byte(2),
                 max_gas_limit: 4_000_000,
                 max_gas_price_wei: 20_000_000_000,
                 fee: 250_000,
+                fee_gas: 0,
             }),
             railgun_sends: None,
         },
@@ -31,6 +35,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        pricing: None,
         history: None,
     }
 }

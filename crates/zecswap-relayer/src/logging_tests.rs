@@ -34,6 +34,9 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             maker: Address::repeat_byte(5),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
+            fee_gas: 0,
+            providers: vec![],
+            fee_margin_bps: 0,
             claim_margin: 30,
             reverse_funding: None,
             railgun_sends: None,
@@ -46,6 +49,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        pricing: None,
         history: None,
     };
     let swap_id = B256::repeat_byte(0xab);

@@ -1,7 +1,8 @@
 //! A relayer refuses, before sending anything, what it shouldn't pay for: a swap of another
-//! token or maker, and terms that are not the swap's. The contract would revert such a call
-//! anyway, but a claim whose payout carries other terms, or a fee that leaves nothing to shield,
-//! or that Railgun won't take, would land and reveal the user's share before the payout failed.
+//! token or maker, terms that are not the swap's, and, where it prices gas, a fee under its
+//! quote. The contract would revert such a call anyway, but a claim whose payout carries other
+//! terms, or a fee that leaves nothing to shield, or that Railgun won't take, would land and
+//! reveal the user's share before the payout failed.
 
 use std::path::Path;
 
@@ -71,6 +72,9 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         maker: maker_account,
         listen: "127.0.0.1:0".parse().unwrap(),
         fee: 20_000,
+        fee_gas: 0,
+        providers: vec![],
+        fee_margin_bps: 0,
         claim_margin: 30,
         reverse_funding: None,
         railgun_sends: None,
@@ -82,6 +86,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         settlement: Settlement::connect(&url, contract, relayer_key.clone()).unwrap(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        pricing: None,
         history: None,
     };
     let relayer = relayer_for(config.clone());
@@ -214,7 +219,42 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
     maker.claim(id, &terms, &keys.share).await.unwrap();
     refused(relayer.payout(payout(&other)).await, "other terms");
     assert_eq!(sent().await, 1);
-    relayer.payout(payout(&terms)).await.unwrap();
+    // Priced by gas: 100,000 gas at 1 gwei is 266,666 at 2,666.67 USDC an ETH, over the floor.
+    let prices = zecswap_prices::stand_in::start(axum::http::StatusCode::OK).await;
+    let pricing = crate::pricing::GasPricing::new(
+        &[zecswap_prices::Provider::CoinMarketCap],
+        &zecswap_prices::stand_in::keys(),
+        1_000,
+    )
+    .unwrap()
+    .served_by(&prices.url);
+    pricing.cache_gas_price(crate::sends::now(), 1_000_000_000);
+    let priced = Relayer {
+        pricing: Some(pricing),
+        ..relayer_for(Config {
+            fee_gas: 100_000,
+            ..config.clone()
+        })
+    };
+    let quoted = priced.terms().await;
+    assert_eq!(
+        (quoted.fee, quoted.fee_expires_at.is_some()),
+        (266_666, true)
+    );
+    refused(
+        priced.payout(payout(&terms)).await,
+        "less than the relayer's 266666",
+    );
+    assert_eq!(sent().await, 1);
+    let paid = Payout {
+        fee: quoted.fee,
+        signature: keys
+            .auth
+            .sign(&domain.payout(&id, &relayer_account.into(), quoted.fee))
+            .into(),
+        ..payout(&terms)
+    };
+    priced.payout(paid).await.unwrap();
     assert_eq!(sent().await, 2);
     let rescue = Rescue {
         swap_id: id,
