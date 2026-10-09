@@ -1,0 +1,66 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "token": "0x5764D0044bef5AA839E0dDafE2073421101B9Ed8",
+  "railgun": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
+  "lockDurationSeconds": 600,
+  "deploymentTransaction": "0x33f4b3930a0394c342c2e412b94a9bedbb04cade8702b5691af0840e23e0de09",
+  "deploymentBlock": 11860526,
+  "deploymentGasUsed": 30219578,
+  "zcashNetwork": "testnet",
+  "makerUrl": "https://zecswap-testnet.pepeman931.workers.dev/maker",
+  "relayerUrl": "https://zecswap-testnet.pepeman931.workers.dev/relayer",
+  "maker": "0x2bac02B5032e9092493814c705F156B49E288922",
+  "relayer": "0xd9633572041886Fa7584a2E12F36C8C7f1126412",
+  "deployer": "0x09eD1F966745Be18C711C346242c0974DAd7c3e5",
+  "sourceCommit": "59b7d212824bed6843bc438480885bd5d11e6620",
+  "terms": "each call on a swap passes its Terms; the contract stores keccak256(abi.encode(terms))",
+  "reverseSwapId": "keccak256(abi.encode(user, makerKey, true))",
+  "smokeTestGas": {
+    "deposit": 248950,
+    "open": 359963,
+    "lockRefund": 39832,
+    "refund": 307943
+  },
+  "deployedAt": "2026-10-07",
+  "replaces": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
+  "status": "active",
+  "servicesSince": "2026-10-07T04:42:18Z",
+  "servicesSourceCommit": "9459be32442745421025bd1f9a246a4b1c7d39f2",
+  "release": "/opt/zecswap/releases/20261007-terms-hash-9459be3",
+  "previousRelease": "/opt/zecswap/releases/20261006-fundfee-a53d6f2",
+  "backup": "/var/backups/zecswap/20261007-terms-hash-9459be3",
+  "makerSha256": "616dd8aab97b222861323035c83929c54d579fdd04dd0290eaffdb087be4ecb2",
+  "relayerSha256": "da4228a3cf85473590fbe1764cd3f70f0727193ff2792affebed259dce4b6665",
+  "maxAwaitingDeposit": 20,
+  "tokens": "off until the app spends them",
+  "inventoryMigrationTransactions": [
+    {
+      "hash": "0x630cd335d88131621fd27c1ba6053e11baf05e13b962f539d045bf4105e738ce",
+      "block": 11860654,
+      "gasUsed": 136942
+    },
+    {
+      "hash": "0x3bca23be3d6fc27c7f93bbcb617f4c2fd8b6ffbeacd750d000aed28584c97528",
+      "block": 11860657,
+      "gasUsed": 126157
+    },
+    {
+      "hash": "0xcd281f9fd13b69e9e4a7c1090790ecef9bea79ca2e4124f36f6afb6426eaabc7",
+      "block": 11860658,
+      "gasUsed": 151042
+    }
+  ],
+  "inventory": "74495565",
+  "validation": {
+    "linuxBuildFromCleanCommittedCheckout": true,
+    "uploadedBinaryChecksumVerified": true,
+    "noUnsettledSwapsOnTheOldContract": true,
+    "localAndPublicMakerInfoReportContract": true,
+    "localAndPublicRelayerTermsReportContract": true,
+    "publicMakerHealth": 204,
+    "publicForwardAndReverseQuotes": true,
+    "serviceRestarts": 0,
+    "liveSwap": false
+  }
+}

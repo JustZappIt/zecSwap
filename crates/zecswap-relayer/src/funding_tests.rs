@@ -4,23 +4,28 @@ use axum::http::{Request, StatusCode};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-fn relayer(enabled: bool) -> Relayer {
+pub(crate) fn relayer(enabled: bool) -> Relayer {
     let contract = Address::repeat_byte(1);
     Relayer {
         config: Config {
             evm_rpc: "http://127.0.0.1:1".into(),
             contract,
+            token: Address::repeat_byte(3),
+            maker: Address::repeat_byte(4),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
+            fee_gas: 0,
+            providers: vec![],
+            fee_margin_bps: 0,
             claim_margin: 30,
             reverse_funding: enabled.then_some(ReverseFundingConfig {
                 relay_adapt: Address::repeat_byte(2),
-                token: Address::repeat_byte(3),
-                maker: Address::repeat_byte(4),
                 max_gas_limit: 4_000_000,
                 max_gas_price_wei: 20_000_000_000,
                 fee: 250_000,
+                fee_gas: 0,
             }),
+            railgun_sends: None,
         },
         account: Address::repeat_byte(5),
         domain: Domain {
@@ -28,6 +33,10 @@ fn relayer(enabled: bool) -> Relayer {
             contract: contract.into(),
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
+        monitor: crate::monitor::Monitor::new(MonitorToken::default()),
+        sends: None,
+        pricing: None,
+        history: None,
     }
 }
 
@@ -81,13 +90,13 @@ async fn funding_route_rejects_disabled_wrong_chain_and_malformed_requests_witho
     assert_eq!(body["code"], "invalidRequest");
 }
 
-#[test]
-fn funding_capability_is_opt_in_and_old_config_still_loads() {
+#[tokio::test]
+async fn funding_capability_is_opt_in_and_old_config_still_loads() {
     let config: Config = toml::from_str(include_str!("../relayer.example.toml")).unwrap();
     assert!(config.reverse_funding.is_none());
-    let old = serde_json::to_value(relayer(false).terms()).unwrap();
+    let old = serde_json::to_value(relayer(false).terms().await).unwrap();
     assert!(old.get("reverseFunding").is_none());
-    let enabled = serde_json::to_value(relayer(true).terms()).unwrap();
+    let enabled = serde_json::to_value(relayer(true).terms().await).unwrap();
     assert_eq!(enabled["reverseFunding"]["maxGasPriceWei"], "20000000000");
     assert_eq!(enabled["reverseFunding"]["maxCalldataBytes"], 65536);
     assert_eq!(enabled["reverseFunding"]["fee"], "250000");

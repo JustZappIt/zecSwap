@@ -320,10 +320,14 @@ mod tests {
             viewing: ViewingKeys::random(rand::rand_core::UnwrapErr(rand::rngs::SysRng)),
             zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
             opened_at: 100,
+            token: Address::repeat_byte(3),
+            t0: 200,
             t1: 300,
             sweep: None,
             settled: false,
             refund_started: false,
+            token_request: None,
+            token_return: None,
         };
         store.conn().execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON notifications WHEN NEW.event_key = 'reject' BEGIN SELECT RAISE(FAIL, 'injected queue failure'); END;").unwrap();
         let bad = Notification {

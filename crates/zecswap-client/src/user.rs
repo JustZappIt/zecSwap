@@ -9,7 +9,7 @@ use zecswap_api::relayer::{self, Claim, LockClaim, Sent};
 use zecswap_api::{Acceptance, Quote};
 use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, swap_id};
 use zecswap_core::{
-    Domain, JointAccount, Payout, SpendKey, SwapContext, UserSwapKeys, derive_user_keys,
+    Domain, JointAccount, Payout, SpendKey, SwapContext, Terms, UserSwapKeys, derive_user_keys,
 };
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 use zeroize::Zeroizing;
@@ -36,6 +36,9 @@ pub struct UserSwap {
     pub index: u32,
     pub quote: Quote,
     pub swap_id: B256,
+    /// The deadlines the maker reported opening with, which complete the swap's terms.
+    pub t0: u64,
+    pub t1: u64,
 }
 
 /// How a user is paid, and who sends its transactions.
@@ -142,9 +145,13 @@ impl User {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
+            token_request: None,
         };
-        let accepted = self.maker.accept(quote.quote_id, &acceptance).await?;
         let swap_id = swap_id(quote.maker, &acceptance.user_share);
+        let accepted = self
+            .maker
+            .accept(quote.quote_id, swap_id, &acceptance)
+            .await?;
         ensure!(
             accepted.swap_id == swap_id,
             "the maker reported another swap"
@@ -153,33 +160,26 @@ impl User {
             index,
             quote,
             swap_id,
+            t0: accepted.t0,
+            t1: accepted.t1,
         })
+    }
+
+    /// Holds the token the swap hands back once paid into, where the maker takes tokens:
+    /// whether it now holds it. Spend it later, not right away: a spend just after it comes
+    /// back could be tied to this swap.
+    pub async fn collect_token(&self, swap: &UserSwap) -> Result<bool> {
+        self.maker.collect_token(swap.swap_id).await
     }
 
     /// Checks the swap as the contract records it and derives the deposit account from the
     /// on-chain shares. Nothing may be deposited unless this succeeds.
     pub async fn verify(&self, swap: &UserSwap) -> Result<JointAccount> {
+        // Read against the terms we expect, so the chain vouches for every one of them: the
+        // quoted maker, token, amount and share, our share and payout, and the deadlines.
         let chain = self.caught_up(swap, |_| true).await?;
         let keys = self.keys(swap.index)?;
-        let payout = self.payout(&keys)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
-        ensure!(
-            chain.maker_share == swap.quote.maker_share,
-            "the on-chain maker share is not the quoted one"
-        );
-        ensure!(
-            chain.user_share == keys.share.public(),
-            "the on-chain user share is not ours"
-        );
-        ensure!(
-            chain.user == Address::from(payout.user)
-                && chain.payout_note == payout.note.map(B256::from),
-            "the payout goes to someone else"
-        );
-        ensure!(
-            chain.token == self.token && chain.amount == swap.quote.amount,
-            "the payout differs from the quote"
-        );
         let now = self.settlement.now().await?;
         let min = self.min_time_to_t0;
         ensure!(
@@ -194,24 +194,45 @@ impl User {
         )?)
     }
 
+    /// The swap as the chain has it; an error if it opened on terms other than `terms` gives.
     pub async fn state(&self, swap: &UserSwap) -> Result<OnChainSwap> {
         self.settlement
-            .swap(swap.swap_id)
+            .swap(swap.swap_id, &self.terms(swap)?)
             .await?
             .context("the swap is not on-chain")
     }
 
+    /// The terms the swap must have opened with: the quote, our share and payout, and the
+    /// deadlines the maker reported. Every call on the swap supplies them.
+    pub fn terms(&self, swap: &UserSwap) -> Result<Terms> {
+        let keys = self.keys(swap.index)?;
+        let payout = self.payout(&keys)?;
+        Ok(Terms {
+            maker: swap.quote.maker.into(),
+            token: self.token.into(),
+            amount: swap.quote.amount,
+            maker_share: swap.quote.maker_share,
+            user_share: keys.share.public(),
+            user: payout.user,
+            t0: swap.t0,
+            t1: swap.t1,
+            payout_note: payout.note.unwrap_or_default(),
+        })
+    }
+
     /// Takes the claim lock, directly or through the relayer.
     pub async fn lock_claim(&self, swap: &UserSwap) -> Result<()> {
+        let terms = self.terms(swap)?;
         match &self.route {
             Route::Account => {
-                self.settlement.lock_claim(swap.swap_id).await?;
+                self.settlement.lock_claim(swap.swap_id, &terms).await?;
             }
             Route::Railgun { relayer, .. } => {
                 let deadline = self.settlement.now().await? + LOCK_SIGNATURE_TTL;
                 let digest = self.domain(swap).lock_claim(&swap.swap_id.0, deadline);
                 let request = LockClaim {
                     swap_id: swap.swap_id,
+                    terms: (&terms).into(),
                     deadline,
                     signature: self.keys(swap.index)?.auth.sign(&digest).into(),
                 };
@@ -258,7 +279,9 @@ impl User {
             Stage::Open | Stage::Ready => {
                 self.hold_claim_lock(swap, &chain).await?;
                 let keys = self.keys(swap.index)?;
-                self.settlement.claim(swap.swap_id, &keys.share).await?;
+                self.settlement
+                    .claim(swap.swap_id, &self.terms(swap)?, &keys.share)
+                    .await?;
                 chain.amount
             }
         };
@@ -298,8 +321,10 @@ impl User {
         let digest = self
             .domain(swap)
             .payout(&swap.swap_id.0, &terms.relayer.into(), terms.fee);
+        let swap_terms = zecswap_api::Terms::from(&self.terms(swap)?);
         let payout = relayer::Payout {
             swap_id: swap.swap_id,
+            terms: swap_terms.clone(),
             note: (&note).into(),
             fee: terms.fee,
             signature: keys.auth.sign(&digest).into(),
@@ -325,6 +350,7 @@ impl User {
                 self.hold_claim_lock(swap, &chain).await?;
                 let claim = Claim {
                     swap_id: swap.swap_id,
+                    terms: swap_terms,
                     secret: keys.share.to_be_bytes().into(),
                     payout: payout.clone(),
                 };
@@ -390,9 +416,10 @@ impl User {
         swap: &UserSwap,
         seen: impl Fn(&OnChainSwap) -> bool,
     ) -> Result<OnChainSwap> {
+        let terms = self.terms(swap)?;
         let deadline = Instant::now() + CATCH_UP;
         loop {
-            if let Some(chain) = self.settlement.swap(swap.swap_id).await?
+            if let Some(chain) = self.settlement.swap(swap.swap_id, &terms).await?
                 && seen(&chain)
             {
                 return Ok(chain);

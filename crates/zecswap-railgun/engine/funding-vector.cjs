@@ -50,7 +50,7 @@ const word = byte => '0x' + byte.repeat(32);
   const random = 'dd'.repeat(31), minGasLimit = 1000000n;
   transactions[0].boundParams.adaptParams = RelayAdaptHelper.getRelayAdaptParams(transactions,random,true,calls,minGasLimit);
   const data = relay.encodeFunctionData('relay',[transactions,RelayAdaptHelper.getActionData(random,true,calls,minGasLimit)]);
-  const swapId = keccak256(coder.encode(['address','uint256[2]'],[user.address,terms.makerKey]));
+  const swapId = keccak256(coder.encode(['address','uint256[2]','bool'],[user.address,terms.makerKey,true]));
   const fixture = {source:'@railgun-community/engine 9.8.0 V2 ABI; dummy SNARK',chainId,contract,relayer,token,maker,to,fee:fee.toString(),swapId,data};
   fs.writeFileSync('../../zecswap-chain/src/evm/funding/sdk-vector.json',JSON.stringify(fixture,null,2)+'\n');
 })().catch(error => { console.error(error); process.exitCode=1; });

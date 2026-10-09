@@ -85,5 +85,35 @@
         "0x92d2efd86ad56d6a82326e6a1b9bb4a39316b63ecdc84fd3102355a7169d4e57"
       ]
     }
+  ],
+  "outputs": [
+    {
+      "receiver": 0,
+      "commitment": "0x19e4de8efca39d4a5e1f5a90f936391cf5faf609fb841c377f9422a5a561b3e1",
+      "token": "0x0000000000000000000000001c7d4b196cb0c7b01d743fbc6116a902379c7238",
+      "value": "250000",
+      "ciphertext": [
+        "0xead46572eb6785d4673b08927a14965b00a0ca1fbc4d8428e1609e1a58caeaca",
+        "0x5213da736b3848a94fa5d2b1cc015e3bd9f8014b280ac0c7003ed9e1309053ff",
+        "0x49715ff96a4c48da6afc3589dcbdbf258460fcf9732934d9dad771c2cf98ccdf",
+        "0x342938790e6f473b7ab05e8648ba5cbb06afa275c08fb8e86a596a00b20b5663"
+      ],
+      "blindedSenderViewingKey": "0x2984df84726151049d0fd9c21dd5edb4da221e548d38722ef63d348b729f6320",
+      "memo": "0x"
+    },
+    {
+      "receiver": 1,
+      "commitment": "0x19183e76fe2484e852582561333f23ca218f5a0c79995038f48d27978399f8f3",
+      "token": "0x0000000000000000000000001c7d4b196cb0c7b01d743fbc6116a902379c7238",
+      "value": "1234567",
+      "ciphertext": [
+        "0xdc3b51357977a985369d298ff87add419bea0d4d859717f1de6f53f498684efd",
+        "0x9768f59973812f492f3623aecd616225293f951936d5ae5f23f9baab7f1507e1",
+        "0xa05efcf4e79fd963dd5e6597b999835edc3df756d3484c4f0ef3fe4e87c2b0d5",
+        "0xa82fc979d8ef94d6773dea7f18befbea20cf9860c211fb3ffba9644c1f2bfc39"
+      ],
+      "blindedSenderViewingKey": "0x1cae2ad2f1ce7542dc62b17f1b16a7269bc8204ac9efde29bd009b46529a7e0b",
+      "memo": "0x6c56cf8326a07b19c20da54462ff2d"
+    }
   ]
 }

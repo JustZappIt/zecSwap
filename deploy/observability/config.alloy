@@ -23,6 +23,23 @@ loki.source.journal "relayer" {
   forward_to = [loki.process.bridge.receiver]
 }
 
+// The issuer logs little by design: its startup, internal errors and status list reloads.
+loki.source.journal "issuer" {
+  matches    = "_SYSTEMD_UNIT=zecswap-issuer.service"
+  max_age    = "3h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+// The six-hourly refresh of Google's attestation status list, whose failures leave the
+// issuer on an aging list.
+loki.source.journal "issuer_status" {
+  matches    = "_SYSTEMD_UNIT=zecswap-issuer-status.service"
+  max_age    = "12h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
 // PID 1 lifecycle/failure messages use UNIT, rather than _SYSTEMD_UNIT.
 // Include them so exits/OOM/restarts remain visible even when the app cannot log.
 loki.source.journal "maker_systemd" {
@@ -36,6 +53,20 @@ loki.source.journal "relayer_systemd" {
   matches    = "_PID=1 UNIT=zecswap-relayer.service"
   max_age    = "3h"
   labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+loki.source.journal "issuer_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-issuer.service"
+  max_age    = "3h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  forward_to = [loki.process.bridge.receiver]
+}
+
+loki.source.journal "issuer_status_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-issuer-status.service"
+  max_age    = "12h"
+  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
   forward_to = [loki.process.bridge.receiver]
 }
 

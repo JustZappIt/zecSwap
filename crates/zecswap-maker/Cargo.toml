@@ -30,11 +30,15 @@ uuid = "1"
 zcash_address.workspace = true
 zecswap-api = { path = "../zecswap-api", features = ["server"] }
 zecswap-chain = { path = "../zecswap-chain" }
+zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }
 zecswap-core = { path = "../zecswap-core" }
+zecswap-prices = { path = "../zecswap-prices" }
 zeroize.workspace = true
 
 [dev-dependencies]
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
+zecswap-prices = { path = "../zecswap-prices", features = ["stand-in"] }
+base64 = "0.22"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tonic = { version = "0.14", default-features = false, features = ["channel"] }

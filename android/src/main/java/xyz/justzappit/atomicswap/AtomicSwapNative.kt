@@ -114,6 +114,21 @@ internal object AtomicSwapNative {
         deadline: Long,
     ): ByteArray
 
+    @JvmStatic external fun readTokenChallenge(header: String): Array<ByteArray>
+
+    @JvmStatic external fun blindToken(
+        tokenKey: ByteArray,
+        challenge: ByteArray,
+    ): ByteArray
+
+    @JvmStatic external fun finalizeToken(
+        pending: ByteArray,
+        tokenKey: ByteArray,
+        blindSignature: ByteArray,
+    ): ByteArray
+
+    @JvmStatic external fun tokenAuthorization(token: ByteArray): String
+
     @JvmStatic external fun signRefundPayout(
         seed: ByteArray,
         mainnet: Boolean,

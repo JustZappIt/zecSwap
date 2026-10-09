@@ -123,6 +123,17 @@ impl Settlement {
         Ok(block.header.timestamp)
     }
 
+    /// The timestamp of the block `hash` names; none for a block the node doesn't know, such
+    /// as one a reorganisation dropped.
+    pub async fn block_time(&self, hash: B256) -> Result<Option<u64>, Error> {
+        Ok(self
+            .provider
+            .get_block_by_hash(hash)
+            .await
+            .map_err(Error::contract)?
+            .map(|block| block.header.timestamp))
+    }
+
     /// Ten-block windows also work with providers that cap log ranges on their free tier.
     pub async fn swap_events(&self, from: u64, to: u64) -> Result<Vec<SwapEvent>, Error> {
         if to < from || to - from >= 10 {

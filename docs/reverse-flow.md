@@ -28,11 +28,16 @@ a funding notification nor a reported ZEC transaction is proof that the other si
    The app reads and verifies that share, combines it with its own, and sweeps ZEC home.
    `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
 
-The contract retains its original storage roles: `Swap.maker` is the USDC side and
-`Swap.user` is the ZEC side. For reverse swaps these are the user's auth address and the
-maker's address respectively; the stored shares are likewise reversed. The reverse quote
-keeps the ordinary business meanings of maker and user. Its ID is
-`keccak256(abi.encode(userAuthAddress, makerShare))`.
+The escrow's terms keep the contract's original roles: `Terms.maker` is the USDC side and
+`Terms.user` is the ZEC side. For reverse swaps these are the user's auth address and the
+maker's address respectively; the shares are likewise reversed, and `payoutNote` is zero.
+`Quote::open(userShare).terms()` builds them. The reverse quote keeps the ordinary business
+meanings of maker and user. Its ID is `reverseSwapId`,
+`keccak256(abi.encode(userAuthAddress, makerShare, true))`, which is never a forward swap's
+`keccak256(abi.encode(maker, userShare))`: a maker can't open the forward swap a user verified
+as a reverse escrow, where that user would have no claim after `t0`. The contract stores only
+`hashTerms(terms)`, so every relayer request on the escrow carries `terms` (see
+[Terms hash](#terms-hash-2026-10-06)).
 
 ## Waiting, cancellation, and recovery
 
@@ -198,3 +203,17 @@ and the maker use a fixed 320,000-zatoshi ceiling.
 Android rereads the matching confirmed escrow and current clock immediately before a reverse
 refund reveal. This closes preparation delays, but timely inclusion after sending the secret
 still depends on the relayer, chain availability, and the lock window.
+
+## Terms hash (2026-10-06)
+
+The contract keeps only `keccak256(abi.encode(terms))` of each swap's `Terms` (maker, token,
+amount, makerKey, userKey, user, t0, t1, payoutNote) and reverts `WrongTerms` on any call whose
+terms hash otherwise. `getSwap` returns the hash, stage, `paidOut`, both locks and the revealed
+secret; `Opened` still emits the terms. Every call that acts on a swap takes `terms` after the
+id, and every relayer request on a swap carries them as a `terms` object: `/v1/reverse/ready`,
+`/lock-refund`, `/refund` (and its nested payout), `/refund-payout` and `/rescue`. The relayer
+reads the escrow against them before sending and rejects a mismatch. `/v1/reverse/fund` is
+unchanged: `openReverse` takes the same `ReverseOpen` and stores the hash. Read an escrow by
+comparing `getSwap(id).termsHash` with the hash of the terms the quote and the user's share
+give; a mismatch means it is not the quoted escrow. This changes the ABI: ship the contract,
+maker, relayer, native library and wallet together for a new deployment.

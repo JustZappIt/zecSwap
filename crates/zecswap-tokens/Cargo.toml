@@ -1,0 +1,28 @@
+[package]
+name = "zecswap-tokens"
+description = "Privacy Pass tokens: limits per device that never say which device a request came from"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+server = ["dep:axum", "dep:rusqlite", "dep:serde", "dep:tracing", "dep:zecswap-api"]
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", optional = true }
+base64 = "0.22"
+blind-rsa-signatures = { version = "0.18", default-features = false }
+rand.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+sha2 = "0.10"
+tracing = { version = "0.1", optional = true }
+zecswap-api = { path = "../zecswap-api", features = ["server"], optional = true }
+
+[dev-dependencies]
+hex = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tower = { version = "0.5", features = ["util"] }

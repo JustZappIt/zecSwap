@@ -26,6 +26,37 @@ test("forwards signed payloads without changing bytes, paths or status", async (
   assert.deepEqual(await response.json(), { code: "rejected", error: "expired" });
 });
 
+test("only the headers the services read reach the origin", async () => {
+  const request = new Request("https://example.workers.dev/maker/v1/quote/0x01/accept", {
+    method: "POST",
+    headers: {
+      authorization: "PrivateToken token=abc",
+      "content-type": "application/json",
+      "cf-connecting-ip": "203.0.113.7",
+      "x-forwarded-for": "203.0.113.7",
+      "x-real-ip": "203.0.113.7",
+      "cf-ipcountry": "NZ",
+      "user-agent": "okhttp/4.12.0",
+    },
+    body: "{}",
+  });
+  const response = await proxy(request, {
+    async fetch(input) {
+      assert.ok(input instanceof Request);
+      assert.deepEqual(
+        [...input.headers],
+        [
+          ["authorization", "PrivateToken token=abc"],
+          ["content-type", "application/json"],
+        ],
+      );
+      assert.equal(await input.text(), "{}");
+      return new Response(null, { status: 204 });
+    },
+  });
+  assert.equal(response.status, 204);
+});
+
 test("an origin failure is reported without retrying a financial action", async () => {
   let calls = 0;
   const response = await proxy(new Request("https://example.workers.dev/maker/v1/quote"), {
@@ -40,6 +71,17 @@ test("an origin failure is reported without retrying a financial action", async 
     code: "unavailable",
     error: "swap service is temporarily unavailable",
   });
+});
+
+test("the token issuer's routes reach the origin unchanged", async () => {
+  const response = await proxy(new Request("https://example.workers.dev/issuer/v1/token-key"), {
+    async fetch(input) {
+      assert.ok(input instanceof Request);
+      assert.equal(input.url, "http://localhost:8080/issuer/v1/token-key");
+      return Response.json({ issuer: "zecswap-testnet-issuer" });
+    },
+  });
+  assert.equal(response.status, 200);
 });
 
 test("unknown routes never reach the origin", async () => {

@@ -77,13 +77,12 @@ impl Maker {
         links
     }
 
+    /// Reads the receipt of a transaction on one of this maker's swaps, never on another's.
     async fn classify_transaction(&self, scope: &str, event: &SwapEvent) {
-        if matches!(self.store.evm_info(scope, event.transaction_hash), Ok(None))
-            && let Ok(uses_railgun) = self.settlement.uses_railgun(event.transaction_hash).await
-        {
-            let _ = self
-                .store
-                .save_evm_info(scope, event.transaction_hash, uses_railgun);
+        let ours = matches!(self.store.swap(&event.id), Ok(Some(_)))
+            || matches!(self.store.reverse_swap(event.id), Ok(Some(_)));
+        if ours && matches!(self.store.evm_info(scope, event.transaction_hash), Ok(None)) {
+            let _ = self.read_transaction(scope, event.transaction_hash).await;
         }
     }
 
@@ -141,7 +140,7 @@ impl Maker {
             .record_evm_window(scope, from, to, &events, advance)
     }
 
-    async fn transaction_pass(&self) -> Result<u64> {
+    pub(super) async fn transaction_pass(&self) -> Result<u64> {
         let confirmations = self
             .config
             .reverse
@@ -252,26 +251,48 @@ impl Maker {
                     "Ethereum explorer metadata lookup delayed; retrying"
                 );
             }
+            let failure =
+                match tokio::time::timeout(Duration::from_secs(30), self.cost_pass()).await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(super::observer_failure(&error)),
+                    Err(_) => Some("timeout"),
+                };
+            if let Some(failure_kind) = failure {
+                tracing::warn!(
+                    operation = "cost_observer",
+                    failure_kind,
+                    "swap cost recording delayed; retrying"
+                );
+            }
             tokio::time::sleep(Duration::from_secs(15)).await;
         }
     }
 
-    async fn enrich_evm_history(&self) -> Result<()> {
+    /// Fills in what the explorer links, the timeline and swap costs show, once per transaction
+    /// and block, a bounded number of reads a pass: receipts first, the maker's own sends
+    /// before events', then the times of event blocks a reorganisation moved since.
+    pub(super) async fn enrich_evm_history(&self) -> Result<()> {
         let scope = self.transaction_scope();
         let mut remaining = 25;
-        for swap in self.store.monitor_swaps(self.config.timing.t0_after, 500)? {
+        for hash in self.store.unread_transactions(&scope, remaining as usize)? {
+            self.read_transaction(&scope, hash).await?;
+            remaining -= 1;
+        }
+        let mut timed = std::collections::HashSet::new();
+        for swap in self.store.monitor_swaps(500, None)? {
+            if remaining <= 0 {
+                return Ok(());
+            }
             for transaction in self.store.evm_transactions(&scope, swap.id)? {
-                if transaction.uses_railgun.is_none() {
-                    let uses_railgun = self
-                        .settlement
-                        .uses_railgun(transaction.transaction_hash)
-                        .await?;
-                    self.store
-                        .save_evm_info(&scope, transaction.transaction_hash, uses_railgun)?;
-                    remaining -= 1;
-                    if remaining == 0 {
-                        return Ok(());
+                if transaction.block_time.is_none() && timed.insert(transaction.block_hash) {
+                    if let Some(time) = self.settlement.block_time(transaction.block_hash).await? {
+                        self.store
+                            .save_block_time(&scope, transaction.block_hash, time)?;
                     }
+                    remaining -= 1;
+                }
+                if remaining <= 0 {
+                    return Ok(());
                 }
             }
         }

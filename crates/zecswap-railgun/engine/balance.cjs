@@ -7,20 +7,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const memdown = require('memdown');
-const msgpack = require('msgpack-lite');
 const W = require('@railgun-community/wallet');
 const { NetworkName, NETWORK_CONFIG, TXIDVersion } = require('@railgun-community/shared-models');
-const { wallet, Babyjubjub } = require('./engine.cjs');
+const { wallet, shareableViewingKey } = require('./engine.cjs');
 
 const NETWORK = NetworkName.EthereumSepolia;
 const POI_NODE = 'https://ppoi.fdi.network/';
-
-/** What Railgun's view-only wallets are made from: the viewing key and packed spending key. */
-function shareableViewingKey(keys) {
-  const spub = Babyjubjub.packPoint(keys.spendingPublicKey.map(BigInt)).toString('hex');
-  const vpriv = keys.viewingPrivateKey.replace(/^0x/, '');
-  return msgpack.encode({ vpriv, spub }).toString('hex');
-}
 
 /** Runs `refresh` and returns the balances by bucket it reports, all in one pass. */
 function balancesAfter(refresh) {

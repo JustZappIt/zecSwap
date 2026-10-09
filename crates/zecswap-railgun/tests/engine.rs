@@ -1,8 +1,8 @@
 //! Known answers from Railgun's engine (`engine/vectors.cjs`): the same seed gives the same
-//! address, and notes the engine builds open here.
+//! address, and notes and transaction outputs the engine builds open here.
 
 use serde::Deserialize;
-use zecswap_railgun::{Keys, ShieldCiphertext, ShieldNote};
+use zecswap_railgun::{Keys, OutputCiphertext, Received, ShieldCiphertext, ShieldNote};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,9 +25,22 @@ struct Note {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Output {
+    receiver: usize,
+    commitment: String,
+    token: String,
+    value: String,
+    ciphertext: [String; 4],
+    blinded_sender_viewing_key: String,
+    memo: String,
+}
+
+#[derive(Deserialize)]
 struct Vectors {
     wallets: Vec<Wallet>,
     notes: Vec<Note>,
+    outputs: Vec<Output>,
 }
 
 fn vectors() -> Vectors {
@@ -73,6 +86,42 @@ fn opens_notes_the_engine_built_for_it_only() {
         for (index, wallet) in vectors.wallets.iter().enumerate() {
             let expected = (index == note.receiver).then(|| bytes(&note.random));
             assert_eq!(keys(wallet).open(&shield), expected);
+        }
+    }
+}
+
+/// Outputs the engine encrypted, a hidden sender's fee and a visible sender's transfer with a
+/// memo: only the receiver reads them, only as the note committed to, and a changed memo or
+/// note word fails the GCM tag.
+#[test]
+fn receives_outputs_the_engine_encrypted_for_it_only() {
+    let vectors = vectors();
+    for output in &vectors.outputs {
+        let ciphertext = OutputCiphertext {
+            ciphertext: output.ciphertext.each_ref().map(|word| bytes(word)),
+            blinded_sender_viewing_key: bytes(&output.blinded_sender_viewing_key),
+            memo: hex::decode(output.memo.trim_start_matches("0x")).unwrap(),
+        };
+        let commitment = bytes(&output.commitment);
+        for (index, wallet) in vectors.wallets.iter().enumerate() {
+            let expected = (index == output.receiver).then(|| Received {
+                token: bytes(&output.token),
+                value: output.value.parse().unwrap(),
+            });
+            assert_eq!(keys(wallet).receive(&commitment, &ciphertext), expected);
+        }
+
+        let receiver = keys(&vectors.wallets[output.receiver]);
+        let mut other_note = commitment;
+        other_note[31] ^= 1;
+        assert_eq!(receiver.receive(&other_note, &ciphertext), None);
+        let mut memo = ciphertext.clone();
+        memo.memo.push(0);
+        assert_eq!(receiver.receive(&commitment, &memo), None);
+        for word in 0..4 {
+            let mut tampered = ciphertext.clone();
+            tampered.ciphertext[word][7] ^= 1;
+            assert_eq!(receiver.receive(&commitment, &tampered), None);
         }
     }
 }

@@ -7,7 +7,7 @@ use light_poseidon::{Poseidon, PoseidonHasher};
 use sha2::{Digest, Sha256, Sha512};
 use zeroize::Zeroizing;
 
-use crate::note::ShieldNote;
+use crate::note::{OutputCiphertext, Received, ShieldNote};
 use crate::{Error, address, babyjubjub};
 
 const SPENDING_PATH: [u32; 4] = [44, 1984, 0, 0];
@@ -77,6 +77,16 @@ impl Keys {
         let random = note.decrypt_random(&self.viewing_key)?;
         (note.npk == note_public_key(&self.receiver.master_public_key, &random)).then_some(random)
     }
+
+    /// What a transaction's output pays this wallet, if it is the note `commitment` and the
+    /// wallet can open it, as Railgun's broadcasters read their fees.
+    pub fn receive(&self, commitment: &[u8; 32], output: &OutputCiphertext) -> Option<Received> {
+        output.open(
+            &self.viewing_key,
+            &self.receiver.master_public_key,
+            commitment,
+        )
+    }
 }
 
 impl Receiver {
@@ -90,6 +100,16 @@ pub(crate) fn note_public_key(master_public_key: &[u8; 32], random: &[u8; 16]) -
     to_bytes(&poseidon(&[
         Fr::from_be_bytes_mod_order(master_public_key),
         Fr::from_be_bytes_mod_order(random),
+    ]))
+}
+
+/// `Poseidon(note public key, token, value)`: the commitment a transaction output adds to the
+/// tree.
+pub(crate) fn note_hash(npk: &[u8; 32], token: &[u8; 32], value: u128) -> [u8; 32] {
+    to_bytes(&poseidon(&[
+        Fr::from_be_bytes_mod_order(npk),
+        Fr::from_be_bytes_mod_order(token),
+        Fr::from(value),
     ]))
 }
 

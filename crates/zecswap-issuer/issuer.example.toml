@@ -1,0 +1,44 @@
+# Signs each genuine device a day's tokens, blind: it learns which devices fetch tokens and how
+# many, never which swaps they pay for. Run it apart from the maker, and keep no request logs.
+# `zecswap-issuer keygen <key>` writes the key and prints its public half, which the maker's
+# `[tokens]` lists. ISSUER_MONITOR_TOKEN in the environment, at least 32 characters, opens
+# GET /v1/monitor to it: the day's totals, never a device.
+
+listen = "127.0.0.1:8789"
+# The issuer name every token's challenge carries; the maker's `[tokens] issuer` repeats it. The
+# app's attested key names it too: changing it makes every install's key count for nothing.
+name = "zecswap-issuer"
+key = "/etc/zecswap-issuer/key.pem"
+data_dir = "/var/lib/zecswap-issuer"
+# Each swap's accept spends one token, and the maker hands it back once the user pays in: this
+# is how many swaps a device may walk away from a day. Tokens are good on their UTC day only,
+# and the allowance resets at 00:00 UTC.
+tokens_per_day = 3
+
+# How a device proves it is a genuine install: its key, made once in the phone's secure hardware
+# and attested by it up to Google's root, signs each request (docs/tokens.md).
+[attestation.android-key]
+# Google's hardware attestation roots: https://android.googleapis.com/attestation/root lists
+# them as PEM; save each one Google currently publishes as a file here. Only these anchor a
+# chain, whatever root a chain carries.
+roots = [
+    "/etc/zecswap-issuer/roots/google-1.pem",
+    "/etc/zecswap-issuer/roots/google-2.pem",
+]
+# Google's attestation status list, saved from https://android.googleapis.com/attestation/status
+# and refreshed at least daily; certificates it lists are refused. The issuer reads it again
+# whenever the file changes, and refuses to start if it can't read it.
+status_list = "/var/lib/zecswap-issuer/attestation-status.json"
+# The app's package: xyz.justzappit.zapp, or xyz.justzappit.zapp.testnet for testnet builds.
+packages = ["xyz.justzappit.zapp"]
+# SHA-256 of the app's signing certificate, hex (`apksigner verify --print-certs`, or Play
+# Console's app signing key): the current one, and the next while rotating.
+signing_digests = ["<64 hex digits>"]
+# "trusted-environment" or "strong-box": where keys must live, at the least.
+min_security_level = "trusted-environment"
+
+# For tests only: instead of the table above,
+#   attestation = "insecure-test"
+#   allow_insecure = true
+# takes the device's word for its id, so it limits nothing. Without `allow_insecure` the issuer
+# refuses to start in that mode.

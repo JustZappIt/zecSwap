@@ -5,57 +5,14 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_core::{Domain, ReverseOpen, signer};
 
-use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, share_from_words, swap_id};
+use super::railgun::{IRelayAdapt, MAX_CALLDATA_BYTES, MAX_TRANSACTIONS, TokenData};
+use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, reverse_swap_id, share_from_words};
 use crate::Error;
 
-pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
-
-sol! {
-    #[sol(rpc)]
-    interface IRelayAdapt {
-        struct G1Point { uint256 x; uint256 y; }
-        struct G2Point { uint256[2] x; uint256[2] y; }
-        struct SnarkProof { G1Point a; G2Point b; G1Point c; }
-        struct CommitmentCiphertext {
-            bytes32[4] ciphertext;
-            bytes32 blindedSenderViewingKey;
-            bytes32 blindedReceiverViewingKey;
-            bytes annotationData;
-            bytes memo;
-        }
-        struct BoundParams {
-            uint16 treeNumber;
-            uint72 minGasPrice;
-            uint8 unshield;
-            uint64 chainID;
-            address adaptContract;
-            bytes32 adaptParams;
-            CommitmentCiphertext[] commitmentCiphertext;
-        }
-        struct TokenData { uint8 tokenType; address tokenAddress; uint256 tokenSubID; }
-        struct Preimage { bytes32 npk; TokenData token; uint120 value; }
-        struct Transaction {
-            SnarkProof proof;
-            bytes32 merkleRoot;
-            bytes32[] nullifiers;
-            bytes32[] commitments;
-            BoundParams boundParams;
-            Preimage unshieldPreimage;
-        }
-        struct Call { address to; bytes data; uint256 value; }
-        struct ActionData { bytes31 random; bool requireSuccess; uint256 minGasLimit; Call[] calls; }
-        struct Ciphertext { bytes32[3] encryptedBundle; bytes32 shieldKey; }
-        struct ShieldRequest { Preimage preimage; Ciphertext ciphertext; }
-        function relay(Transaction[] _transactions, ActionData _actionData) external payable;
-        function shield(ShieldRequest[] _shieldRequests) external;
-        function railgun() external view returns (address);
-    }
-}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FundingPolicy {
@@ -229,7 +186,7 @@ impl FundingPolicy {
             deadline: words.deadline,
         };
         require(
-            id == swap_id(words.user, &terms.maker_share),
+            id == reverse_swap_id(words.user, &terms.maker_share),
             "wrong reverse swap ID",
         )?;
         let signature = open
@@ -242,7 +199,7 @@ impl FundingPolicy {
             "escrow is not authorized by its user",
         )?;
         require(
-            !relay._transactions.is_empty() && relay._transactions.len() <= 16,
+            !relay._transactions.is_empty() && relay._transactions.len() <= MAX_TRANSACTIONS,
             "expected between one and sixteen Railgun transactions",
         )?;
         let nullifiers: Vec<Vec<B256>> = relay
@@ -339,22 +296,19 @@ impl Settlement {
             .ok_or_else(|| Error::Config("read-only funding connection".into()))?;
         let _sending = self.sending.lock().await;
         let terms = &request.terms;
-        if let Some(swap) = self.swap(request.id).await? {
-            let funding = self.reverse_funding(request.id).await?;
-            require(
-                swap.maker == Address::from(terms.user)
-                    && swap.user == Address::from(terms.maker)
-                    && swap.token == Address::from(terms.token)
-                    && swap.amount == terms.amount
-                    && swap.maker_share == terms.user_share
-                    && swap.user_share == terms.maker_share
-                    && swap.t0 == terms.t0
-                    && swap.t1 == terms.t1
-                    && swap.payout_note.is_none()
-                    && funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
-                "existing escrow does not match funding authorization",
-            )?;
-            return Ok(None);
+        let mismatch = "existing escrow does not match funding authorization";
+        match self.swap(request.id, &terms.terms()).await {
+            Ok(Some(_)) => {
+                let funding = self.reverse_funding(request.id).await?;
+                require(
+                    funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
+                    mismatch,
+                )?;
+                return Ok(None);
+            }
+            Ok(None) => {}
+            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),
+            Err(e) => return Err(e.into()),
         }
         require(
             self.now().await? < terms.deadline,
@@ -402,7 +356,7 @@ impl Settlement {
     }
 }
 
-fn erc20(token: &IRelayAdapt::TokenData, address: Address) -> bool {
+fn erc20(token: &TokenData, address: Address) -> bool {
     token.tokenType == 0 && token.tokenAddress == address && token.tokenSubID.is_zero()
 }
 

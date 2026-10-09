@@ -3,27 +3,46 @@
 use std::sync::Arc;
 
 use alloy_primitives::B256;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Router, middleware};
+use axum::{Extension, Router, middleware};
 use tracing::error;
 use zecswap_api::server::{self, Json, Path};
 use zecswap_api::service::{ErrorCode, MakerInfo};
-use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
+use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
+use zecswap_tokens::server::Spend;
 
 use crate::maker::{Maker, MakerError};
 
 pub fn router(maker: Arc<Maker>) -> Router {
+    // A token per swap, spent where spam would cost the maker inventory and gas: the accept.
+    let mut costly = Router::new()
+        .route("/v1/quote/{quote_id}/accept", post(accept))
+        .route("/v1/reverse/quote/{quote_id}/accept", post(accept_reverse));
+    if let Some(gate) = maker.tokens() {
+        costly = costly.route_layer(middleware::from_fn_with_state(
+            gate,
+            zecswap_tokens::server::require,
+        ));
+    }
+    let monitor = Router::new()
+        .route("/v1/monitor", get(monitor))
+        .route("/v1/monitor/swaps/{swap_id}", get(monitor_swap))
+        .route("/v1/monitor/economics", get(economics))
+        .route_layer(middleware::from_fn_with_state(
+            maker.monitor_token(),
+            server::require_monitor,
+        ));
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/info", get(info))
-        .route("/v1/monitor", get(monitor))
+        .merge(monitor)
         .route("/v1/quote", post(quote))
-        .route("/v1/quote/{quote_id}/accept", post(accept))
         .route("/v1/reverse/quote", post(reverse_quote))
-        .route("/v1/reverse/quote/{quote_id}/accept", post(accept_reverse))
+        .merge(costly)
+        .route("/v1/swaps/{swap_id}", get(status))
         .route("/v1/reverse/swaps/{swap_id}", get(reverse_status))
         .fallback(server::not_found)
         .method_not_allowed_fallback(server::method_not_allowed)
@@ -40,24 +59,43 @@ async fn info(State(maker): State<Arc<Maker>>) -> Json<MakerInfo> {
     Json(maker.info())
 }
 
-async fn monitor(State(maker): State<Arc<Maker>>, headers: HeaderMap) -> Response {
-    let authorization = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok());
-    if !maker.monitor_authorized(authorization) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
+async fn monitor(State(maker): State<Arc<Maker>>) -> Response {
     match maker.monitor_snapshot().await {
         Ok(snapshot) => axum::Json(snapshot).into_response(),
-        Err(e) => {
-            error!("monitor snapshot: {e:#}");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "monitoring temporarily unavailable",
-            )
-                .into_response()
-        }
+        Err(e) => monitor_unavailable(e),
     }
+}
+
+async fn monitor_swap(State(maker): State<Arc<Maker>>, Path(swap_id): Path<B256>) -> Response {
+    match maker.monitor_swap(swap_id) {
+        Ok(Some(swap)) => axum::Json(swap).into_response(),
+        Ok(None) => MakerError::UnknownSwap.into_response(),
+        Err(e) => monitor_unavailable(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct EconomicsQuery {
+    since: Option<u64>,
+}
+
+async fn economics(
+    State(maker): State<Arc<Maker>>,
+    Query(query): Query<EconomicsQuery>,
+) -> Response {
+    match maker.economics(query.since) {
+        Ok(snapshot) => axum::Json(snapshot).into_response(),
+        Err(e) => monitor_unavailable(e),
+    }
+}
+
+fn monitor_unavailable(e: anyhow::Error) -> Response {
+    error!("monitor snapshot: {e:#}");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "monitoring temporarily unavailable",
+    )
+        .into_response()
 }
 
 #[tracing::instrument(skip_all, fields(operation = "reverse_quote"), err(level = "warn"))]
@@ -71,9 +109,23 @@ async fn reverse_quote(
 async fn accept_reverse(
     State(maker): State<Arc<Maker>>,
     Path(quote_id): Path<B256>,
+    spend: Option<Extension<Spend>>,
     Json(acceptance): Json<Acceptance>,
 ) -> Result<Json<Accepted>, MakerError> {
-    Ok(Json(maker.accept_reverse(quote_id, acceptance).await?))
+    let spend = spend.as_ref().map(|Extension(spend)| spend);
+    Ok(Json(
+        maker.accept_reverse(quote_id, acceptance, spend).await?,
+    ))
+}
+
+async fn status(
+    State(maker): State<Arc<Maker>>,
+    Path(swap_id): Path<B256>,
+) -> Result<Json<Status>, MakerError> {
+    maker
+        .swap_status(swap_id)?
+        .map(Json)
+        .ok_or(MakerError::UnknownSwap)
 }
 
 #[tracing::instrument(skip_all, fields(operation = "reverse_status", %swap_id), err(level = "warn"))]
@@ -99,9 +151,11 @@ async fn quote(
 async fn accept(
     State(maker): State<Arc<Maker>>,
     Path(quote_id): Path<B256>,
+    spend: Option<Extension<Spend>>,
     Json(acceptance): Json<Acceptance>,
 ) -> Result<Json<Accepted>, MakerError> {
-    Ok(Json(maker.accept(quote_id, acceptance).await?))
+    let spend = spend.as_ref().map(|Extension(spend)| spend);
+    Ok(Json(maker.accept(quote_id, acceptance, spend).await?))
 }
 
 impl IntoResponse for MakerError {

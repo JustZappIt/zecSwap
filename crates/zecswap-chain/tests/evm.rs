@@ -5,10 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use alloy::node_bindings::Anvil;
+use zecswap_chain::Error;
 use zecswap_chain::evm::{
-    Address, OpenRequest, PrivateKeySigner, Settlement, Stage, U256, deploy, swap_id,
+    Address, PrivateKeySigner, Settlement, Stage, U256, deploy, reverse_swap_id, swap_id,
 };
-use zecswap_core::{Domain, NetworkType, derive_maker_share, derive_user_keys};
+use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 
 #[tokio::test]
 async fn a_send_that_fails_leaves_no_nonce_gap() {
@@ -71,33 +72,40 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     let note = wallet.note(&keys.note_entropy).unwrap();
     let e = derive_maker_share(&[9; 32], 0).unwrap();
     let now = maker.now().await.unwrap();
-    maker
-        .open(&OpenRequest {
-            token,
-            amount: 1_000_000,
-            maker_share: &e.public(),
-            user_share: &keys.share.public(),
-            user: keys.auth.address().into(),
-            t0: now + 3_600,
-            t1: now + 7_200,
-            payout_note: Some(note.commitment().into()),
-        })
-        .await
-        .unwrap();
+    let terms = Terms {
+        maker: maker_account.into(),
+        token: token.into(),
+        amount: 1_000_000,
+        maker_share: e.public(),
+        user_share: keys.share.public(),
+        user: keys.auth.address(),
+        t0: now + 3_600,
+        t1: now + 7_200,
+        payout_note: note.commitment(),
+    };
+    maker.open(&terms).await.unwrap();
     let id = swap_id(maker_account, &keys.share.public());
-    maker.ready(id).await.unwrap();
+    maker.ready(id, &terms).await.unwrap();
 
     let user = Settlement::read_only(&url, contract).unwrap();
     let swap = user
-        .swap(id)
+        .swap(id, &terms)
         .await
         .unwrap()
-        .expect("the swap is keyed as in Rust");
+        .expect("the swap is keyed, and its terms hashed, as in Rust");
     assert_eq!(swap.user, Address::from(keys.auth.address()));
     assert_eq!(swap.payout_note, Some(note.commitment().into()));
+    let other_payee = Terms {
+        user: [0x77; 20],
+        ..terms.clone()
+    };
+    assert!(matches!(
+        user.swap(id, &other_payee).await,
+        Err(Error::WrongTerms(wrong)) if wrong == id
+    ));
     assert!(user.railgun_accepts(token).await.unwrap());
     assert!(
-        user.ready(id).await.is_err(),
+        user.ready(id, &terms).await.is_err(),
         "a read-only connection sends nothing"
     );
 
@@ -109,17 +117,20 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     let deadline = user.now().await.unwrap() + 60;
     let lock = keys.auth.sign(&domain.lock_claim(&id.0, deadline));
     relayer
-        .lock_claim_with_sig(id, deadline, &lock)
+        .lock_claim_with_sig(id, &terms, deadline, &lock)
         .await
         .unwrap();
-    relayer.claim(id, &keys.share).await.unwrap();
+    relayer.claim(id, &terms, &keys.share).await.unwrap();
     let fee = 20_000;
     let payout = keys
         .auth
         .sign(&domain.payout(&id.0, &relayer_account.into(), fee));
-    let tx = relayer.payout(id, &note, fee, &payout).await.unwrap();
+    let tx = relayer
+        .payout(id, &terms, &note, fee, &payout)
+        .await
+        .unwrap();
 
-    let swap = user.swap(id).await.unwrap().unwrap();
+    let swap = user.swap(id, &terms).await.unwrap().unwrap();
     assert_eq!(swap.stage, Stage::Claimed);
     assert!(swap.paid_out);
     let shielded = user.shielded(tx).await.unwrap();
@@ -230,8 +241,9 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 .unwrap();
             assert!(receipt.status());
         }
-        let id = swap_id(keys.auth.address().into(), &e.public());
-        let chain = maker.swap(id).await.unwrap().unwrap();
+        let id = reverse_swap_id(keys.auth.address().into(), &e.public());
+        let escrow = terms.terms();
+        let chain = maker.swap(id, &escrow).await.unwrap().unwrap();
         assert_eq!(chain.maker_share, keys.share.public());
         assert_eq!(chain.user_share, e.public());
         assert_eq!(
@@ -250,23 +262,26 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(maker.confirmed_swap(id, 1).await.unwrap(), Some(chain));
+        assert_eq!(
+            maker.confirmed_swap(id, &escrow, 1).await.unwrap(),
+            Some(chain)
+        );
         let deadline = maker.now().await.unwrap() + 60;
         if index == 0 {
             let signature = keys.auth.sign(&domain.ready(&id.0, deadline));
             relay
-                .ready_with_sig(id, deadline, &signature)
+                .ready_with_sig(id, &escrow, deadline, &signature)
                 .await
                 .unwrap();
-            maker.lock_claim(id).await.unwrap();
-            maker.claim(id, &e).await.unwrap();
+            maker.lock_claim(id, &escrow).await.unwrap();
+            maker.claim(id, &escrow, &e).await.unwrap();
             assert_eq!(
                 maker.balance_of(maker_address, token).await.unwrap(),
                 terms.amount
             );
             assert_eq!(
                 maker
-                    .swap(id)
+                    .swap(id, &escrow)
                     .await
                     .unwrap()
                     .unwrap()
@@ -279,23 +294,23 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
         } else {
             let signature = keys.auth.sign(&domain.lock_refund(&id.0, deadline));
             relay
-                .lock_refund_with_sig(id, deadline, &signature)
+                .lock_refund_with_sig(id, &escrow, deadline, &signature)
                 .await
                 .unwrap();
-            relay.refund(id, &keys.share).await.unwrap();
+            relay.refund(id, &escrow, &keys.share).await.unwrap();
             let fee = 20_000;
             let signature =
                 keys.auth
                     .sign(&domain.refund_payout(&id.0, &relay_address.into(), fee));
             let tx = relay
-                .refund_payout(id, &note, fee, &signature)
+                .refund_payout(id, &escrow, &note, fee, &signature)
                 .await
                 .unwrap();
             let notes = maker.shielded(tx).await.unwrap();
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0].value + notes[0].fee, terms.amount - fee);
             assert!(wallet.open(&notes[0].note).is_some());
-            assert!(maker.swap(id).await.unwrap().unwrap().paid_out);
+            assert!(maker.swap(id, &escrow).await.unwrap().unwrap().paid_out);
         }
     }
 }

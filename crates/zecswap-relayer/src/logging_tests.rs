@@ -30,10 +30,16 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         config: Config {
             evm_rpc: "http://127.0.0.1:1".into(),
             contract,
+            token: Address::repeat_byte(4),
+            maker: Address::repeat_byte(5),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
+            fee_gas: 0,
+            providers: vec![],
+            fee_margin_bps: 0,
             claim_margin: 30,
             reverse_funding: None,
+            railgun_sends: None,
         },
         account: Address::repeat_byte(2),
         domain: Domain {
@@ -41,17 +47,39 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             contract: contract.into(),
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
+        monitor: crate::monitor::Monitor::new(MonitorToken::default()),
+        sends: None,
+        pricing: None,
+        history: None,
     };
     let swap_id = B256::repeat_byte(0xab);
     let secret = B256::repeat_byte(0xcd);
     let signature = alloy_primitives::FixedBytes::<65>::repeat_byte(0xef);
     let note = B256::repeat_byte(0x98);
+    let share = |nonce| {
+        zecswap_core::derive_maker_share(&[1; 32], nonce)
+            .unwrap()
+            .public()
+    };
+    let terms = zecswap_api::Terms {
+        maker: Address::repeat_byte(3),
+        token: Address::repeat_byte(4),
+        amount: 1,
+        maker_key: share(0),
+        user_key: share(1),
+        user: Address::repeat_byte(5),
+        t0: 1,
+        t1: 2,
+        payout_note: B256::ZERO,
+    };
     let result = relayer
         .refund_reverse(Refund {
             swap_id,
+            terms: terms.clone(),
             secret,
             payout: Payout {
                 swap_id: B256::repeat_byte(0x12),
+                terms,
                 fee: 1,
                 signature,
                 note: Note {

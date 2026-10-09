@@ -13,6 +13,10 @@ pub enum ErrorCode {
     Internal,
     NotFound,
     MethodNotAllowed,
+    /// Spend a token from the issuer the `WWW-Authenticate` challenge names (RFC 9577).
+    TokenRequired,
+    /// A note the transaction spends is spent, or a transaction already sent spends it.
+    AlreadySpent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,4 +43,7 @@ pub struct MakerInfo {
     pub token: Address,
     pub zcash_network: ZcashNetwork,
     pub reverse_enabled: bool,
+    /// Where accepts take tokens, the key the maker hands them back under (base64url SPKI):
+    /// one for everyone, which wallets pin.
+    pub token_return_key: Option<String>,
 }
