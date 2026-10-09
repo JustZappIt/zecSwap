@@ -15,7 +15,7 @@ use zecswap_client::{MakerApi, Paid, RelayerApi, Route, User, UserSwap};
 use zecswap_core::derive_user_keys;
 use zecswap_maker::Status;
 
-use crate::env::{Env, MakerNode, Needs, RELAYER_FEE, Zcash};
+use crate::env::{Env, MAX_RELAYER_FEE, MakerNode, Needs, RELAYER_FEE, Zcash};
 
 /// Paid to an account, on any chain.
 const ACCOUNT: [&str; 6] = [
@@ -235,7 +235,7 @@ impl Player {
         let (settlement, route) = if pays_into_railgun(name) {
             let route = Route::Railgun {
                 relayer: RelayerApi::new(env.relayer_url.clone())?,
-                max_fee: RELAYER_FEE.into(),
+                max_fee: MAX_RELAYER_FEE,
             };
             (Settlement::read_only(&env.evm_rpc, env.contract)?, route)
         } else {
@@ -357,16 +357,17 @@ impl Player {
         let [shielded] = notes.as_slice() else {
             bail!("the payout shielded {} notes", notes.len());
         };
-        let before_fees = swap.quote.amount - u128::from(RELAYER_FEE);
+        // The relayer's fee is its floor, or, priced by gas, what its terms quoted.
+        let fee = swap.quote.amount - paid.amount;
         ensure!(
             shielded.note == self.user.payout_note(swap.index)?,
             "the payout went to another note"
         );
         ensure!(
             shielded.token == self.env.token
-                && paid.amount == before_fees
-                && shielded.value + shielded.fee == before_fees,
-            "Railgun took {} + {} of {}, expected {before_fees}",
+                && (u128::from(RELAYER_FEE)..=MAX_RELAYER_FEE).contains(&fee)
+                && shielded.value + shielded.fee == paid.amount,
+            "Railgun took {} + {} of {} after a relayer fee of {fee}",
             shielded.value,
             shielded.fee,
             paid.amount

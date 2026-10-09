@@ -3,19 +3,18 @@
 //! again never sends twice, and a proof whose notes an earlier send spends is told so. Once it
 //! mines, what it cost and earned is recorded beside it, for the monitor.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, B256};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Serialize;
 use tracing::warn;
 use zecswap_api::relayer::{RailgunTransact, Sent};
 use zecswap_chain::evm::railgun::{SendError, SendPolicy, Signed, Status};
-use zecswap_prices::{Asset, Feed, Keys as PriceKeys, Provider};
+use zecswap_prices::Asset;
 use zecswap_railgun::Keys;
 
 use crate::{Relayer, RelayerError, Result};
@@ -29,14 +28,10 @@ const REBROADCAST_AFTER: u64 = 60;
 const UNMINED_RECHECK: u64 = 600;
 /// The most sends one export carries; older ones need a later `since`.
 const LEDGER_LIMIT: usize = 1000;
-/// How long a gas rate the relayer quoted is honored: time enough to prove a send with it and post.
-pub(crate) const FEE_VALIDITY: u64 = 600;
 
 pub(crate) struct Sends {
     pub(crate) policy: SendPolicy,
     pub(crate) keys: Keys,
-    /// Where sends are priced by their gas as well.
-    pub(crate) pricing: Option<GasPricing>,
     journal: Journal,
     /// One send at a time, so a post repeated while the first runs finds it recorded.
     one_at_a_time: tokio::sync::Mutex<()>,
@@ -63,16 +58,10 @@ enum Fate {
 }
 
 impl Sends {
-    pub(crate) fn open(
-        policy: SendPolicy,
-        keys: Keys,
-        pricing: Option<GasPricing>,
-        journal: &Path,
-    ) -> anyhow::Result<Self> {
+    pub(crate) fn open(policy: SendPolicy, keys: Keys, journal: &Path) -> anyhow::Result<Self> {
         Ok(Self {
             policy,
             keys,
-            pricing,
             journal: Journal::open(journal)?,
             one_at_a_time: tokio::sync::Mutex::new(()),
             unmined: Mutex::default(),
@@ -93,72 +82,8 @@ impl Sends {
     }
 }
 
-/// The fee's gas-based part: ETH priced in the relayer's USDC, the margin on top, as the rate
-/// Railgun's broadcasters quote.
-pub(crate) struct GasPricing {
-    feed: Feed,
-    margin_bps: u32,
-    /// Each rate quoted within `FEE_VALIDITY`, oldest first, with when it last was.
-    quoted: Mutex<VecDeque<(u64, u128)>>,
-}
-
-impl GasPricing {
-    pub(crate) fn new(
-        providers: &[Provider],
-        keys: &PriceKeys,
-        margin_bps: u32,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            feed: Feed::new(providers, keys, &[Asset::Eth, Asset::Usdc], &[], 60, 300)?,
-            margin_bps,
-            quoted: Mutex::default(),
-        })
-    }
-
-    /// The rate now, unquoted: USDC base units per 10^18 wei of gas (per ETH), the margin
-    /// included.
-    fn rate(&self, now: u64) -> Option<u128> {
-        let prices = self.feed.fresh(now)?;
-        let usdc_per_eth = prices
-            .usd(Asset::Eth)?
-            .checked_div(prices.usd(Asset::Usdc)?)?;
-        let margin = Decimal::from(10_000 + self.margin_bps) / Decimal::from(10_000);
-        (usdc_per_eth * Decimal::from(1_000_000) * margin)
-            .trunc()
-            .to_u128()
-            .filter(|rate| *rate > 0)
-    }
-
-    /// The rate now, quoted: a proof made with it is held to it for `FEE_VALIDITY`.
-    pub(crate) async fn quote(&self, now: u64) -> Option<u128> {
-        self.feed.refresh().await;
-        let rate = self.rate(now)?;
-        let mut quoted = self.quoted.lock().unwrap();
-        quoted.retain(|(at, _)| now.saturating_sub(*at) < FEE_VALIDITY);
-        match quoted.iter_mut().find(|(_, quote)| *quote == rate) {
-            Some(entry) => entry.0 = now,
-            None => quoted.push_back((now, rate)),
-        }
-        Some(rate)
-    }
-
-    /// The rate a send posted now is held to: the lowest quoted within `FEE_VALIDITY`, now's
-    /// included, so a proof made from any of those terms is taken. None if gas can't be priced
-    /// now and nothing was quoted since.
-    async fn honored(&self, now: u64) -> Option<u128> {
-        let current = self.quote(now).await;
-        let quoted = self.quoted.lock().unwrap();
-        quoted
-            .iter()
-            .filter(|(at, _)| now.saturating_sub(*at) < FEE_VALIDITY)
-            .map(|(_, rate)| *rate)
-            .chain(current)
-            .min()
-    }
-}
-
 /// Whether `paid` covers `gas` at `gas_price` wei, at `rate` token base units per 10^18 wei.
-fn covers(paid: u128, rate: Option<u128>, gas: u64, gas_price: u128) -> bool {
+pub(crate) fn covers(paid: u128, rate: Option<u128>, gas: u64, gas_price: u128) -> bool {
     let Some(rate) = rate else {
         return true;
     };
@@ -325,12 +250,12 @@ impl Relayer {
             chain_id: self.domain.chain_id,
             token: sends.policy.token,
             fee: sends.policy.fee.to_string(),
-            fee_per_unit_gas: sends
+            fee_per_unit_gas: self
                 .pricing
                 .as_ref()
                 .and_then(|pricing| pricing.rate(generated_at))
                 .map(|rate| rate.to_string()),
-            fee_margin_bps: sends.pricing.as_ref().map(|pricing| pricing.margin_bps),
+            fee_margin_bps: self.pricing.as_ref().map(|pricing| pricing.margin_bps),
             max_gas_limit: sends.policy.max_gas_limit,
             max_gas_price_wei: sends.policy.max_gas_price_wei.to_string(),
             limit: LEDGER_LIMIT,
@@ -354,8 +279,13 @@ impl Relayer {
             .policy
             .decode(chain_id, request.to, request.value, request.data)
             .map_err(refused)?;
-        let rate = match &sends.pricing {
-            Some(pricing) => Some(pricing.honored(now()).await.ok_or(RelayerError::Unpriced)?),
+        let rate = match &self.pricing {
+            Some(pricing) => Some(
+                pricing
+                    .honored_rate(now())
+                    .await
+                    .ok_or(RelayerError::Unpriced)?,
+            ),
             None => None,
         };
         let _one = sends.one_at_a_time.lock().await;
@@ -706,7 +636,7 @@ fn entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
     })
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock is after 1970")

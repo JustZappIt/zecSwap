@@ -28,6 +28,11 @@ pub(crate) const NOTE_ZAT: u64 = 300_000;
 const INVENTORY: u128 = 1_000_000_000;
 /// What the relayer keeps from each Railgun payout: 0.02 of the test token.
 pub(crate) const RELAYER_FEE: u64 = 20_000;
+/// The most a wallet lets the relayer keep: its fee priced by gas stays under it on a fork.
+pub(crate) const MAX_RELAYER_FEE: u128 = 500_000;
+/// The gas a payout's fee pays for in the suite: small, so the fee priced by gas on a fork's
+/// 1 gwei stays well under the swaps' one token, yet over the floor.
+const RELAYER_FEE_GAS: u64 = 20_000;
 /// What a private send or withdrawal pays the relayer, in a fee note: 0.25 of the test token.
 pub(crate) const SEND_FEE: u64 = 250_000;
 /// The highest gas price the relayer pays for one, which the proofs' minimum may not exceed.
@@ -736,17 +741,18 @@ async fn start_relayer(
         maker: settings.funder.address(),
         listen: "127.0.0.1:0".parse().expect("socket address"),
         fee: RELAYER_FEE,
+        fee_gas: RELAYER_FEE_GAS,
+        // With an Alchemy key in the environment, fees are priced by gas as well.
+        providers: std::env::var("ALCHEMY_API_KEY")
+            .is_ok()
+            .then_some(zecswap_prices::Provider::Alchemy)
+            .into_iter()
+            .collect(),
+        fee_margin_bps: 1_000,
         claim_margin: 3 * 60,
         reverse_funding: None,
         railgun_sends: sends.map(|(_, journal)| zecswap_relayer::RailgunSendsConfig {
             fee: SEND_FEE,
-            // With an Alchemy key in the environment, sends are priced by their gas as well.
-            providers: std::env::var("ALCHEMY_API_KEY")
-                .is_ok()
-                .then_some(zecswap_prices::Provider::Alchemy)
-                .into_iter()
-                .collect(),
-            fee_margin_bps: 1_000,
             max_gas_limit: SEND_GAS_LIMIT,
             max_gas_price_wei: SEND_MAX_GAS_PRICE,
             journal: settings.work_dir.join(journal),
@@ -821,6 +827,7 @@ fn pricing() -> Pricing {
         spread_bps: 100,
         unit: 1_000_000,
         max_units: 20,
+        costs: None,
     }
 }
 

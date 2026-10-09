@@ -28,6 +28,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
         tokens: None,
         telegram: crate::telegram::Telegram::new(None, None).unwrap(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
+        quote_gas_price: Default::default(),
         monitoring: monitoring::Monitoring::new(Default::default()),
         inventory: None,
         account: key.address(),
@@ -130,6 +131,7 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
                 amount: 1234567,
                 deposit_zat: 100001,
                 expires_at: 2000,
+                network_cost: None,
             },
             user: Address::repeat_byte(2),
             refund_note: B256::repeat_byte(3),
@@ -1087,6 +1089,53 @@ async fn a_reverted_send_is_costed_with_its_swap() {
     }
 }
 
+/// Where the maker charges its network cost, a quote charges its gas at the chain's gas price
+/// now, with its Zcash fee, at the market prices of the moment, and says what it charged.
+#[tokio::test]
+async fn a_quote_charges_the_makers_network_cost_at_the_chains_gas_price() {
+    use crate::pricing::{Costs, MarketConfig};
+    use zecswap_prices::{Provider, stand_in};
+
+    let Some((_anvil, _dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    let prices = stand_in::start(StatusCode::OK).await;
+    maker.config.pricing = crate::pricing::Pricing {
+        market: Some(MarketConfig {
+            token_decimals: 6,
+            refresh_seconds: 60,
+            max_age_seconds: 300,
+            providers: vec![Provider::CoinMarketCap],
+        }),
+        costs: Some(Costs {
+            forward_gas: 400_000,
+            reverse_gas: 350_000,
+            zcash_fee_zat: 10_000,
+            margin_bps: 0,
+        }),
+        unit: 1_000_000,
+        ..maker.config.pricing.clone()
+    };
+    maker.prices = crate::market::PriceBook::new(&maker.config.pricing, &stand_in::keys())
+        .unwrap()
+        .served_by(&prices.url);
+    maker.health.completed();
+    maker.zcash_health.completed();
+    let request = || QuoteRequest {
+        units: 1,
+        payout: Address::repeat_byte(1),
+        payout_note: None,
+    };
+    let quote = maker.quote(request()).await.unwrap();
+    let gas_price = maker.settlement.gas_price().await.unwrap();
+    let priced = maker.prices.quote(unix_now(), Some(gas_price)).unwrap();
+    assert_eq!(quote.network_cost, priced.forward_cost());
+    assert!(quote.network_cost.is_some_and(|cost| cost > 0));
+    let uncharged = priced.policy.terms(1, 0).unwrap();
+    assert_eq!(quote.amount, uncharged.amount);
+    assert!(quote.deposit_zat > uncharged.deposit_zat);
+}
+
 /// Restarted on another account, root secret or, with a reverse swap pending, token, a maker
 /// refuses to run rather than fail every call on its live swaps, cancels included.
 #[tokio::test]
@@ -1129,6 +1178,7 @@ async fn a_maker_refuses_to_start_on_swaps_it_cannot_act_on() {
                     amount: 1,
                     deposit_zat: 1,
                     expires_at: unix_now() + 60,
+                    network_cost: None,
                 },
                 user: Address::repeat_byte(2),
                 refund_note: B256::repeat_byte(3),
@@ -1468,6 +1518,7 @@ async fn a_reverse_swap_hands_its_token_back_once_its_escrow_is_funded() {
                     amount: 1_000_000,
                     deposit_zat: 100_000,
                     expires_at: unix_now() + 60,
+                    network_cost: None,
                 },
                 user: keys.auth.address().into(),
                 refund_note: B256::repeat_byte(5),

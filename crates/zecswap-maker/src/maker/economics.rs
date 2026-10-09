@@ -110,6 +110,7 @@ impl Maker {
                 zec_usd: zec,
                 usdc_usd: usdc,
                 eth_usd: eth.map(|(usd, _)| usd),
+                network_cost: None,
             };
             self.store.record_quote_price(&quote, at, &mark)?;
         }

@@ -42,6 +42,15 @@ pub struct Quote {
     pub deposit_zat: u64,
     /// Unix time until which the maker accepts the quote.
     pub expires_at: u64,
+    /// Token base units of the maker's own gas and Zcash fee on this swap, at the prices of the
+    /// quote: in `depositZat` on top of the amount (ZEC to USDC), or kept from the ZEC paid
+    /// (USDC to ZEC). Absent where the maker charges none.
+    #[serde(
+        default,
+        with = "optional_decimal",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub network_cost: Option<u128>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

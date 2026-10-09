@@ -114,19 +114,27 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   send's journaled bytes, a reverted one earning nothing), at `GET /v1/monitor/sends`; the live
   `railgun-send` checks it. Both value history through `crates/zecswap-prices` (Alchemy's
   five-minute candles). A sponsored send burns about 1.07M gas (~$0.32 at 0.12 gwei, $2.65 at
-  1 gwei), so a fixed fee can't follow gas: with `[railgun_sends] providers` the relayer prices
-  each send by it, as Railgun's broadcasters do. Its terms add `feePerUnitGas` (USDC base units
-  per 10^18 wei, `fee_margin_bps` included) and `feeExpiresAt`; `fee` is now the floor. The app
+  1 gwei), so a fixed fee can't follow gas: with `providers` (top level of the relayer's config)
+  every relayer fee follows it (`src/pricing.rs`). A send's terms add `feePerUnitGas` (USDC base
+  units per 10^18 wei, `fee_margin_bps` included) and `feeExpiresAt`; `fee` is the floor. The app
   prices a send with the SDK's broadcaster estimate and `calculateBroadcasterFeeERC20Amount`,
   never under the floor (`engine/send.cjs`, `priced`); the relayer checks fee × 10^18 ≥ its own
   gas estimate × the gas price it pays × the lowest rate it quoted in ten minutes, and answers
-  `503` while it can't price gas. The shared `crates/zecswap-prices` `Feed` (CoinMarketCap then
-  Alchemy) serves both maker and relayer; its `stand-in` feature is the providers' test double.
-  New tables only, so existing stores and journals open and backfill. Deploy the dashboard first
-  (an older one rejects `source: alchemy`), and add `providers` to the droplet's maker config
-  before its maker runs this build: without it the maker won't start. The app refuses terms
-  whose `fee` is above its pin (`MAX_SEND_FEE`, 0.25 USDC): raise the relayer's floor (to 0.50,
-  the owner's choice) only once an app that prices sends by gas has shipped.
+  `503` while it can't price gas. Swap fees (2026-10-09; the owner wants each swap profitable,
+  with no minimum size): a payout's fee is the larger of `fee` and `fee_gas` (claim lock, claim
+  and payout, 1.65M on Sepolia) at the gas price and rate now, the reverse funding's likewise
+  (`[reverse_funding] fee_gas`, 2.06M); terms quote both with a top-level `feeExpiresAt`, and the
+  relayer takes any fee at or above the lowest it quoted in the hour (`SWAP_FEE_VALIDITY`), or
+  the floor while unpriced, so no claim waits on a price. The maker charges its own gas and Zcash
+  fee in every quote (`[pricing.costs]`: `forward_gas` 412k on Sepolia, `reverse_gas` 362k,
+  `zcash_fee_zat`, `margin_bps`) at the chain's gas price and the quote's prices, on top of the
+  spread; quotes say so (`networkCost`) and `quote_costs` keeps it. Sepolia's test token logs no
+  `Transfer`s, so the ledger reads a relayer's fee from the escrow's `PaidOut`/`Rescued` and a
+  funding's Relay Adapt calldata too (`evm::paid_to`). The shared `crates/zecswap-prices` `Feed`
+  (CoinMarketCap then Alchemy) serves both maker and relayer; its `stand-in` feature is the
+  providers' test double. New tables only, so existing stores and journals open and backfill.
+  Deploy the dashboard first (an older one rejects `source: alchemy`). The app records a swap's
+  relayer fee when it quotes and caps it (`MAX_RELAYER_FEE`); it signs that fee at the claim.
 - Railgun broadcaster (2026-10-08, branch `feature/railgun-broadcaster`): `POST
   /v1/railgun/transact` sends a wallet's own proved `transact` (private send or withdrawal) for
   a fee note to the relayer's 0zk address, read as Railgun's public broadcasters read it

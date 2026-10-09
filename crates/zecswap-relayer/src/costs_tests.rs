@@ -100,7 +100,6 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
     let sends = Sends::open(
         policy,
         Keys::from_seed(&[7; 64], 0),
-        None,
         &dir.path().join("railgun-sends.sqlite"),
     )
     .unwrap();
@@ -163,6 +162,9 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
             maker: Address::repeat_byte(4),
             listen: "127.0.0.1:0".parse().unwrap(),
             fee: 1,
+            fee_gas: 0,
+            providers: vec![],
+            fee_margin_bps: 0,
             claim_margin: 30,
             reverse_funding: None,
             railgun_sends: None,
@@ -175,6 +177,7 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
         settlement,
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: Some(sends),
+        pricing: None,
         history: None,
     };
     relayer.cost_pass().await.unwrap();
@@ -231,51 +234,4 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
         unread["succeeded"].is_null() && unread["gasUsed"].is_null() && unread["kind"].is_null()
     );
     assert_eq!(ledger["fee"], "250000");
-}
-
-/// A send's fee covers its gas at the rate the relayer quoted: a rate stays good for ten minutes
-/// after it was last quoted, so a proof made with it is taken though the price rose since; past
-/// that the current rate holds; and with gas unpriceable and nothing quoted, nothing is sent.
-#[tokio::test]
-async fn a_quoted_rate_is_honored_for_ten_minutes_and_gas_is_never_priced_blind() {
-    use axum::http::StatusCode;
-    use zecswap_prices::stand_in;
-
-    let pricing = |url: &str, providers: &[zecswap_prices::Provider]| GasPricing {
-        feed: Feed::new(
-            providers,
-            &stand_in::keys(),
-            &[Asset::Eth, Asset::Usdc],
-            &[],
-            60,
-            300,
-        )
-        .unwrap()
-        .served_by(url),
-        margin_bps: 1_000,
-        quoted: Mutex::default(),
-    };
-    let up = stand_in::start(StatusCode::OK).await;
-    let priced = pricing(&up.url, &[zecswap_prices::Provider::CoinMarketCap]);
-    let now = now();
-    // ETH at $2,400 over USDC at $0.99, and ten percent: 2,666.67 USDC per ETH of gas.
-    let current = 2_666_666_666;
-    assert_eq!(priced.quote(now).await, Some(current));
-    let lower = 2_000_000_000;
-    priced.quoted.lock().unwrap().push_front((now - 540, lower));
-    assert_eq!(priced.honored(now).await, Some(lower));
-    priced.quoted.lock().unwrap().front_mut().unwrap().0 = now - 660;
-    assert_eq!(priced.honored(now).await, Some(current));
-
-    let down = stand_in::start(StatusCode::SERVICE_UNAVAILABLE).await;
-    let blind = pricing(&down.url, &[zecswap_prices::Provider::CoinMarketCap]);
-    assert_eq!(blind.honored(now).await, None);
-    blind.quoted.lock().unwrap().push_back((now - 120, current));
-    assert_eq!(blind.honored(now).await, Some(current));
-
-    // 1,000,000 gas at 2 gwei is 0.002 ETH: 5,333,333 base units at that rate.
-    let (gas, price) = (1_000_000, 2_000_000_000);
-    assert!(covers(5_333_334, Some(current), gas, price));
-    assert!(!covers(5_333_332, Some(current), gas, price));
-    assert!(covers(1, None, gas, price));
 }

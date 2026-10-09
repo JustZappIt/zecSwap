@@ -35,14 +35,19 @@ impl Maker {
             ));
         }
         self.prices.refresh().await;
+        let gas_price = self.quote_gas_price().await;
         let pricing = self
             .prices
-            .quote(unix_now())
+            .quote(unix_now(), gas_price)
             .ok_or(MakerError::PriceUnavailable)?;
-        let terms = pricing
-            .policy
-            .reverse_terms(request.units)
-            .ok_or_else(|| MakerError::Rejected("amount is outside the quotable range".into()))?;
+        let terms = pricing.reverse_terms(request.units).ok_or_else(|| {
+            MakerError::Rejected(match pricing.reverse_cost() {
+                Some(cost) if (1..=self.config.pricing.max_units).contains(&request.units) => {
+                    format!("the amount does not cover the swap's network cost of {cost}")
+                }
+                _ => "amount is outside the quotable range".into(),
+            })
+        })?;
         let zcash = self.zcash.lock().await;
         let available = zcash.wallet()?.funds(*account)?.spendable;
         if available
@@ -78,6 +83,7 @@ impl Maker {
                     amount: terms.amount,
                     deposit_zat: terms.deposit_zat,
                     expires_at: unix_now() + self.config.timing.quote_ttl,
+                    network_cost: pricing.reverse_cost(),
                 },
                 user: request.user,
                 refund_note: request.refund_note,
@@ -86,7 +92,10 @@ impl Maker {
                 refund_after: now + config.refund_after,
             })
         })?;
-        self.record_quote_mark(&quote.terms.quote_id.0, pricing.mark());
+        self.record_quote_mark(
+            &quote.terms.quote_id.0,
+            pricing.mark(pricing.reverse_cost()),
+        );
         Ok(quote)
     }
 

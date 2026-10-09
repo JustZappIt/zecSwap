@@ -67,6 +67,8 @@ pub struct Maker {
     inventory: Option<(AccountUuid, UnifiedSpendingKey)>,
     monitoring: monitoring::Monitoring,
     prices: crate::market::PriceBook,
+    /// The gas price quotes last charged the maker's network cost at, and when it was read.
+    quote_gas_price: std::sync::Mutex<Option<(u64, u128)>>,
     telegram: crate::telegram::Telegram,
     tokens: Option<Arc<Gate>>,
 }
@@ -219,6 +221,7 @@ impl Maker {
             tokens,
             telegram,
             prices,
+            quote_gas_price: std::sync::Mutex::default(),
             monitoring: monitoring::Monitoring::from_env()?,
             inventory,
             store,
@@ -347,14 +350,40 @@ impl Maker {
         self.zcash_health.check()
     }
 
+    /// The gas price a quote charges the maker's network cost at, read at most every fifteen
+    /// seconds; none where quotes charge none, or it can't be read.
+    pub(crate) async fn quote_gas_price(&self) -> Option<u128> {
+        if !self.prices.charges_costs() {
+            return None;
+        }
+        let now = unix_now();
+        let cached = *self.quote_gas_price.lock().unwrap();
+        if let Some((at, price)) = cached
+            && now.saturating_sub(at) < 15
+        {
+            return Some(price);
+        }
+        match self.settlement.gas_price().await {
+            Ok(price) => {
+                *self.quote_gas_price.lock().unwrap() = Some((now, price));
+                Some(price)
+            }
+            Err(e) => {
+                warn!("no gas price to charge quotes at: {e:#}");
+                None
+            }
+        }
+    }
+
     pub async fn quote(&self, request: QuoteRequest) -> Result<Quote, MakerError> {
         self.check_watchtower()?;
         self.prices.refresh().await;
+        let gas_price = self.quote_gas_price().await;
         let pricing = self
             .prices
-            .quote(unix_now())
+            .quote(unix_now(), gas_price)
             .ok_or(MakerError::PriceUnavailable)?;
-        let terms = pricing.policy.terms(request.units).ok_or_else(|| {
+        let terms = pricing.terms(request.units).ok_or_else(|| {
             MakerError::Rejected(format!(
                 "{} units is outside the quotable range",
                 request.units
@@ -391,7 +420,7 @@ impl Maker {
             terms.deposit_zat,
             expires_at,
         )?;
-        self.record_quote_mark(&quote_id, pricing.mark());
+        self.record_quote_mark(&quote_id, pricing.mark(pricing.forward_cost()));
         let e = self.maker_share(nonce)?;
         Ok(Quote {
             quote_id: quote_id.into(),
@@ -404,6 +433,7 @@ impl Maker {
             amount: terms.amount,
             deposit_zat: terms.deposit_zat,
             expires_at,
+            network_cost: pricing.forward_cost(),
         })
     }
 

@@ -120,11 +120,22 @@ struct Tokens {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct Costs {
+    forward_gas: u64,
+    reverse_gas: u64,
+    zcash_fee_zat: u64,
+    margin_bps: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Policy {
     price_per_zec: String,
     spread_bps: u16,
     unit: String,
     max_units: u32,
+    /// The maker's own gas and Zcash fee each quote charges, at the prices of the moment.
+    costs: Option<Costs>,
     quote_ttl_seconds: u64,
     tick_seconds: u64,
     stale_after_seconds: u64,
@@ -250,6 +261,12 @@ impl Maker {
                 spread_bps: self.config.pricing.spread_bps,
                 unit: self.config.pricing.unit.to_string(),
                 max_units: self.config.pricing.max_units,
+                costs: self.config.pricing.costs.as_ref().map(|costs| Costs {
+                    forward_gas: costs.forward_gas,
+                    reverse_gas: costs.reverse_gas,
+                    zcash_fee_zat: costs.zcash_fee_zat,
+                    margin_bps: costs.margin_bps,
+                }),
                 quote_ttl_seconds: self.config.timing.quote_ttl,
                 tick_seconds: self.config.timing.tick,
                 stale_after_seconds: self.config.timing.tick.saturating_mul(3),
