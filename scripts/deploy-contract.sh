@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Deploys ZecSwap on Ethereum mainnet paying into Railgun's proxy there, verifies its source on
-# Etherscan, reads its settings back and writes deployments/<name>.json. The contract has no
-# owner: the deploying account keeps no power over it, so any funded account will do.
-#   ETH_RPC_URL=… ETHERSCAN_API_KEY=… scripts/deploy-contract.sh <name> <lock seconds> <wallet>
+# Deploys ZecSwap on Ethereum mainnet paying into Railgun's proxy there, reads its settings back,
+# writes deployments/<name>.json and, given ETHERSCAN_API_KEY, verifies its source on Etherscan.
+# The contract has no owner: the deploying account keeps no power over it, so any funded account
+# will do.
+#   ETH_RPC_URL=… [ETHERSCAN_API_KEY=…] scripts/deploy-contract.sh <name> <lock seconds> <wallet>
 # <wallet> is how forge signs: --interactive (paste a key), --ledger, or --account <keystore>.
 #   scripts/deploy-contract.sh mainnet-beta 1800 --interactive
 set -euo pipefail
@@ -15,7 +16,6 @@ if [ "$#" -eq 0 ]; then
     exit 1
 fi
 : "${ETH_RPC_URL:?set ETH_RPC_URL to an Ethereum mainnet RPC}"
-: "${ETHERSCAN_API_KEY:?set ETHERSCAN_API_KEY to verify the source}"
 
 railgun=0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9
 usdc=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
@@ -96,7 +96,11 @@ with open(path, "w") as f:
 EOF
 echo "Wrote $manifest."
 
-(cd contracts && forge verify-contract "$contract" src/ZecSwap.sol:ZecSwap --chain mainnet \
-    --constructor-args "$(cast abi-encode 'constructor(uint256,address)' "$lock" "$railgun")" \
-    --etherscan-api-key "$ETHERSCAN_API_KEY" --watch 2>&1 | hide_urls) ||
-    echo "Etherscan verification failed; the deployment stands. Retry with forge verify-contract." >&2
+verify=(forge verify-contract "$contract" src/ZecSwap.sol:ZecSwap --chain mainnet
+    --constructor-args "$(cast abi-encode 'constructor(uint256,address)' "$lock" "$railgun")" --watch)
+if [ -z "${ETHERSCAN_API_KEY:-}" ]; then
+    echo "To verify its source later, from contracts/: ETHERSCAN_API_KEY=… ${verify[*]}"
+    exit 0
+fi
+(cd contracts && "${verify[@]}" --etherscan-api-key "$ETHERSCAN_API_KEY" 2>&1 | hide_urls) ||
+    echo "Etherscan verification failed; the deployment stands. Retry: ${verify[*]}" >&2
