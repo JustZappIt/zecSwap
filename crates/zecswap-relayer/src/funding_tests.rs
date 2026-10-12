@@ -46,7 +46,8 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         )
         .unwrap(),
         lock_duration: 600,
-        in_flight: Default::default(),
+        turns: Default::default(),
+        steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         pricing: None,

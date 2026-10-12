@@ -57,7 +57,8 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         )
         .unwrap(),
         lock_duration: 600,
-        in_flight: Default::default(),
+        turns: Default::default(),
+        steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         funding: None,

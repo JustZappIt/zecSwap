@@ -84,17 +84,23 @@ async fn lock_claim(
     Json(request): Json<LockClaim>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.lock_claim(request))
+        .in_turn("lock_claim", request.swap_id, |relayer| async move {
+            relayer.lock_claim(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("lock_claim", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Claim>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.alone(request.swap_id, relayer.claim(request)).await;
-    Ok(Json(relayer.observe("claim", sent)?))
+    let sent = relayer
+        .in_turn("claim", request.swap_id, |relayer| async move {
+            relayer.claim(request).await
+        })
+        .await;
+    Ok(Json(sent?))
 }
 
 async fn payout(
@@ -102,9 +108,11 @@ async fn payout(
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.payout(request))
+        .in_turn("payout", request.swap_id, |relayer| async move {
+            relayer.payout(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("payout", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn rescue(
@@ -112,9 +120,11 @@ async fn rescue(
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.rescue(request))
+        .in_turn("rescue", request.swap_id, |relayer| async move {
+            relayer.rescue(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("rescue", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn ready_reverse(
@@ -122,9 +132,11 @@ async fn ready_reverse(
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.ready_reverse(request))
+        .in_turn("ready_reverse", request.swap_id, |relayer| async move {
+            relayer.ready_reverse(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("ready_reverse", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn fund_reverse(
@@ -132,9 +144,11 @@ async fn fund_reverse(
     Json(request): Json<zecswap_api::reverse::Funding>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.fund_reverse(request))
+        .in_turn("fund_reverse", request.swap_id, |relayer| async move {
+            relayer.fund_reverse(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("fund_reverse", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn lock_reverse_refund(
@@ -142,9 +156,13 @@ async fn lock_reverse_refund(
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.lock_reverse_refund(request))
+        .in_turn(
+            "lock_reverse_refund",
+            request.swap_id,
+            |relayer| async move { relayer.lock_reverse_refund(request).await },
+        )
         .await;
-    Ok(Json(relayer.observe("lock_reverse_refund", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn refund_reverse(
@@ -152,9 +170,11 @@ async fn refund_reverse(
     Json(request): Json<zecswap_api::reverse::Refund>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.refund_reverse(request))
+        .in_turn("refund_reverse", request.swap_id, |relayer| async move {
+            relayer.refund_reverse(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("refund_reverse", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn reverse_refund_payout(
@@ -162,9 +182,13 @@ async fn reverse_refund_payout(
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.reverse_refund_payout(request))
+        .in_turn(
+            "reverse_refund_payout",
+            request.swap_id,
+            |relayer| async move { relayer.reverse_refund_payout(request).await },
+        )
         .await;
-    Ok(Json(relayer.observe("reverse_refund_payout", sent)?))
+    Ok(Json(sent?))
 }
 
 async fn rescue_reverse(
@@ -172,9 +196,11 @@ async fn rescue_reverse(
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
     let sent = relayer
-        .alone(request.swap_id, relayer.rescue_reverse(request))
+        .in_turn("rescue_reverse", request.swap_id, |relayer| async move {
+            relayer.rescue_reverse(request).await
+        })
         .await;
-    Ok(Json(relayer.observe("rescue_reverse", sent)?))
+    Ok(Json(sent?))
 }
 
 /// A repeated post of the same bytes answers with the first send's hash, and is not counted
@@ -211,7 +237,7 @@ impl IntoResponse for RelayerError {
                 ErrorCode::Unavailable,
                 *reason,
             ),
-            RelayerError::Unpriced | RelayerError::Busy => server::error(
+            RelayerError::Unpriced => server::error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::Unavailable,
                 self.to_string(),

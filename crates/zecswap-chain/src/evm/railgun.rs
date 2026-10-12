@@ -506,6 +506,19 @@ impl Settlement {
         Ok(count > nonce)
     }
 
+    /// How many of this account's transactions are mined, and how many it has sent, those still
+    /// waiting to be mined included.
+    pub async fn nonces(&self) -> Result<(u64, u64), Error> {
+        let account = self
+            .account
+            .ok_or_else(|| Error::Config("a read-only connection has no nonce".into()))?;
+        let unavailable = |_| Error::Contract("the account's nonce is unavailable".into());
+        let count = || self.provider.get_transaction_count(account);
+        let mined = count().latest().await.map_err(unavailable)?;
+        let sent = count().pending().await.map_err(unavailable)?;
+        Ok((mined, sent))
+    }
+
     /// Broadcasts `signed` again if its nonce is still the account's next: it then replaces
     /// nothing. Whether it was broadcast.
     pub async fn rebroadcast(&self, signed: &Signed) -> Result<bool, Error> {
