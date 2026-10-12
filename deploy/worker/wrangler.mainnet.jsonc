@@ -19,6 +19,6 @@
   "secrets": { "required": ["TICKET_SECRET"] },
   "vpc_services": [
     // A VPC service of its own: the droplet's tunnel, 127.0.0.1, HTTP port 8090.
-    { "binding": "ORIGIN", "service_id": "<mainnet VPC service id>" }
+    { "binding": "ORIGIN", "service_id": "01a131a5-5a4f-7091-983f-e9265396c33a" }
   ]
 }
