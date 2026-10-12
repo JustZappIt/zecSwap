@@ -2,25 +2,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::{StreamExt, stream};
-use zecswap_chain::evm::{B256, SwapEvent};
+use zecswap_chain::evm::{SwapEvent, SwapEventKind};
 
+use super::notifications::Alert;
 use super::{Maker, unix_now};
 use crate::store::Notification;
-
-pub(super) fn transaction_links(chain_id: u64, hash: B256, uses_railgun: Option<bool>) -> String {
-    let (explorer, railgun) = match chain_id {
-        1 => ("https://etherscan.io", Some("ethereum")),
-        11155111 => ("https://sepolia.etherscan.io", Some("sepolia")),
-        8453 => ("https://basescan.org", None),
-        84532 => ("https://sepolia.basescan.org", None),
-        _ => return format!("Ethereum transaction: {hash}"),
-    };
-    let mut links = format!("{explorer}/tx/{hash}");
-    if let Some(chain) = railgun.filter(|_| uses_railgun == Some(true)) {
-        links.push_str(&format!("\nhttps://railscan.io/{chain}/tx/{hash}"));
-    }
-    links
-}
 
 impl Maker {
     fn log_observed_event(&self, scope: &str, event: &SwapEvent) {
@@ -56,27 +42,6 @@ impl Maker {
         )
     }
 
-    pub(super) fn cached_transaction_links(&self, id: B256) -> String {
-        let transactions = self
-            .store
-            .evm_transactions(&self.transaction_scope(), id)
-            .unwrap_or_default();
-        if transactions.is_empty() {
-            return String::new();
-        }
-        // Keep messages under Telegram's limit; the dashboard holds the complete history.
-        let mut links = String::from("\n\nConfirmed Ethereum transactions (latest 4):");
-        for tx in transactions.iter().rev().take(4).rev() {
-            links.push_str(&format!(
-                "\n{} · block {}\n{}",
-                tx.kind.replace('_', " "),
-                tx.block_number,
-                transaction_links(self.chain_id, tx.transaction_hash, tx.uses_railgun)
-            ));
-        }
-        links
-    }
-
     /// Reads the receipt of a transaction on one of this maker's swaps, never on another's.
     async fn classify_transaction(&self, scope: &str, event: &SwapEvent) {
         let ours = matches!(self.store.swap(&event.id), Ok(Some(_)))
@@ -86,31 +51,23 @@ impl Maker {
         }
     }
 
+    /// A rescue is the one event on a swap with an alert of its own: the rest reach Telegram in
+    /// the swap's start and end.
     fn transaction_alert(&self, event: &SwapEvent) -> Result<Option<Notification>> {
-        if !event.kind.notify() {
+        if event.kind != SwapEventKind::Rescued {
             return Ok(None);
         }
-        let detail = format!(
-            "Ethereum transaction confirmed: {}.\nBlock: {}\n{}",
-            event.kind.label(),
-            event.block_number,
-            transaction_links(
-                self.chain_id,
-                event.transaction_hash,
-                self.store
-                    .evm_info(&self.transaction_scope(), event.transaction_hash)?
-            )
-        );
         let key = format!(
             "{}:evm:{}:{}",
             self.transaction_scope(),
             event.transaction_hash,
             event.log_index
         );
+        let alert = Alert::Returned(event.transaction_hash);
         let notification = if let Some(swap) = self.store.swap(&event.id)? {
-            self.forward_alert(&swap, "transaction", &detail)
+            self.forward_alert(&swap, alert)
         } else if let Some(swap) = self.store.reverse_swap(event.id)? {
-            self.reverse_alert(&swap, "transaction", &detail)
+            self.reverse_alert(&swap, alert)
         } else {
             None
         };
@@ -297,24 +254,5 @@ impl Maker {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explorer_links_follow_the_chain_and_only_use_the_transaction_hash() {
-        let hash = B256::repeat_byte(3);
-        let sepolia = transaction_links(11155111, hash, Some(true));
-        assert!(sepolia.contains(&format!("https://sepolia.etherscan.io/tx/{hash}")));
-        assert!(sepolia.contains(&format!("https://railscan.io/sepolia/tx/{hash}")));
-        let mainnet = transaction_links(1, hash, Some(true));
-        assert!(mainnet.contains("https://etherscan.io/tx/"));
-        assert!(mainnet.contains("https://railscan.io/ethereum/tx/"));
-        assert!(!mainnet.contains("sepolia"));
-        assert!(!transaction_links(999, hash, None).contains("https://"));
-        assert!(!transaction_links(1, hash, Some(false)).contains("railscan"));
     }
 }

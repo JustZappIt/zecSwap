@@ -113,20 +113,8 @@ fn observe(
 }
 
 impl Maker {
-    pub(super) fn zec_link(&self, hash: &str) -> String {
-        format!(
-            "https://{}zecblock.com/tx/{hash}",
-            if self.alert_network() == "testnet" {
-                "testnet."
-            } else {
-                ""
-            }
-        )
-    }
-
     async fn flow_pass(&self) -> Result<()> {
         let scope = self.transaction_scope();
-        let notify_after = self.store.init_flow_observer(&scope, unix_now())?;
         let path = self.config.data_dir.join("flow-wallet.sqlite");
         let mut wallet = Wallet::open(&path, self.config.network())?;
         let mut client = zecswap_chain::zcash::connect(&self.config.lightwalletd).await?;
@@ -192,7 +180,6 @@ impl Maker {
             })
             .collect::<Result<_>>()?;
         tx.commit()?;
-        let mut alerts = Vec::new();
         for (id, observation) in &observations {
             let previous = self.store.flow_observation(&scope, *id).ok().flatten();
             for transaction in &observation.transactions {
@@ -208,43 +195,10 @@ impl Maker {
                         operation = %transaction.kind, chain = "zcash", outcome = %transaction.state,
                         confirmations = transaction.confirmations, "Zcash flow observation changed");
                 }
-                if transaction.state != "confirmed"
-                    || transaction
-                        .block_time
-                        .is_none_or(|time| time < notify_after)
-                {
-                    continue;
-                }
-                let phase = format!("zec:{}:{}", transaction.kind, transaction.txid);
-                let detail = format!(
-                    "ZEC {} confirmed by the server viewing wallet ({} confirmations).{}\n{}",
-                    if transaction.kind == "deposit" {
-                        "deposit"
-                    } else {
-                        "escrow spend"
-                    },
-                    transaction.confirmations,
-                    if observation.deposit_verified {
-                        " Quoted deposit amount verified."
-                    } else {
-                        " Deposit amount is not yet fully verified."
-                    },
-                    self.zec_link(&transaction.txid)
-                );
-                let alert = if let Some(swap) = self.store.swap(id)? {
-                    self.forward_alert(&swap, &phase, &detail)
-                } else if let Some(swap) = self.store.reverse_swap(*id)? {
-                    self.reverse_alert(&swap, &phase, &detail)
-                } else {
-                    None
-                };
-                if let Some(alert) = alert {
-                    alerts.push(alert);
-                }
             }
         }
         self.store
-            .save_flow_observations(&scope, &observations, &alerts, unix_now())?;
+            .save_flow_observations(&scope, &observations, unix_now())?;
         Ok(())
     }
 

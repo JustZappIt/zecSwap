@@ -6,6 +6,9 @@
 #                       /v1/monitor/swaps/{id} and /v1/monitor/economics
 #   ZCASH_CMC_KEY       required when [pricing.market] lists coinmarketcap; server-side only
 #   ALCHEMY_API_KEY     required when [pricing.market] lists alchemy; server-side only
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  optional, both or neither: alerts when a swap starts
+#                       and ends, when Railgun returns a payout, when [gas_alerts] runs low,
+#                       and when an error lasts five minutes
 
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
@@ -86,3 +89,14 @@ tick = 15
 # keys = ["..."]
 # return_key = "/etc/zecswap-maker/return-key.pem"
 # spent = "maker-data/spent-tokens.sqlite"
+
+# Telegram messages when an account's ETH on the settlement chain drops under `low_wei`, and again
+# once it is back at `recovery_wei`. List the maker's account and its relayer's.
+# [gas_alerts]
+# interval_seconds = 300
+#
+# [[gas_alerts.accounts]]
+# label = "Maker"
+# address = "0x..."
+# low_wei = 20000000000000000       # 0.02 ETH
+# recovery_wei = 50000000000000000  # 0.05 ETH

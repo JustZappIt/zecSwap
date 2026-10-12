@@ -3,7 +3,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use zecswap_chain::evm::B256;
 
-use super::{Notification, Store, notifications};
+use super::Store;
 
 pub(super) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS evm_transaction_info (
@@ -17,7 +17,6 @@ pub(super) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS bridge_flow_status (
         scope TEXT PRIMARY KEY, updated_at INTEGER, last_error TEXT
     );
-    CREATE TABLE IF NOT EXISTS bridge_flow_start (scope TEXT PRIMARY KEY, started_at INTEGER NOT NULL);
 ";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -52,18 +51,6 @@ pub(crate) struct FlowStatus {
 }
 
 impl Store {
-    pub(crate) fn init_flow_observer(&self, scope: &str, now: u64) -> Result<u64> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT OR IGNORE INTO bridge_flow_start VALUES (?1,?2)",
-            params![scope, now],
-        )?;
-        Ok(conn.query_row(
-            "SELECT started_at FROM bridge_flow_start WHERE scope = ?1",
-            [scope],
-            |row| row.get(0),
-        )?)
-    }
     pub(crate) fn save_evm_info(&self, scope: &str, hash: B256, uses_railgun: bool) -> Result<()> {
         self.conn().execute(
             "INSERT INTO evm_transaction_info VALUES (?1,?2,?3)
@@ -81,7 +68,6 @@ impl Store {
         &self,
         scope: &str,
         observations: &[(B256, FlowObservation)],
-        alerts: &[Notification],
         now: u64,
     ) -> Result<()> {
         let mut conn = self.conn();
@@ -92,9 +78,6 @@ impl Store {
                 ON CONFLICT(scope,swap_id) DO UPDATE SET observation = excluded.observation",
                 params![scope, id.as_slice(), serde_json::to_string(observation)?],
             )?;
-        }
-        for alert in alerts {
-            notifications::insert(&tx, Some(alert))?;
         }
         tx.execute(
             "INSERT INTO bridge_flow_status VALUES (?1,?2,NULL)
@@ -166,10 +149,8 @@ mod tests {
             confirmed_deposit_zat: "100".into(),
             ..Default::default()
         };
-        assert_eq!(store.init_flow_observer("testnet", 1000).unwrap(), 1000);
-        assert_eq!(store.init_flow_observer("testnet", 2000).unwrap(), 1000);
         store
-            .save_flow_observations("testnet", &[(id, observation)], &[], 1000)
+            .save_flow_observations("testnet", &[(id, observation)], 1000)
             .unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();
@@ -184,7 +165,7 @@ mod tests {
         store.flow_error("testnet").unwrap();
         assert!(store.flow_status("testnet").unwrap().last_error.is_some());
         store
-            .save_flow_observations("testnet", &[(id, FlowObservation::default())], &[], 2000)
+            .save_flow_observations("testnet", &[(id, FlowObservation::default())], 2000)
             .unwrap();
         assert!(
             !store

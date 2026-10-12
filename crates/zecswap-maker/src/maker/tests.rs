@@ -27,6 +27,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     let maker = Maker {
         tokens: None,
         telegram: crate::telegram::Telegram::new(None, None).unwrap(),
+        failing: std::sync::Mutex::default(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         quote_gas_price: Default::default(),
         monitoring: monitoring::Monitoring::new(Default::default()),
@@ -68,7 +69,7 @@ fn acceptance() -> Acceptance {
 }
 
 #[tokio::test]
-async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
+async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
     let (_dir, maker) = maker();
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
     let swap = crate::store::Swap {
@@ -94,11 +95,7 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         token_request: None,
         token_return: None,
     };
-    assert!(
-        maker
-            .forward_alert(&swap, "accepted", "Bridge accepted")
-            .is_none()
-    );
+    assert!(maker.forward_alert(&swap, Alert::Started).is_none());
     maker.telegram =
         crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
     maker
@@ -146,6 +143,22 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         settled: false,
         token_return: None,
     };
+    let claimed = OnChainSwap {
+        stage: Stage::Claimed,
+        maker: maker.account,
+        user: Address::repeat_byte(2),
+        token: Address::repeat_byte(3),
+        amount: 1234567,
+        t0: 3700,
+        t1: 7300,
+        claim_lock_until: 0,
+        refund_lock_until: 0,
+        maker_share: share.public(),
+        user_share: swap.user_share,
+        secret: [0; 32],
+        payout_note: Some(B256::repeat_byte(4)),
+        paid_out: true,
+    };
     let mut keys = Vec::new();
     for (network, name) in [
         (crate::Chain::Testnet, "testnet"),
@@ -155,12 +168,18 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         maker.chain_id = if name == "testnet" { 11155111 } else { 1 };
         let scope = maker.transaction_scope();
         maker.store.init_transaction_cursor(&scope, 90, 99).unwrap();
-        let events: Vec<_> = (0..6)
+        let kinds = [
+            zecswap_chain::evm::SwapEventKind::Opened,
+            zecswap_chain::evm::SwapEventKind::Claimed,
+            zecswap_chain::evm::SwapEventKind::PaidOut,
+            zecswap_chain::evm::SwapEventKind::ClaimLocked,
+        ];
+        let events: Vec<_> = (0..4u8)
             .map(|index| {
                 (
                     zecswap_chain::evm::SwapEvent {
                         id: swap.id,
-                        kind: zecswap_chain::evm::SwapEventKind::Claimed,
+                        kind: kinds[usize::from(index)],
                         transaction_hash: B256::repeat_byte(20 + index),
                         block_number: 100,
                         block_hash: B256::repeat_byte(4),
@@ -174,59 +193,55 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
             .store
             .record_evm_window(&scope, 100, 109, &events, false)
             .unwrap();
-        for (event, _) in &events {
-            maker
-                .store
-                .save_evm_info(&scope, event.transaction_hash, true)
-                .unwrap();
-        }
-        for (event, direction) in [
+        let explorer = if name == "testnet" {
+            "https://sepolia.etherscan.io"
+        } else {
+            "https://etherscan.io"
+        };
+        let dashboard = format!("https://zapp-dashboard-seven.vercel.app/bridge?network={name}");
+        for (event, headline, amounts, short, link) in [
             (
-                maker
-                    .forward_alert(&swap, "accepted", "Bridge accepted")
-                    .unwrap(),
-                "ZEC → USDC",
+                maker.forward_alert(&swap, Alert::Started).unwrap(),
+                format!("ZecSwap {name} · ZEC → USDC started"),
+                "0.00100001 ZEC for 1.234567 USDC",
+                "0x05050505",
+                dashboard.clone(),
             ),
             (
+                maker.reverse_alert(&reverse, Alert::Started).unwrap(),
+                format!("ZecSwap {name} · USDC → ZEC started"),
+                "1.234567 USDC for 0.00100001 ZEC",
+                "0x06060606",
+                dashboard.clone(),
+            ),
+            // The swap ended with its payout, the last settling transaction on it.
+            (
                 maker
-                    .reverse_alert(&reverse, "accepted", "Bridge accepted")
+                    .forward_alert(&swap, Alert::Ended(forward_ending(Some(&claimed), true)))
                     .unwrap(),
-                "USDC → ZEC",
+                format!("ZecSwap {name} · ZEC → USDC completed after "),
+                "0.00100001 ZEC for 1.234567 USDC",
+                "0x05050505",
+                format!("{explorer}/tx/{}", B256::repeat_byte(22)),
             ),
         ] {
-            assert!(event.text.contains(&name.to_uppercase()));
-            assert!(event.text.contains(&format!("?network={name}")));
-            assert!(event.text.contains(direction));
-            assert!(event.text.contains("1.234567 USDC ↔ 0.00100001 ZEC"));
-            assert!(!event.text.contains("private-token"));
-            assert!(!event.text.contains("123456789"));
-            assert!(!event.text.contains(&hex::encode(swap.viewing.to_bytes())));
-            assert!(!event.text.contains(&hex::encode(*maker.root)));
-            assert!(event.text.chars().count() < 4096);
-            assert!(event.text.contains("Swap ID (bridge reference):"));
-            assert!(!event.text.contains(&format!("/tx/{}", swap.id)));
-            if direction == "ZEC → USDC" {
-                assert!(
-                    event
-                        .text
-                        .contains(&format!("/tx/{}", B256::repeat_byte(25)))
-                );
-                assert!(
-                    !event
-                        .text
-                        .contains(&format!("/tx/{}", B256::repeat_byte(20)))
-                );
-                let path = if name == "testnet" {
-                    "sepolia"
-                } else {
-                    "ethereum"
-                };
-                assert!(
-                    event
-                        .text
-                        .contains(&format!("https://railscan.io/{path}/tx/"))
-                );
+            let lines: Vec<_> = event.text.lines().collect();
+            assert!(lines[0].starts_with(&headline), "{}", event.text);
+            assert_eq!(lines[1], amounts);
+            assert!(lines.len() <= 5);
+            assert_eq!(*lines.last().unwrap(), link);
+            assert!(event.text.contains(&format!(" UTC · swap {short}\n")));
+            for private in [
+                maker.account.to_string(),
+                maker.config.contract.to_string(),
+                "private-token".into(),
+                "123456789".into(),
+                hex::encode(swap.viewing.to_bytes()),
+                hex::encode(*maker.root),
+            ] {
+                assert!(!event.text.contains(&private));
             }
+            assert!(!event.text.contains("block"));
             assert!(!keys.contains(&event.key));
             keys.push(event.key);
         }
@@ -234,6 +249,37 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
     let summary = serde_json::to_string(&maker.store.notification_status(true).unwrap()).unwrap();
     assert!(!summary.contains("private-token"));
     assert!(!summary.contains("123456789"));
+}
+
+#[tokio::test]
+async fn errors_alert_once_they_last_five_minutes() {
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.telegram =
+        crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+    let id = B256::repeat_byte(7);
+    let error = |at| {
+        Some(crate::store::Notification {
+            key: String::new(),
+            text: "stuck".into(),
+            created_at: at,
+        })
+    };
+    let pending = |maker: &Maker| maker.store.notification_status(true).unwrap().pending;
+    maker.record_alert_failure("forward", id, error(1000));
+    maker.record_alert_failure("forward", id, error(1299));
+    assert_eq!(pending(&maker), 0);
+    // A pass that succeeds starts the clock again.
+    maker.record_alert_failure("forward", id, None);
+    maker.record_alert_failure("forward", id, error(1300));
+    maker.record_alert_failure("forward", id, error(1599));
+    assert_eq!(pending(&maker), 0);
+    maker.record_alert_failure("forward", id, error(1600));
+    maker.record_alert_failure("forward", id, error(1900));
+    assert_eq!(pending(&maker), 1);
+    // Each scope keeps its own clock.
+    maker.record_alert_failure("reverse", id, error(1900));
+    assert_eq!(pending(&maker), 1);
 }
 
 fn request(path: &str, body: impl serde::Serialize) -> Request<Body> {

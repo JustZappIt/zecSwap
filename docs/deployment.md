@@ -580,14 +580,20 @@ same service environment and account, run
 clearly labeled setup message without creating a financial swap. Successful output
 means Telegram acknowledged delivery, not that the recipient has read the message.
 
-Accepted bridges and terminal outcomes are queued transactionally with their SQLite
-state changes. Messages include the Zcash network, EVM chain/contract/maker, direction,
-exact locked USDC/ZEC amounts, swap ID, deadlines, any recorded ZEC deposit/recovery
-transaction IDs, and the matching dashboard link. Refunds and expired swaps are
-distinct from successful settlement; an observed claim with a pending escrow payout
-is explicitly labeled. User-side private ZEC recovery is not observable by the maker.
-No price-feed calls are made by the notification worker.
-Deposit alerts also report observed user ZEC funds or confirmed user USDC escrow funding.
+Each swap sends two messages, queued in the same SQLite transaction as the state change they
+report: one when its quote is accepted and one when it ends. Each names the network, the
+direction (ZEC → USDC or USDC → ZEC) and the exact amounts, gives the time and the first eight
+hex digits of the swap ID (the dashboard's search finds a swap by them), and ends with one
+link. The last one says how the swap ended and how long it took: completed, refunded,
+cancelled (no ZEC arrived) or expired (its escrow never opened or was never funded, or the
+maker sent no ZEC in time), with a line on why unless it completed. It links the claim,
+refund or payout that settled the swap on Etherscan, or the dashboard if the maker has not
+indexed one yet. When Railgun sends a payout back and a rescue shields it again, the rescue
+sends one more message and is its link. Nothing else about a swap sends a message: deposits,
+confirmations, locks and the maker's sweeps are on the dashboard. Messages never carry the
+contract, the maker's address or block numbers, and the notification worker never asks a
+price feed.
+
 Rebroadcasting a recorded ZEC transaction may return a backend duplicate error while
 it is already in the mempool or mined. The adapter checks `GetTransaction` for the
 same transaction ID and exact serialized bytes before treating such a rejection as
@@ -600,15 +606,44 @@ The durable queue retries outages with backoff, respects Telegram rate limits, a
 keeps event IDs after successful delivery so restarts do not replay them. A message
 can be repeated if Telegram accepts it but its acknowledgement is lost. Existing
 settled history is never replayed; active swaps are enrolled when alerts are enabled.
-Swap and service errors notify once per failure episode, clearing after a successful
-pass. Protect `maker.sqlite` backups since they now also contain public swap alert text.
+An error sends one message once it has lasted five minutes, and no more until a pass
+succeeds; a pass that succeeds also starts its five minutes again, so a blip of the RPC or
+lightwalletd sends nothing. The errors are a swap the watchtower cannot advance, failing or
+panicking watchtower passes, and a failing Zcash sync. Protect `maker.sqlite` backups since
+they also contain public swap alert text.
+
+`[gas_alerts]` in the maker's configuration reads up to eight accounts' ETH on the settlement
+chain every `interval_seconds` (60 to 3600). It sends one message when an account drops under
+`low_wei`, with its balance and address, and one when it is back at `recovery_wei` or more; a
+first healthy reading sends nothing. Each network's maker lists its own account and its
+relayer's:
+
+```toml
+[gas_alerts]
+interval_seconds = 300
+
+[[gas_alerts.accounts]]
+label = "Maker"
+address = "0x…"
+low_wei = 20000000000000000       # 0.02 ETH
+recovery_wei = 50000000000000000  # 0.05 ETH
+
+[[gas_alerts.accounts]]
+label = "Relayer"
+address = "0x…"
+low_wei = 20000000000000000
+recovery_wei = 50000000000000000
+```
 
 `GET /v1/monitor` includes `notifications`: enabled state, pending count, oldest
 pending time, last acknowledged delivery time, and a sanitized delivery error.
 It never includes the bot token or destination ID. The dashboard displays this as
 the Telegram alerts health check. Mainnet uses the same code: deploy its own maker
-with separate configuration/data and supply the bot/destination environment pair.
-Messages and deduplication IDs include the deployment and network.
+with separate configuration/data. The bot/destination environment pair is its switch: give
+the mainnet maker the pair (the testnet's chat will do, since every message names its
+network and links its own chain's explorer and dashboard) and a `[gas_alerts]` listing
+mainnet's accounts, then run `telegram-test`; without the pair it sends nothing.
+Deduplication IDs include the deployment.
 
 Ethereum transaction references are indexed from the configured settlement contract's
 confirmed events, including transactions sent by the app or relayer. A separate
@@ -620,14 +655,11 @@ to remove orphaned events after a shallow reorganization; deeper reorgs require 
 operator rescan. Confirmation depth follows `reverse.evm_confirmations`, or two when
 reverse swaps are disabled. Confirmed does not mean finalized.
 
-Telegram messages label the swap ID as a bridge reference, and include actual
-transaction hashes with Etherscan and Railscan links on Ethereum mainnet/Sepolia.
-New funding, claim, payout, rescue and refund events enqueue a link update; readiness
-and lock events are visible in the dashboard without extra Telegram updates.
-Historical backfill never replays old events. Transaction alert deduplication and
-cursor advancement are atomic. `/v1/monitor` exports `transactions` indexing status
-and each swap's `evmTransactions` public hash/block/event list, never log payloads,
-revealed shares, RPC credentials or Telegram configuration.
+A rescue is the only event with a Telegram message of its own; every other event reaches
+Telegram only through its swap's start and end. Historical backfill never replays old
+events, and alert deduplication and cursor advancement are atomic. `/v1/monitor` exports
+`transactions` indexing status and each swap's `evmTransactions` public hash/block/event
+list, never log payloads, revealed shares, RPC credentials or Telegram configuration.
 
 ### Dashboard monitoring
 
@@ -829,6 +861,5 @@ viewing wallet, while ZecBlock links show public transaction inclusion.
 Zcash links use `https://testnet.zecblock.com/tx/` on testnet and
 `https://zecblock.com/tx/` on mainnet. Receipt logs determine Railgun participation: those
 transactions link to Railscan and Etherscan; public-only transactions link to Etherscan.
-Old history is backfilled without Telegram replay. Newly confirmed deposits and escrow
-spends enter the existing durable Telegram queue with explorer links. No additional
-credentials or price cron are needed.
+Deposits and escrow spends send no Telegram message. No additional credentials or price
+cron are needed.

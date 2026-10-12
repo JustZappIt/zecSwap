@@ -5,6 +5,7 @@ use zecswap_api::{Acceptance, Accepted, Quote};
 use zecswap_chain::evm::{B256, OnChainSwap, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
+use super::notifications::{Alert, Ending, reverse_ending};
 use super::{Maker, MakerError, Spend, Zcash, unix_now};
 use crate::store::ReverseSwap;
 
@@ -183,11 +184,7 @@ impl Maker {
             settled: false,
             token_return: None,
         };
-        let event = self.reverse_alert(
-            &swap,
-            "accepted",
-            "Bridge accepted; awaiting user USDC escrow funding.",
-        );
+        let event = self.reverse_alert(&swap, Alert::Started);
         if let Err(error) = self
             .store
             .insert_reverse_swap(&swap, unix_now(), event.as_ref())
@@ -344,7 +341,7 @@ impl Maker {
                     .await?
                     .is_none()
             {
-                self.finish_reverse(swap, super::notifications::outcome(None, true))
+                self.finish_reverse(swap, reverse_ending(None, false))
                     .await?;
             }
             return Ok(());
@@ -382,11 +379,8 @@ impl Maker {
                 .await?
                 > swap.quote.ready_deadline
         {
-            self.finish_reverse(
-                swap,
-                "Bridge expired without maker funding. Escrow refund may still be pending.",
-            )
-            .await?;
+            self.finish_reverse(swap, reverse_ending(Some(&chain), false))
+                .await?;
             return Ok(());
         }
         self.verify_reverse(swap).await?;
@@ -400,7 +394,7 @@ impl Maker {
                     return Ok(());
                 }
                 if chain.stage == Stage::Claimed {
-                    self.finish_reverse(swap, super::notifications::outcome(Some(&chain), true))
+                    self.finish_reverse(swap, reverse_ending(Some(&chain), true))
                         .await?;
                 } else {
                     self.recover_reverse(swap, &chain, synced).await?;
@@ -435,7 +429,6 @@ impl Maker {
                 {
                     return Ok(());
                 }
-                self.queue_alert(self.reverse_alert(swap, "funded", "User USDC escrow funding confirmed; maker is preparing or confirming the ZEC deposit."));
                 self.fund_reverse(swap).await?;
             }
         }
@@ -528,7 +521,7 @@ impl Maker {
     ) -> Result<()> {
         if swap.deposit.is_none() {
             return self
-                .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                .finish_reverse(swap, reverse_ending(Some(chain), false))
                 .await;
         }
         if !synced {
@@ -541,7 +534,7 @@ impl Maker {
             if wallet.is_confirmed(txid)? {
                 drop(zcash);
                 return self
-                    .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                    .finish_reverse(swap, reverse_ending(Some(chain), true))
                     .await;
             }
             if wallet.is_expired(txid)? {
@@ -560,7 +553,7 @@ impl Maker {
             {
                 drop(zcash);
                 return self
-                    .finish_reverse(swap, super::notifications::outcome(Some(chain), true))
+                    .finish_reverse(swap, reverse_ending(Some(chain), false))
                     .await;
             }
             return Ok(());
@@ -604,8 +597,8 @@ impl Maker {
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "finish_reverse"), err(level = "warn"))]
-    async fn finish_reverse(&self, swap: &mut ReverseSwap, detail: &str) -> Result<()> {
-        let event = self.reverse_alert(swap, "finished", detail);
+    async fn finish_reverse(&self, swap: &mut ReverseSwap, ending: Ending) -> Result<()> {
+        let event = self.reverse_alert(swap, Alert::Ended(ending));
         swap.settled = true;
         self.store
             .save_reverse_swap_with_notification(swap, event.as_ref())?;
