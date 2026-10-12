@@ -1,9 +1,8 @@
 [Unit]
-Description=ZecSwap testnet maker and watchtower
+Description=ZecSwap maker and watchtower
 Wants=network-online.target
 After=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=10
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
