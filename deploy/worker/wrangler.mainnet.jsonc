@@ -1,4 +1,5 @@
-// The mainnet gateway: the same Worker, to the mainnet host's tunnel. From deploy/worker/:
+// The mainnet gateway: the same Worker, through the droplet's tunnel to the mainnet nginx on
+// 127.0.0.1:8090 (deploy/mainnet/install.sh). From deploy/worker/:
 //   npx wrangler secret put TICKET_SECRET -c wrangler.mainnet.jsonc   (the mainnet maker's
 //   MAKER_TICKET_SECRET), then npx wrangler deploy -c wrangler.mainnet.jsonc
 {
@@ -17,7 +18,7 @@
   },
   "secrets": { "required": ["TICKET_SECRET"] },
   "vpc_services": [
-    // The Workers VPC Service for the mainnet host's tunnel, not the testnet's.
+    // A VPC service of its own: the droplet's tunnel, 127.0.0.1, HTTP port 8090.
     { "binding": "ORIGIN", "service_id": "<mainnet VPC service id>" }
   ]
 }

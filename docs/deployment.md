@@ -673,9 +673,12 @@ proxy, and the `LOCK_DURATION` chosen for it (`scripts/deploy-contract.sh`); the
 relayer's `contract`, `token`, `maker` and RPC URLs ([deploy/mainnet/](../deploy/mainnet/)
 holds the beta's configs); mainnet ETH and USDC; secrets of its own
 (`scripts/mainnet-secrets.sh`, whose BIP-39 phrases restore the maker's ZEC inventory in any
-Zcash wallet and the relayer's fees in any Railgun wallet); a fresh host
-(`deploy/mainnet/bootstrap.sh`); the issuer's production packages and signing digests; a
-Worker of its own (`deploy/worker/wrangler.mainnet.jsonc`); mainnet observability labels
+Zcash wallet and the relayer's fees in any Railgun wallet); its services, which
+`deploy/mainnet/install.sh` puts beside the testnet's on the droplet under names, users, folders
+and ports of their own (`zecswap-mainnet-*`, 127.0.0.1:8797-8799 behind nginx on 8090); the
+issuer's production packages and signing digests; a Worker of its own
+(`deploy/worker/wrangler.mainnet.jsonc`) on a VPC service of its own through the droplet's
+tunnel; mainnet observability labels
 ([observability.md](observability.md)); deposits counted at the wallet's default of 10
 confirmations; and the dashboard's mainnet environment. Funding sponsorship has no aggregate
 budget, which matters more on mainnet.
