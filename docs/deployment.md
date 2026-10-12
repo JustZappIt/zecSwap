@@ -34,7 +34,9 @@ UTC their sends pay the gas price quotes and fees charge
 its own account's ETH, read when one of its sends ends and on a timer only while it is low
 ([October 12 gas alerts](#october-12-gas-alerts-on-sends)). Since 09:09 UTC a claim or payout
 posted again never sends a second transaction or answers `500`, and the gateway lets ten accepts in
-at a time ([October 12 concurrent swaps](#october-12-concurrent-swaps)).
+at a time ([October 12 concurrent swaps](#october-12-concurrent-swaps)). Since 18:31 UTC a pass
+reads all its swaps in one call and never again one a finalized block holds settled, and both
+services log and export what they ask their RPC ([October 12 RPC budget](#october-12-rpc-budget)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -565,6 +567,42 @@ Rollback files are in `/var/backups/zecswap/20261012-concurrent-swaps-36a3c1a` (
 `nginx-site`, `railgun-sends.sqlite` and `previous-current`. Restore the site with `cp -a` and
 reload nginx, point `/opt/zecswap/current` back at the previous release and restart the relayer;
 its journal didn't change.
+
+## October 12 RPC budget
+
+At 13:48 UTC the Alchemy account behind the services' RPC (key `3956e467`, shared with
+`.env.testnet` and the Android dev builds) hit its monthly cap of 30M compute units and answered
+every call `429`, so quotes paused. Nearly all of it was the maker. Each pass read every swap settled
+in the last day, three calls a swap: after the day's stress runs, 42 swaps, 8.7 requests a second,
+about 16M compute units a day. The transaction observer read the newest twelve blocks' logs again
+every 15 seconds, about 1M a day, idle or not. At 17:53 UTC the maker and relayer moved to another
+Alchemy key (`f6773aad`); their earlier configs and secrets are beside them as
+`*.bak-20261012-alchemy-key`.
+
+At 18:31 UTC the maker and relayer restarted on builds of `c42ac51` in
+`/opt/zecswap/releases/20261012-rpc-budget-c42ac51`, now `/opt/zecswap/current`; the issuer is
+`0d4cdb3`'s, byte for byte, and did not restart. A pass reads all its swaps in one call, and never
+again one whose claim or refund a finalized block holds; with nothing to read, it makes one
+`eth_chainId`, which Alchemy bills nothing ([RPC use](#rpc-use)). Each service logs its RPC at start,
+by host and key fingerprint, and its requests every hour, and both monitors export `rpc`. No config
+changed.
+
+The deploy checked the staged checksums and that the Droplet ran
+`20261012-concurrent-swaps-36a3c1a`, backed up both configs, `maker.sqlite` and the relayer's
+journal with both services stopped, and after the restart saw both log the key's fingerprint, maker
+health return 204, the maker's info and the relayer's terms through the public gateway, and the
+dashboard's checks all healthy, with no warning or error in either journal. The maker's first pass
+found the 42 settled swaps finalized and has read none of them since. In its first two and a half
+minutes it sent 32 requests (620 compute units, most at startup), against 8.7 requests and about 180
+compute units a second before; the relayer sent 30 in six minutes.
+[sepolia-rpc-budget.json](../deployments/sepolia-rpc-budget.json) records the checksums. A stress run
+then restarted the maker on this release with `[tokens]` commented out for its CLI clients;
+`/etc/zecswap-maker/config.toml.pre-stress` holds the config with them.
+
+Rollback files are in `/var/backups/zecswap/20261012-rpc-budget-c42ac51` (root-only):
+`maker-config.toml`, `relayer-config.toml`, `maker.sqlite`, `railgun-sends.sqlite` and
+`previous-current`. Point `/opt/zecswap/current` back at the previous release and restart the maker
+and relayer; the stores didn't change, so they stay.
 
 ## Deployment sequence
 
