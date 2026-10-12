@@ -159,7 +159,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   allowance (`$zecswap_tickets_required` turns away unticketed ones once apps send tickets).
   `network = "testnet" | "mainnet"` in the maker's, relayer's and issuer's configs
   (`zecswap_api::Network`) fixes the Zcash network, chains, Railgun, USDC and lightwalletd, and
-  each refuses to start on another's; mainnet waits on NU7 in the zcash crates.
+  each refuses to start on another's. Mainnet runs on the pinned crates (Ironwood came with
+  NU6.3), but they schedule NU7 on testnet alone: move to crates that schedule it on mainnet
+  before it activates there (2026-10-12, mainnet beta: `deploy/mainnet/`, `scripts/
+  deploy-contract.sh`, `scripts/mainnet-secrets.sh`; `withdraw-inventory all --to` and the
+  relayer's `drain-lanes --to` take funds out).
 - The relayer's queues (2026-10-11): a request that would fail never holds up another. Every send
   is simulated before it takes its account's turn (`Settlement::submit`, Railgun sends, fundings)
   and retries wait outside it. Locks the contract would refuse are refused untried (`check_lock`),

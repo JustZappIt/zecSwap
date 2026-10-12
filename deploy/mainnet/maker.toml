@@ -1,0 +1,67 @@
+# The mainnet beta's maker: payouts into Railgun on Ethereum, swaps of up to $50. Its secrets come
+# from /etc/zecswap-maker/secrets.env (scripts/mainnet-secrets.sh). Replace every <...>, then
+# install as /etc/zecswap-maker/config.toml, root:zecswap-maker, 0640.
+network = "mainnet"
+evm_rpc = "<the mainnet Alchemy app's URL>"
+contract = "<deployments/mainnet-beta.json's contract>"
+token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+# A u1 address of a wallet you hold off this host: every forward swap's ZEC is swept to it.
+sweep_to = "<u1...>"
+evm_confirmations = 12
+data_dir = "/var/lib/zecswap-maker"
+listen = "127.0.0.1:8787"
+# Testnet's: the inventory bounds what unpaid swaps can hold anyway. 0 refuses every new swap
+# while the watchtower keeps settling the open ones: the kill switch.
+max_awaiting_deposit = 20
+
+[pricing]
+spread_bps = 100
+# Any amount in USDC's base units, up to $50.
+unit = 1
+max_units = 50000000
+
+[pricing.market]
+token_decimals = 6
+refresh_seconds = 60
+max_age_seconds = 300
+providers = ["coinmarketcap", "alchemy"]
+
+# Measured on a mainnet fork on 2026-10-12: open 108k and ready 44k; claim lock 48k and claim 237k.
+[pricing.costs]
+forward_gas = 220000
+reverse_gas = 350000
+zcash_fee_zat = 15000
+margin_bps = 2000
+
+# For a contract with a 1,800 s lock, and deposits counted at 10 confirmations (about 12.5 minutes).
+[timing]
+quote_ttl = 120
+t0_after = 3600
+t1_after = 7200
+cancel_after = 900
+t0_margin = 300
+reveal_margin = 600
+tick = 15
+
+# USDC to ZEC, paid from the inventory `zecswap-maker zec-inventory` shows.
+[reverse]
+evm_confirmations = 12
+funding_window = 900
+ready_after = 7200
+refund_after = 10800
+deposit_margin = 1800
+fee_reserve_zat = 20000
+
+[gas_alerts]
+low_wei = 5000000000000000
+recovery_wei = 10000000000000000
+interval_seconds = 300
+
+# Spam tokens, from deploy/mainnet/issuer.toml's issuer: on before the app ships. The CLI gets
+# none, so a CLI smoke test runs before this is on. bootstrap.sh prints the issuer key's half.
+# [tokens]
+# issuer = "zecswap-mainnet-issuer"
+# origin = "maker"
+# keys = ["<the issuer key's public half>"]
+# return_key = "/etc/zecswap-maker/return-key.pem"
+# spent = "/var/lib/zecswap-maker/spent-tokens.sqlite"
