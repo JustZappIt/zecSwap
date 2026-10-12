@@ -1,6 +1,6 @@
 //! Broadcaster sends on anvil, journaled as `railgun_transact` records them: what each one cost
-//! and earned is read once it has mined, a reverted one included, and the notes a reverted one
-//! spent go again only after a cooldown.
+//! and earned is read once it has mined, a reverted one included, with one Telegram message each,
+//! and the notes a reverted one spent go again only after a cooldown.
 
 use std::path::Path;
 
@@ -69,7 +69,8 @@ fn transact(chain_id: u64, unshield: u8, note: u8) -> Vec<u8> {
     .abi_encode()
 }
 
-/// A relayer whose Railgun sends charge `fee`, with its journal in `dir`.
+/// A relayer whose Railgun sends charge `fee`, with its journal in `dir`, and alerts on: they are
+/// queued there and never delivered.
 fn relayer(
     url: &str,
     contract: Address,
@@ -117,6 +118,7 @@ fn relayer(
                 policy,
                 Keys::from_seed(&[7; 64], 0),
                 &dir.join("railgun-sends.sqlite"),
+                Telegram::new(Some("1:test"), Some("1")).unwrap(),
             )
             .unwrap(),
         ),
@@ -271,6 +273,81 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
         unread["succeeded"].is_null() && unread["gasUsed"].is_null() && unread["kind"].is_null()
     );
     assert_eq!(ledger["fee"], "250000");
+
+    // One message for each mined send, however often its receipt is read; none for the lost one.
+    let alerts: Vec<String> = relayer
+        .sends
+        .as_ref()
+        .unwrap()
+        .journal
+        .0
+        .lock()
+        .unwrap()
+        .prepare("SELECT text FROM notifications")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(alerts.len(), 2);
+    for (hash, title) in [(private, "private send"), (reverted, "unshield reverted")] {
+        let alert = alerts
+            .iter()
+            .find(|alert| alert.ends_with(&hash.to_string()))
+            .unwrap();
+        assert!(alert.starts_with(&format!("ZecSwap testnet · {title}\n")));
+    }
+}
+
+#[test]
+fn a_mined_send_says_what_it_moved_and_earned_and_names_no_one() {
+    let hash = B256::repeat_byte(5);
+    let text = |paid: Option<Paid>, succeeded| {
+        let network = zecswap_api::Network::Testnet;
+        send_alert(
+            network,
+            11155111,
+            hash,
+            paid.as_ref(),
+            succeeded,
+            1_791_720_221,
+        )
+        .text
+    };
+    let paid = |unshielded| {
+        Some(Paid {
+            unshielded,
+            fee: 420_000,
+        })
+    };
+    let end = format!("11 Oct 12:03 UTC\nhttps://sepolia.etherscan.io/tx/{hash}");
+    assert_eq!(
+        text(paid(Some(12_500_000)), true),
+        format!("ZecSwap testnet · unshield\n12.5 USDC out of Railgun · fee 0.42 USDC\n{end}")
+    );
+    assert_eq!(
+        text(paid(None), true),
+        format!("ZecSwap testnet · private send\nAmount private · fee 0.42 USDC\n{end}")
+    );
+    assert_eq!(
+        text(paid(Some(12_500_000)), false),
+        format!(
+            "ZecSwap testnet · unshield reverted\n\
+             Nothing moved; the relayer paid the gas and earned no fee.\n{end}"
+        )
+    );
+    // Bytes that no longer pass the policy say only that it was a Railgun send.
+    assert_eq!(
+        text(None, true),
+        format!("ZecSwap testnet · Railgun send\n{end}")
+    );
+    let mainnet = send_alert(zecswap_api::Network::Mainnet, 1, hash, None, true, 0);
+    assert_eq!(mainnet.key, format!("mainnet:1:railgun:{hash}"));
+    assert!(
+        mainnet
+            .text
+            .contains(&format!("https://etherscan.io/tx/{hash}"))
+    );
 }
 
 #[tokio::test]

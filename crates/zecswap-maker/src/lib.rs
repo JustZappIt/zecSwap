@@ -8,7 +8,6 @@ mod market;
 pub mod policy;
 pub mod pricing;
 mod store;
-mod telegram;
 mod watchtower;
 
 pub use config::{Config, Secrets};

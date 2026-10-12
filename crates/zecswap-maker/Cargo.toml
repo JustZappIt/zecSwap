@@ -12,12 +12,10 @@ anyhow = "1"
 axum = "0.8"
 blake2b_simd.workspace = true
 clap = { version = "4", features = ["derive"] }
-chrono = { version = "0.4", default-features = false, features = ["std"] }
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
 rand.workspace = true
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "query"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = "1"
 zcash_address.workspace = true
+zecswap-alerts = { path = "../zecswap-alerts" }
 zecswap-api = { path = "../zecswap-api", features = ["server"] }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }
@@ -41,6 +40,7 @@ zeroize.workspace = true
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 zecswap-prices = { path = "../zecswap-prices", features = ["stand-in"] }
 base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "query"] }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tonic = { version = "0.14", default-features = false, features = ["channel"] }

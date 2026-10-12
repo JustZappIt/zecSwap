@@ -51,6 +51,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
 | `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, and with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`); never run by a maker |
+| `crates/zecswap-alerts` | Telegram alerts for the maker and the relayer: the bot's client, and the durable queue messages wait in, in each service's own SQLite |
 | `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
@@ -188,7 +189,10 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   minutes (`LASTING_ERROR`, timed in memory) send anything: no deposit, confirmation or sweep
   messages, no contract, maker address or block numbers. `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_CHAT_ID` switch it on per network's maker; the hosted testnet shares the onramp gas
-  monitor's bot and chat and has no `[gas_alerts]` yet. The relayer sends none.
+  monitor's bot and chat and has no `[gas_alerts]` yet. The relayer, given the same pair, sends
+  one per Railgun send it broadcasts once it mines (`send_alert`, queued with the send's cost):
+  a private send with its fee (the amount is private), an unshield with the USDC it took out of
+  Railgun and its fee, or that it reverted. Both queue in `crates/zecswap-alerts`.
 - PR #8 review (2026-10-06), each fix with a test that fails without it:
   - Contract: a reverse escrow's id is `reverseSwapId` (`keccak256(abi.encode(user, makerKey,
     true))`), never a forward id, so a maker can't open a user's verified forward swap as a
