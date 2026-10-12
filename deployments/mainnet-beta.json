@@ -62,6 +62,19 @@
     "relayerTerms": "chain 1, this contract, fee floor 500000, Railgun proxy and Relay Adapt",
     "publicGateway": "maker health, info and relayer terms through the Worker",
     "quote": "5 USDC for 0.00432424 ZEC with a network cost of 318015",
-    "liveSwap": false
-  }
+    "liveSwap": {
+      "swapId": "0xea5740340814d8d431e5aebd24b3ee300f0693625ccd6bd1cd8e69f5741fec9f",
+      "direction": "ZEC to USDC, paid into Railgun through the relayer",
+      "amount": "2.0 USDC for 0.00185966 ZEC, at 10 confirmations",
+      "opened": "0x39a4738f6a3661e335e0f478ec5e899a3ed36e2ef73414011239dc5bee505c77",
+      "deposit": "b09cf334c79f4f205a7d0a474a808086b3d3fb7fc0317d96668b9e02614d5fbd",
+      "ready": "0xe4be2d40f81d4b132818319fa84d98ec62964652bd9846bddb854dccf2689bb9",
+      "claimLocked": "0xe0aabba389ef711d50abe8b947aee129038cc314ae43281b3a7dd651e66bf5a4",
+      "claimed": "0x258e0205d3dbe8957062b759338ca4e2969c67b1f9f9172c334f8d7d2ba5279d",
+      "paidOut": "0x1e764b5a34882890da4b4c607395fe77919bd03a3d9a99def5cfa4f31c29d51d",
+      "payout": "2.0 USDC to the swap's vault; 0.5 to the relayer; 1.49625 shielded into Railgun; 0.00375 Railgun's fee",
+      "sweep": "e97a17d01a46ebb129eae8fae54a426c84e348ac98111b4f2aebc3d56632c464"
+    }
+  },
+  "zcashConfirmations": 2
 }
