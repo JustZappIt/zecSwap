@@ -112,7 +112,8 @@ fn relayer(
         settlement: Settlement::connect(url, contract, key.clone()).unwrap(),
         lanes: crate::lanes::Lanes::connect(url, contract, key).unwrap(),
         lock_duration: 600,
-        in_flight: Default::default(),
+        turns: Default::default(),
+        steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: Some(
             Sends::open(

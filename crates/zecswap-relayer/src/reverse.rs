@@ -5,6 +5,7 @@ use zecswap_core::{SecretShare, Terms, signer};
 use zecswap_railgun::ShieldNote;
 
 use crate::pricing::SwapFee;
+use crate::turns::Step;
 use crate::{Relayer, RelayerError, Result};
 
 impl Relayer {
@@ -53,23 +54,18 @@ impl Relayer {
             &self.domain.ready(&request.swap_id, request.deadline),
             &request.signature.0,
         )?;
-        if swap.stage == Stage::Ready || swap.stage == Stage::Claimed {
+        let readied = |swap: &OnChainSwap| matches!(swap.stage, Stage::Ready | Stage::Claimed);
+        if readied(&swap) {
             return Ok(Sent {
                 transactions: vec![],
             });
         }
+        let (id, locks) = (request.swap_id, &self.lanes.locks);
+        let ready = locks.ready_with_sig(id, &terms, request.deadline, &request.signature.0);
+        let sent = self.send_once(id, Step::Ready, locks, ready).await;
+        let tx = self.unless_landed(id, &terms, sent, readied).await?;
         Ok(Sent {
-            transactions: vec![
-                self.lanes
-                    .locks
-                    .ready_with_sig(
-                        request.swap_id,
-                        &terms,
-                        request.deadline,
-                        &request.signature.0,
-                    )
-                    .await?,
-            ],
+            transactions: tx.into_iter().collect(),
         })
     }
 
@@ -108,18 +104,23 @@ impl Relayer {
             swap.claim_lock_until,
             now,
         )?;
+        let sent = self
+            .lanes
+            .locks
+            .lock_refund_with_sig(
+                request.swap_id,
+                &terms,
+                request.deadline,
+                &request.signature.0,
+            )
+            .await;
+        let tx = self
+            .unless_landed(request.swap_id, &terms, sent, |swap| {
+                swap.stage == Stage::Refunded || swap.refund_lock_until > now
+            })
+            .await?;
         Ok(Sent {
-            transactions: vec![
-                self.lanes
-                    .locks
-                    .lock_refund_with_sig(
-                        request.swap_id,
-                        &terms,
-                        request.deadline,
-                        &request.signature.0,
-                    )
-                    .await?,
-            ],
+            transactions: tx.into_iter().collect(),
         })
     }
 
@@ -157,28 +158,25 @@ impl Relayer {
                 "Railgun is not accepting refunds now".into(),
             ));
         }
-        let tx = self
-            .lanes
-            .claims
-            .refund(request.swap_id, &terms, &secret)
+        let (id, claims) = (request.swap_id, &self.lanes.claims);
+        let sent = self
+            .send_once(id, Step::Refund, claims, claims.refund(id, &terms, &secret))
+            .await;
+        let refund = self
+            .unless_landed(id, &terms, sent, |swap| swap.stage == Stage::Refunded)
             .await?;
-        let mut transactions = vec![tx];
+        let mut transactions: Vec<B256> = refund.into_iter().collect();
         match self
-            .settlement
-            .refund_payout(
-                request.swap_id,
-                &terms,
-                &note,
-                request.payout.fee,
-                &request.payout.signature.0,
-            )
+            .send_refund_payout(&request.payout, &terms, &note)
             .await
         {
-            Ok(tx) => transactions.push(tx),
+            Ok(tx) => transactions.extend(tx),
             Err(e) => {
-                tracing::warn!(id = %request.swap_id, "refund payout pending: {e}");
-                self.monitor
-                    .failed("reverse_refund_payout", crate::monitor::failure_kind(&e));
+                tracing::warn!(id = %id, "refund payout pending: {e}");
+                self.monitor.failed(
+                    "reverse_refund_payout",
+                    e.failure_kind().unwrap_or("internal"),
+                );
             }
         }
         Ok(Sent { transactions })
@@ -187,30 +185,44 @@ impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "reverse_refund_payout"), err(level = "warn"))]
     pub async fn reverse_refund_payout(&self, request: Payout) -> Result<Sent> {
         let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
-        let note = self
-            .check_reverse_payout(&swap, commitment, &request)
-            .await?;
         if swap.stage != Stage::Refunded {
             return Err(RelayerError::Rejected("swap has not refunded".into()));
         }
+        // A repeat, once paid out, sends nothing.
         if swap.paid_out {
             return Ok(Sent {
                 transactions: vec![],
             });
         }
+        let note = self
+            .check_reverse_payout(&swap, commitment, &request)
+            .await?;
         Ok(Sent {
-            transactions: vec![
-                self.settlement
-                    .refund_payout(
-                        request.swap_id,
-                        &terms,
-                        &note,
-                        request.fee,
-                        &request.signature.0,
-                    )
-                    .await?,
-            ],
+            transactions: self
+                .send_refund_payout(&request, &terms, &note)
+                .await?
+                .into_iter()
+                .collect(),
         })
+    }
+
+    /// Pays a refunded escrow back into Railgun: the transaction, or none where one sent before
+    /// landed.
+    async fn send_refund_payout(
+        &self,
+        request: &Payout,
+        terms: &Terms,
+        note: &ShieldNote,
+    ) -> Result<Option<B256>> {
+        let id = request.swap_id;
+        let payout =
+            self.settlement
+                .refund_payout(id, terms, note, request.fee, &request.signature.0);
+        let sent = self
+            .send_once(id, Step::RefundPayout, &self.settlement, payout)
+            .await;
+        self.unless_landed(id, terms, sent, |swap| swap.paid_out)
+            .await
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue_reverse"), err(level = "warn"))]

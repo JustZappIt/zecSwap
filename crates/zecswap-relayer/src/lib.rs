@@ -17,17 +17,19 @@ mod monitor;
 #[cfg(test)]
 mod monitor_tests;
 mod pricing;
+#[cfg(test)]
+mod retries_tests;
 mod reverse;
 mod sends;
 #[cfg(test)]
 mod terms_tests;
+mod turns;
 #[cfg(test)]
 mod turns_tests;
 
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
@@ -47,6 +49,7 @@ pub use sends::{Sending, SendsSnapshot};
 
 use crate::lanes::Lanes;
 use crate::pricing::SwapFee;
+use crate::turns::{Step, Steps, Turns};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,7 +182,8 @@ pub enum RelayerError {
     /// the relayer's own that do, when it knows them.
     #[error("these notes are already spent, or a transaction already sent spends them")]
     Spent(Vec<B256>),
-    /// A send was attempted and its outcome is unknown: the same request is to be posted again.
+    /// A send was attempted and its outcome is unknown, or one is still to be mined: the same
+    /// request is to be posted again.
     #[error("{0}")]
     Unsettled(&'static str),
     /// A send of these notes reverted lately: the same request is to be posted again in this
@@ -190,15 +194,17 @@ pub enum RelayerError {
     /// again later.
     #[error("the relayer can't price gas right now; post the same request again later")]
     Unpriced,
-    #[error("another request for this swap is running; post again once it has answered")]
-    Busy,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
 
 impl From<zecswap_chain::Error> for RelayerError {
     fn from(e: zecswap_chain::Error) -> Self {
-        RelayerError::Internal(e.into())
+        match e {
+            // Sent, and it may still land: the same request, posted again, learns how it went.
+            zecswap_chain::Error::Unconfirmed(_) => RelayerError::Unsettled(turns::UNMINED),
+            e => RelayerError::Internal(e.into()),
+        }
     }
 }
 
@@ -212,10 +218,7 @@ impl RelayerError {
     /// What kind of failure this is, for the monitor; none for a refusal.
     fn failure_kind(&self) -> Option<&'static str> {
         match self {
-            RelayerError::Rejected(_)
-            | RelayerError::Spent(_)
-            | RelayerError::Reverted(_)
-            | RelayerError::Busy => None,
+            RelayerError::Rejected(_) | RelayerError::Spent(_) | RelayerError::Reverted(_) => None,
             RelayerError::Unsettled(_) => Some("unconfirmed"),
             RelayerError::Unpriced => Some("internal"),
             RelayerError::Internal(error) => Some(
@@ -229,27 +232,6 @@ impl RelayerError {
 
 type Result<T> = std::result::Result<T, RelayerError>;
 
-#[derive(Default)]
-struct InFlight(Mutex<HashSet<B256>>);
-
-impl InFlight {
-    fn start(&self, swap_id: B256) -> Option<Running<'_>> {
-        self.0
-            .lock()
-            .unwrap()
-            .insert(swap_id)
-            .then(|| Running(self, swap_id))
-    }
-}
-
-struct Running<'a>(&'a InFlight, B256);
-
-impl Drop for Running<'_> {
-    fn drop(&mut self) {
-        self.0.0.lock().unwrap().remove(&self.1);
-    }
-}
-
 pub struct Relayer {
     config: Config,
     account: Address,
@@ -257,7 +239,8 @@ pub struct Relayer {
     settlement: Settlement,
     lanes: Lanes,
     lock_duration: u64,
-    in_flight: InFlight,
+    turns: Turns,
+    steps: Steps,
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
     /// With `reverse_funding`: what a funding must be, its fee the floor.
@@ -349,6 +332,10 @@ impl Relayer {
         if sends.is_some() && history.is_none() {
             warn!("ALCHEMY_API_KEY is not set: send costs are recorded without USD values");
         }
+        let steps = Steps::default();
+        steps
+            .note_earlier(&[&settlement, &lanes.claims, &lanes.locks])
+            .await?;
         let relayer = Self {
             config,
             account,
@@ -356,7 +343,8 @@ impl Relayer {
             settlement,
             lanes,
             lock_duration,
-            in_flight: InFlight::default(),
+            turns: Turns::default(),
+            steps,
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
             funding,
@@ -400,16 +388,6 @@ impl Relayer {
             },
         }
         result
-    }
-
-    /// Turns `request` away while another for the same swap runs.
-    pub(crate) async fn alone<T>(
-        &self,
-        swap_id: B256,
-        request: impl Future<Output = Result<T>>,
-    ) -> Result<T> {
-        let _running = self.in_flight.start(swap_id).ok_or(RelayerError::Busy)?;
-        request.await
     }
 
     pub fn monitor_snapshot(&self) -> monitor::MonitorSnapshot {
@@ -577,7 +555,7 @@ impl Relayer {
             swap.refund_lock_until,
             now,
         )?;
-        let tx = self
+        let sent = self
             .lanes
             .locks
             .lock_claim_with_sig(
@@ -586,15 +564,23 @@ impl Relayer {
                 request.deadline,
                 &request.signature.0,
             )
+            .await;
+        let tx = self
+            .unless_landed(request.swap_id, &terms, sent, |swap| {
+                swap.stage == Stage::Claimed || swap.claim_lock_until > now
+            })
             .await?;
-        info!(id = %request.swap_id, %tx, "took the claim lock");
+        if let Some(tx) = tx {
+            info!(id = %request.swap_id, %tx, "took the claim lock");
+        }
         Ok(Sent {
-            transactions: vec![tx],
+            transactions: tx.into_iter().collect(),
         })
     }
 
     /// Reveals the user share, then pays out. Everything the payout needs is checked before the
-    /// reveal; if the payout still fails, the swap stays claimed and `payout` can be retried.
+    /// reveal; if the payout still fails, the swap stays claimed and `payout` can be retried. A
+    /// claim posted again once the share is revealed pays out what is still to be.
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "claim"), err(level = "warn"))]
     pub async fn claim(&self, request: Claim) -> Result<Sent> {
         if request.payout.swap_id != request.swap_id || request.payout.terms != request.terms {
@@ -603,16 +589,20 @@ impl Relayer {
             ));
         }
         let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
-        if !matches!(swap.stage, Stage::Open | Stage::Ready) {
-            return Err(RelayerError::Rejected(format!(
-                "the swap is {:?}",
-                swap.stage
-            )));
-        }
         let secret = SecretShare::from_be_bytes(&request.secret.0)
             .map_err(|e| RelayerError::Rejected(e.to_string()))?;
         if secret.public() != swap.user_share {
             return Err(RelayerError::Rejected("the share is not the swap's".into()));
+        }
+        match swap.stage {
+            Stage::Claimed => return self.payout(request.payout).await,
+            Stage::Open | Stage::Ready => {}
+            Stage::Refunded => {
+                return Err(RelayerError::Rejected(format!(
+                    "the swap is {:?}",
+                    swap.stage
+                )));
+            }
         }
         let note = self.check_payout(&swap, &request.payout).await?;
         let now = self.settlement.now().await?;
@@ -626,15 +616,20 @@ impl Relayer {
                 "Railgun is not accepting payouts now".into(),
             ));
         }
+        let id = request.swap_id;
+        let claims = &self.lanes.claims;
+        let sent = self
+            .send_once(id, Step::Claim, claims, claims.claim(id, &terms, &secret))
+            .await;
         let claim = self
-            .lanes
-            .claims
-            .claim(request.swap_id, &terms, &secret)
+            .unless_landed(id, &terms, sent, |swap| swap.stage == Stage::Claimed)
             .await?;
-        info!(id = %request.swap_id, tx = %claim, "claimed");
-        let mut transactions = vec![claim];
+        if let Some(tx) = claim {
+            info!(id = %id, %tx, "claimed");
+        }
+        let mut transactions: Vec<B256> = claim.into_iter().collect();
         match self.send_payout(&request.payout, &terms, &note).await {
-            Ok(tx) => transactions.push(tx),
+            Ok(tx) => transactions.extend(tx),
             Err(e) => {
                 warn!(id = %request.swap_id, "the payout after the claim failed: {e:#}");
                 self.monitor
@@ -647,14 +642,24 @@ impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "payout"), err(level = "warn"))]
     pub async fn payout(&self, request: Payout) -> Result<Sent> {
         let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
-        if swap.stage != Stage::Claimed || swap.paid_out {
+        if swap.stage != Stage::Claimed {
             return Err(RelayerError::Rejected(
                 "nothing is waiting to be paid out".into(),
             ));
         }
+        // A repeat, once paid out, sends nothing.
+        if swap.paid_out {
+            return Ok(Sent {
+                transactions: vec![],
+            });
+        }
         let note = self.check_payout(&swap, &request).await?;
         Ok(Sent {
-            transactions: vec![self.send_payout(&request, &terms, &note).await?],
+            transactions: self
+                .send_payout(&request, &terms, &note)
+                .await?
+                .into_iter()
+                .collect(),
         })
     }
 
@@ -703,24 +708,46 @@ impl Relayer {
         })
     }
 
+    /// Pays a claimed swap out: the transaction, or none where a payout sent before landed.
     async fn send_payout(
         &self,
         request: &Payout,
         terms: &zecswap_core::Terms,
         note: &ShieldNote,
-    ) -> Result<B256> {
-        let tx = self
+    ) -> Result<Option<B256>> {
+        let id = request.swap_id;
+        let payout = self
             .settlement
-            .payout(
-                request.swap_id,
-                terms,
-                note,
-                request.fee,
-                &request.signature.0,
-            )
+            .payout(id, terms, note, request.fee, &request.signature.0);
+        let sent = self
+            .send_once(id, Step::Payout, &self.settlement, payout)
+            .await;
+        let tx = self
+            .unless_landed(id, terms, sent, |swap| swap.paid_out)
             .await?;
-        info!(id = %request.swap_id, %tx, fee = request.fee, "paid out into Railgun");
+        if let Some(tx) = tx {
+            info!(id = %id, %tx, fee = request.fee, "paid out into Railgun");
+        }
         Ok(tx)
+    }
+
+    /// What a send came to, unless it failed on a swap that now shows `landed`: then one sent
+    /// before did it after the swap was read for this request, and nothing is to be sent.
+    async fn unless_landed<T: Into<Option<B256>>>(
+        &self,
+        id: B256,
+        terms: &zecswap_core::Terms,
+        sent: std::result::Result<T, impl Into<RelayerError>>,
+        landed: impl Fn(&OnChainSwap) -> bool,
+    ) -> Result<Option<B256>> {
+        match sent.map_err(Into::into) {
+            Ok(tx) => Ok(tx.into()),
+            Err(RelayerError::Internal(error)) => match self.settlement.swap(id, terms).await {
+                Ok(Some(swap)) if landed(&swap) => Ok(None),
+                _ => Err(RelayerError::Internal(error)),
+            },
+            Err(error) => Err(error),
+        }
     }
 
     /// A payout that can land: to the committed note, for at least the relayer's fee and less
