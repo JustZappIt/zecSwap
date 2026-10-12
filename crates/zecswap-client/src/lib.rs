@@ -2,10 +2,12 @@
 //! proposes; nothing is deposited until the contract shows what was promised.
 
 mod api;
+#[cfg(test)]
+mod claim_tests;
 mod tokens;
 mod user;
 
-pub use api::{Broadcast, MakerApi, RelayerApi};
+pub use api::{Broadcast, MakerApi, RelayerApi, ServiceError};
 pub use tokens::{Attest, Tokens, Unattested};
 pub use user::{CLAIM_MARGIN, MAX_TIME_TO_T0, MIN_TIME_TO_T0, Paid, Route, User, UserSwap};
 pub mod reverse;

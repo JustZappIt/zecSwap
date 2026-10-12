@@ -7083,6 +7083,7 @@ dependencies = [
 name = "zecswap-client"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-primitives",
  "anyhow",
  "axum",
@@ -7099,6 +7100,7 @@ dependencies = [
  "zecswap-core",
  "zecswap-issuer",
  "zecswap-railgun",
+ "zecswap-relayer",
  "zecswap-tokens",
  "zeroize",
 ]

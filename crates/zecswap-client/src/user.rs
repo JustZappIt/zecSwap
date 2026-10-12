@@ -13,7 +13,7 @@ use zecswap_core::{
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 use zeroize::Zeroizing;
 
-use crate::api::{MakerApi, RelayerApi};
+use crate::api::{MakerApi, RelayerApi, refused};
 
 /// Ten confirmations take about 12.5 minutes; a swap must leave room to get them before `t0`.
 pub const MIN_TIME_TO_T0: u64 = 25 * 60;
@@ -26,6 +26,12 @@ pub const CLAIM_MARGIN: u64 = 5 * 60;
 /// duration, which makes a signature good for one lock only.
 const LOCK_SIGNATURE_TTL: u64 = 2 * 60;
 const CATCH_UP: Duration = Duration::from_secs(60);
+/// How long a relayer request that may have been sent is watched for on the chain before it is
+/// posted again.
+const RELAY_RETRY: Duration = Duration::from_secs(15);
+/// How long a relayer request goes on being posted while the chain doesn't show it: a payout
+/// never expires, but a run should end some time.
+const RELAY_PATIENCE: Duration = Duration::from_secs(30 * 60);
 /// Railgun's wallets open the first wallet of a seed.
 pub(crate) const RAILGUN_WALLET: u32 = 0;
 
@@ -236,7 +242,8 @@ impl User {
                 self.settlement.lock_claim(swap.swap_id, &terms).await?;
             }
             Route::Railgun { relayer, .. } => {
-                let deadline = self.settlement.now().await? + LOCK_SIGNATURE_TTL;
+                let now = self.settlement.now().await?;
+                let deadline = now + LOCK_SIGNATURE_TTL;
                 let digest = self.domain(swap).lock_claim(&swap.swap_id.0, deadline);
                 let request = LockClaim {
                     swap_id: swap.swap_id,
@@ -244,7 +251,17 @@ impl User {
                     deadline,
                     signature: self.keys(swap.index)?.auth.sign(&digest).into(),
                 };
-                relayer.lock_claim(&request, swap.ticket.as_deref()).await?;
+                let locked = |chain: &OnChainSwap| {
+                    chain.stage == Stage::Claimed || chain.claim_lock_until > now
+                };
+                let ticket = swap.ticket.as_deref();
+                self.relayed(
+                    swap,
+                    || relayer.lock_claim(&request, ticket),
+                    locked,
+                    deadline,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -338,7 +355,10 @@ impl User {
             signature: keys.auth.sign(&digest).into(),
         };
 
-        let sent = match chain.stage {
+        let ticket = swap.ticket.as_deref();
+        // The transaction that paid, where this call's requests sent it.
+        let mut paid = None;
+        match chain.stage {
             Stage::Refunded => bail!("the maker refunded the swap"),
             Stage::Claimed if chain.paid_out => {
                 return Ok(Paid {
@@ -347,7 +367,7 @@ impl User {
                 });
             }
             // Revealed before an interruption: only the payout is left.
-            Stage::Claimed => relayer.payout(&payout, swap.ticket.as_deref()).await?,
+            Stage::Claimed => {}
             Stage::Open | Stage::Ready => {
                 // A payout Railgun won't take would sit in the contract; better the swap
                 // unwinds, which leaves the ZEC with the user.
@@ -362,22 +382,69 @@ impl User {
                     secret: keys.share.to_be_bytes().into(),
                     payout: payout.clone(),
                 };
-                let sent = relayer.claim(&claim, swap.ticket.as_deref()).await?;
-                self.caught_up(swap, |chain| chain.stage == Stage::Claimed)
+                // Revealed again only under the lock with the margin left, as it was at first.
+                let lock = self.state(swap).await?.claim_lock_until;
+                let claimed = |chain: &OnChainSwap| chain.stage == Stage::Claimed;
+                let until = lock.saturating_sub(CLAIM_MARGIN);
+                let sent = self
+                    .relayed(swap, || relayer.claim(&claim, ticket), claimed, until)
                     .await?;
+                self.caught_up(swap, claimed).await?;
                 // The relayer reveals first and pays out after; a payout that failed is retried.
-                if sent.transactions.len() < 2 {
-                    relayer.payout(&payout, swap.ticket.as_deref()).await?
-                } else {
-                    sent
-                }
+                paid = sent
+                    .filter(|sent| sent.transactions.len() == 2)
+                    .and_then(|sent| last(&sent));
             }
-        };
+        }
+        if paid.is_none() {
+            let paid_out = |chain: &OnChainSwap| chain.paid_out;
+            let sent = self
+                .relayed(swap, || relayer.payout(&payout, ticket), paid_out, u64::MAX)
+                .await?;
+            paid = sent.and_then(|sent| last(&sent));
+        }
         self.caught_up(swap, |chain| chain.paid_out).await?;
         Ok(Paid {
             amount: chain.amount - terms.fee,
-            tx: last(&sent),
+            tx: paid,
         })
+    }
+
+    /// Posts a relayer request until the chain shows what it does: what the relayer answered,
+    /// none where the chain showed it first. A request that timed out or failed with a `5xx`
+    /// may still land, and the relayer sends nothing twice, so it is watched for and then
+    /// posted again, until chain time `until`; a refusal sent nothing, and ends it.
+    async fn relayed<F: Future<Output = Result<Sent>>>(
+        &self,
+        swap: &UserSwap,
+        post: impl Fn() -> F,
+        landed: impl Fn(&OnChainSwap) -> bool,
+        until: u64,
+    ) -> Result<Option<Sent>> {
+        let terms = self.terms(swap)?;
+        let give_up = Instant::now() + RELAY_PATIENCE;
+        loop {
+            let failure = match post().await {
+                Ok(sent) => return Ok(Some(sent)),
+                Err(e) if refused(&e) => return Err(e),
+                Err(e) => e,
+            };
+            let watched = Instant::now() + RELAY_RETRY;
+            loop {
+                if let Some(chain) = self.settlement.swap(swap.swap_id, &terms).await?
+                    && landed(&chain)
+                {
+                    return Ok(None);
+                }
+                if Instant::now() >= watched {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            if self.settlement.now().await? >= until || Instant::now() >= give_up {
+                return Err(failure.context("the relayer's request never showed on the chain"));
+            }
+        }
     }
 
     /// The note payouts of the swap at `index` go to, when it pays into Railgun.
