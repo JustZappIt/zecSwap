@@ -1,0 +1,15 @@
+{
+  "chainId": 1,
+  "contract": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
+  "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "railgun": "0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9",
+  "lockDurationSeconds": 1800,
+  "deploymentTransaction": "0x3e942db4eb883ffa2a51db96e64ecdf6902786fe4640bd70ea3c2ebbd1dcc380",
+  "deploymentBlock": 26178667,
+  "deploymentGasUsed": 4231414,
+  "zcashNetwork": "mainnet",
+  "deployer": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "sourceCommit": "980a31d95fcbdf59282286b79f97a54ca0f4ecfd",
+  "deployedAt": "2026-10-12",
+  "status": "beta"
+}
