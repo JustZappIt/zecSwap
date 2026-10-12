@@ -26,7 +26,9 @@ October 8 the issuer gives tokens only to installs whose key a locked phone's se
 attests, and the gateway gives each kind of request its own allowance
 ([October 8](#october-8-attestation-and-gateway-allowances)). Since 03:32 UTC on October 12 each
 swap's relayer requests can carry its ticket for an allowance of their own
-([October 12](#october-12-tickets-and-network-names)).
+([October 12](#october-12-tickets-and-network-names)), and since 04:48 UTC the relayer sends a
+Telegram message for each private send and unshield, and the maker one when its account or the
+relayer's runs low on ETH ([October 12 alerts](#october-12-relayer-and-gas-alerts)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -454,6 +456,32 @@ holding 0.000008 ETH where it reserves 0.00003, and from 03:39 UTC the stopgap
 float at the fee cap instead, and the stopgap line is gone; only the relayer changed.
 [sepolia-lane-float.json](../deployments/sepolia-lane-float.json) records it, and
 `/var/backups/zecswap/20261011-lane-float-e4d43fc` the config with the stopgap.
+
+## October 12 relayer and gas alerts
+
+At 04:48 UTC the maker and relayer restarted on builds of `0d4cdb3` in
+`/opt/zecswap/releases/20261012-relayer-alerts-0d4cdb3`, now `/opt/zecswap/current`; the issuer is
+`e4d43fc`'s, unchanged. The relayer sends a Telegram message for each Railgun private send and
+unshield it broadcasts, once the send mines. A drop-in,
+`/etc/systemd/system/zecswap-relayer.service.d/telegram.conf`, gives it the maker's
+`/etc/zecswap-maker/telegram.env`: the same bot and chat. The maker's config gained
+`[gas_alerts]`: every five minutes it reads the ETH of its own account
+(`0x2bac02B5032e9092493814c705F156B49E288922`) and the relayer's
+(`0xd9633572041886Fa7584a2E12F36C8C7f1126412`, which keeps its sending accounts topped up), with a
+message under 0.005 ETH and another once back at 0.01. They held 0.0118 and 0.0109 ETH, so the
+first reading sent nothing.
+
+The deploy script checked the staged files and that the Droplet was as `e4d43fc` left it, backed up
+the maker's config, `maker.sqlite` and the relayer's journal, and after the restart saw through
+nginx the maker's info and the relayer's terms, the relayer's `alerts=true`, and both accounts
+in the maker's monitor. A labeled test message put on the running relayer's own queue reached
+Telegram on its first attempt. [sepolia-relayer-alerts.json](../deployments/sepolia-relayer-alerts.json)
+records the checksums.
+
+Rollback files are in `/var/backups/zecswap/20261012-relayer-alerts-0d4cdb3` (root-only). Restore
+the maker's config with `cp -a`, remove the relayer's drop-in and reload systemd, point
+`/opt/zecswap/current` back at the previous release and restart the maker and relayer. The
+previous relayer ignores the queue's tables in its journal.
 
 ## Deployment sequence
 

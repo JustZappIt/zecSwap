@@ -189,7 +189,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   minutes (`LASTING_ERROR`, timed in memory) send anything: no deposit, confirmation or sweep
   messages, no contract, maker address or block numbers. `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_CHAT_ID` switch it on per network's maker; the hosted testnet shares the onramp gas
-  monitor's bot and chat and has no `[gas_alerts]` yet. The relayer, given the same pair, sends
+  monitor's bot and chat, and since 2026-10-12 its `[gas_alerts]` watch the maker's account and
+  the relayer's (under 0.005 ETH, recovered at 0.01). The relayer, given the same pair, sends
   one per Railgun send it broadcasts once it mines (`send_alert`, queued with the send's cost):
   a private send with its fee (the amount is private), an unshield with the USDC it took out of
   Railgun and its fee, or that it reverted. Both queue in `crates/zecswap-alerts`.
