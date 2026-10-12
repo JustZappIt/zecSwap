@@ -1,0 +1,30 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T08:31:22Z",
+  "sourceCommit": "c1b865c",
+  "release": "/opt/zecswap/releases/20261012-gas-on-sends-c1b865c",
+  "previousRelease": "/opt/zecswap/releases/20261012-node-tip-86651c2",
+  "backup": "/var/backups/zecswap/20261012-gas-on-sends-c1b865c",
+  "makerSha256": "9333d69650b69ed4295f962ff7e9630451d45dc93ffb6ef64edc11f4d5430d1b",
+  "relayerSha256": "b15917c303eddb73fc86595312593bea755e087b98fb5e506579fa50ea4de195",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "changes": {
+    "maker": "reads its own account's ETH when it starts and when one of its sends ends, and every 300 s only while it is under 0.005 ETH, until back at 0.01; it no longer watches the relayer's account",
+    "relayer": "watches its own account the same way, its messages queued in its Railgun sends journal",
+    "issuer": "0d4cdb3's binary, byte for byte; not restarted",
+    "config": "the maker's [gas_alerts] lost its account list; the relayer's config gained [gas_alerts] with the same thresholds",
+    "dashboard": "zapp-dashboard 43fb091, on Vercel production first, reads the relayer's gas alerts from the relayer's own monitor"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "stagedChecksums": "matched before install",
+    "makerMonitor": "gas alerts on for the maker's account alone, 300 s while low",
+    "relayerMonitor": "gas alerts on for the relayer's account alone, 300 s while low",
+    "balancesAtStart": "maker 0.0579 ETH, relayer 0.0831 ETH",
+    "gasMessagesAtStart": 0,
+    "failedGasReadings": 0,
+    "errorsAfterStart": 0,
+    "dashboard": "no alerts; the relayer counts as watched"
+  }
+}
