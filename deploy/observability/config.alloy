@@ -8,65 +8,66 @@ local.file "known_secrets" {
   is_secret = true
 }
 
-loki.source.journal "maker" {
-  matches    = "_SYSTEMD_UNIT=zecswap-maker.service"
-  max_age    = "5m"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
+// Mainnet's services alone (deploy/mainnet/install.sh), under testnet's service names. Testnet's
+// readers, labelled testnet / zcash-testnet / sepolia, came out on 2026-10-12: its redeploys left
+// no logs worth keeping. The maker keeps two hours, a few hundred lines, so a restart replays
+// them within the limit's burst instead of dropping the newest. The issuer logs little by design
+// (its startup, internal errors and status list reloads). PID 1's lifecycle and failure lines
+// use UNIT rather than _SYSTEMD_UNIT: their readers keep exits, OOMs and restarts visible even
+// when a service can't log.
+loki.source.journal "mainnet_maker" {
+  matches    = "_SYSTEMD_UNIT=zecswap-mainnet-maker.service"
+  max_age    = "2h"
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-loki.source.journal "relayer" {
-  matches    = "_SYSTEMD_UNIT=zecswap-relayer.service"
-  // The relayer is usually silent; include its recent startup on initial setup.
+loki.source.journal "mainnet_relayer" {
+  matches    = "_SYSTEMD_UNIT=zecswap-mainnet-relayer.service"
   max_age    = "3h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-// The issuer logs little by design: its startup, internal errors and status list reloads.
-loki.source.journal "issuer" {
-  matches    = "_SYSTEMD_UNIT=zecswap-issuer.service"
+loki.source.journal "mainnet_issuer" {
+  matches    = "_SYSTEMD_UNIT=zecswap-mainnet-issuer.service"
   max_age    = "3h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-// The six-hourly refresh of Google's attestation status list, whose failures leave the
-// issuer on an aging list.
-loki.source.journal "issuer_status" {
-  matches    = "_SYSTEMD_UNIT=zecswap-issuer-status.service"
+loki.source.journal "mainnet_issuer_status" {
+  matches    = "_SYSTEMD_UNIT=zecswap-mainnet-issuer-status.service"
   max_age    = "12h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-// PID 1 lifecycle/failure messages use UNIT, rather than _SYSTEMD_UNIT.
-// Include them so exits/OOM/restarts remain visible even when the app cannot log.
-loki.source.journal "maker_systemd" {
-  matches    = "_PID=1 UNIT=zecswap-maker.service"
-  max_age    = "5m"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
+loki.source.journal "mainnet_maker_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-mainnet-maker.service"
+  max_age    = "2h"
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-maker"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-loki.source.journal "relayer_systemd" {
-  matches    = "_PID=1 UNIT=zecswap-relayer.service"
+loki.source.journal "mainnet_relayer_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-mainnet-relayer.service"
   max_age    = "3h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-relayer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-loki.source.journal "issuer_systemd" {
-  matches    = "_PID=1 UNIT=zecswap-issuer.service"
+loki.source.journal "mainnet_issuer_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-mainnet-issuer.service"
   max_age    = "3h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
-loki.source.journal "issuer_status_systemd" {
-  matches    = "_PID=1 UNIT=zecswap-issuer-status.service"
+loki.source.journal "mainnet_issuer_status_systemd" {
+  matches    = "_PID=1 UNIT=zecswap-mainnet-issuer-status.service"
   max_age    = "12h"
-  labels     = {app = "zecswap", environment = "testnet", network = "zcash-testnet", evm_chain = "sepolia", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
+  labels     = {app = "zecswap", environment = "mainnet", network = "zcash-mainnet", evm_chain = "ethereum", instance = "bridge-vps-147-182-158-187", service = "zecswap-issuer"}
   forward_to = [loki.process.bridge.receiver]
 }
 
@@ -83,11 +84,13 @@ loki.process "bridge" {
     longer_than         = "8KB"
     drop_counter_reason = "oversize"
   }
-  // Combined worst case: 2 lines/s * 8 KiB, under 44 GB/month.
+  // A bucket per environment, so a busy testnet never drops mainnet's lines. Combined worst
+  // case: 2 lines/s * 8 KiB, under 44 GB/month.
   stage.limit {
-    rate  = 2
-    burst = 100
-    drop  = true
+    rate          = 1
+    burst         = 500
+    by_label_name = "environment"
+    drop          = true
   }
   // Exact configured secrets also catch otherwise unrecognizable bare values.
   stage.replace {
