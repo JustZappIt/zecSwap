@@ -6,6 +6,7 @@ use zecswap_chain::evm::{B256, OnChainSwap, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
 use super::notifications::{Alert, Ending, reverse_ending};
+use super::reads::{Confirm, Reads};
 use super::{Maker, MakerError, Spend, Zcash, unix_now};
 use crate::store::ReverseSwap;
 
@@ -63,7 +64,7 @@ impl Maker {
         if self.settlement.railgun().await?.is_zero() {
             return Err(MakerError::Unavailable);
         }
-        let now = self.settlement.now().await?;
+        let now = self.chain_now().await?;
         let mut id = [0; 32];
         UnwrapErr(SysRng).fill_bytes(&mut id);
         self.check_watchtower()?;
@@ -212,17 +213,46 @@ impl Maker {
             })
     }
 
+    /// Answered from the passes' reads where they are recent, and the same answer for a few
+    /// seconds after: however often apps ask, the chain is read about as often as passes run.
     pub async fn reverse_status(&self, id: B256) -> Result<Option<reverse::Status>> {
         let Some(swap) = self.store.reverse_swap(id)? else {
             return Ok(None);
         };
-        let chain = self.settlement.swap(id, &swap.terms()).await?;
-        let now = self.settlement.now().await?;
-        let phase = match chain {
+        let phase = match self.recent_phase(id) {
+            Some(phase) => phase,
+            None => {
+                let phase = self.reverse_phase(&swap).await?;
+                self.remember_phase(id, phase);
+                phase
+            }
+        };
+        Ok(Some(reverse::Status {
+            swap_id: id,
+            phase,
+            deposit_txid: swap.deposit.map(|id| id.to_string()),
+            ready_deadline: swap.quote.ready_deadline,
+            refund_after: swap.quote.refund_after,
+            token_return: swap.token_return,
+        }))
+    }
+
+    async fn reverse_phase(&self, swap: &ReverseSwap) -> Result<Phase> {
+        let id = swap.id;
+        let chain = match self.last_read(id) {
+            // A refund pays out after it is final, so only a read now shows whether it has.
+            Some(Some(chain)) if chain.stage == Stage::Refunded && !chain.paid_out => {
+                self.settlement.swap(id, &swap.terms()).await?
+            }
+            Some(chain) => chain,
+            None => self.settlement.swap(id, &swap.terms()).await?,
+        };
+        let now = self.chain_now().await?;
+        Ok(match chain {
             None if swap.settled => Phase::Expired,
             None => Phase::AwaitingFunding,
             Some(chain) => {
-                self.verify_reverse(&swap).await?;
+                self.verify_reverse(swap).await?;
                 match chain.stage {
                     Stage::Claimed => Phase::ZecAvailable,
                     Stage::Refunded if chain.paid_out => Phase::Refunded,
@@ -255,21 +285,16 @@ impl Maker {
                     }
                 }
             }
-        };
-        Ok(Some(reverse::Status {
-            swap_id: id,
-            phase,
-            deposit_txid: swap.deposit.map(|id| id.to_string()),
-            ready_deadline: swap.quote.ready_deadline,
-            refund_after: swap.quote.refund_after,
-            token_return: swap.token_return,
-        }))
+        })
     }
 
     /// The escrow, whose terms reading it checked, is for this maker on this deployment and
-    /// refunds to the quoted note.
+    /// refunds to the quoted note: read once, since the escrow keeps its note.
     async fn verify_reverse(&self, swap: &ReverseSwap) -> Result<()> {
         self.check_reverse(swap)?;
+        if self.reverse_verified(swap.id) {
+            return Ok(());
+        }
         let terms = &swap.quote;
         let funding = self
             .settlement
@@ -280,6 +305,7 @@ impl Maker {
             funding.refund_note == terms.refund_note,
             "reverse refund note differs from the quote"
         );
+        self.verified(swap.id);
         Ok(())
     }
 
@@ -311,27 +337,48 @@ impl Maker {
         Ok(())
     }
 
+    /// One pass's reads of `swaps`, each also confirmed deep, with that block's time while any
+    /// one's ZEC is unsent: funding and ready deadlines count at it.
+    pub(super) async fn reverse_reads(&self, swaps: &[ReverseSwap]) -> Result<Reads> {
+        let config = self
+            .config
+            .reverse
+            .as_ref()
+            .context("reverse swaps disabled")?;
+        let readable: Vec<_> = swaps.iter().map(|swap| (swap.id, swap.terms())).collect();
+        let time = swaps
+            .iter()
+            .any(|swap| !swap.settled && swap.deposit.is_none());
+        self.read_swaps(
+            &readable,
+            config.evm_confirmations.get().into(),
+            |_, _, _| Confirm { state: true, time },
+        )
+        .await
+    }
+
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_reverse"), err(level = "warn"))]
-    pub(super) async fn advance_reverse(&self, swap: &mut ReverseSwap, synced: bool) -> Result<()> {
+    pub(super) async fn advance_reverse(
+        &self,
+        swap: &mut ReverseSwap,
+        synced: bool,
+        reads: &Reads,
+    ) -> Result<()> {
         let config = self
             .config
             .reverse
             .as_ref()
             .context("reverse swaps disabled")?;
         let terms = swap.terms();
-        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
+        let Some(chain) = reads.latest(swap.id, &terms)? else {
             if !swap.settled
                 && swap.deposit.is_none()
-                && self
-                    .settlement
-                    .confirmed_now(config.evm_confirmations.get().into())
-                    .await?
-                    > swap.quote.funding_deadline
-                && self
-                    .settlement
-                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
-                    .await?
-                    .is_none()
+                && reads
+                    .confirmed_time()
+                    .is_some_and(|time| time > swap.quote.funding_deadline)
+                && reads
+                    .confirmed(swap.id, &terms)?
+                    .is_some_and(|confirmed| confirmed.is_none())
             {
                 self.finish_reverse(swap, reverse_ending(None, false))
                     .await?;
@@ -341,10 +388,7 @@ impl Maker {
         // The escrow holds the user's payment from `openReverse` on: the token goes back.
         self.return_reverse_token(swap);
         if swap.settled {
-            let confirmed = self
-                .settlement
-                .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
-                .await?;
+            let confirmed = reads.confirmed(swap.id, &terms)?.flatten();
             if confirmed.as_ref().is_some_and(|confirmed| {
                 confirmed.stage == chain.stage && confirmed.secret == chain.secret
             }) {
@@ -365,11 +409,9 @@ impl Maker {
             self.store.save_reverse_swap(swap)?;
         }
         if swap.deposit.is_none()
-            && self
-                .settlement
-                .confirmed_now(config.evm_confirmations.get().into())
-                .await?
-                > swap.quote.ready_deadline
+            && reads
+                .confirmed_time()
+                .is_some_and(|time| time > swap.quote.ready_deadline)
         {
             self.finish_reverse(swap, reverse_ending(Some(&chain), false))
                 .await?;
@@ -378,10 +420,7 @@ impl Maker {
         self.verify_reverse(swap).await?;
         match chain.stage {
             Stage::Claimed | Stage::Refunded => {
-                let confirmed = self
-                    .settlement
-                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
-                    .await?;
+                let confirmed = reads.confirmed(swap.id, &terms)?.flatten();
                 if !confirmed.is_some_and(|confirmed| confirmed == chain) {
                     return Ok(());
                 }
@@ -394,7 +433,7 @@ impl Maker {
             }
             Stage::Ready => {} // The independent EVM loop handles claim deadlines.
             Stage::Open => {
-                let now = self.settlement.now().await?;
+                let now = reads.now().context("the pass read no clock")?;
                 if !synced
                     || chain.refund_lock_until != 0
                     || now.saturating_add(config.deposit_margin) >= chain.t0
@@ -412,13 +451,7 @@ impl Maker {
                     funding.refund_note == swap.quote.refund_note,
                     "confirmed refund commitment differs"
                 );
-                if self
-                    .settlement
-                    .confirmed_swap(swap.id, &terms, config.evm_confirmations.get().into())
-                    .await?
-                    .as_ref()
-                    != Some(&chain)
-                {
+                if reads.confirmed(swap.id, &terms)?.flatten().as_ref() != Some(&chain) {
                     return Ok(());
                 }
                 self.fund_reverse(swap).await?;

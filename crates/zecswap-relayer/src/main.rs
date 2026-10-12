@@ -42,6 +42,10 @@ async fn main() -> Result<()> {
     tokio::spawn(relayer.clone().run_costs());
     tokio::spawn(relayer.clone().run_top_ups());
     tokio::spawn(relayer.clone().run_alerts());
+    tokio::spawn(zecswap_chain::evm::log_usage(
+        relayer.rpc_meter(),
+        std::time::Duration::from_secs(3600),
+    ));
 
     let listener = tokio::net::TcpListener::bind(relayer.listen()).await?;
     info!("relaying on {}", listener.local_addr()?);

@@ -99,6 +99,27 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- RPC budget (2026-10-12): the Alchemy account the maker, the relayer, `.env.testnet` and the
+  Android dev builds share hit its 30M CU monthly cap at 13:48 UTC (the cap is per account, not
+  per key). Nearly all of it was the maker: every swap settled in the last day was read three
+  calls a tick for 24 hours (~357k CU a swap; the stress runs' 42 swaps ran it at ~16M CU a day),
+  and the transaction observer read the newest twelve blocks' logs again every 15 s (~1M CU a
+  day, idle or not). Now a pass reads every swap it watches in one Multicall3 `aggregate3`
+  (`Settlement::swap_states`; a call a swap where Multicall3 isn't deployed, as on a fresh
+  anvil, whose tests set its code), the block number once, and never again a swap whose claim
+  or refund a finalized block holds (`maker/reads.rs`); with nothing to read, a pass makes one
+  `eth_chainId`, which Alchemy bills nothing, so health still tests the RPC. The Zcash worker's
+  sweeps and reverse status requests use the passes' reads (`last_read`, `chain_now`), and a
+  reverse swap's phase answers for 10 s. The observer reads each block once as its cursor passes
+  it, the newest twelve again every 2 minutes while swaps are live (10 otherwise), every 15 s
+  while swaps are live and 90 s otherwise (the dashboard calls history stale at 120 s); a sent
+  transaction without a receipt is asked about every 5 minutes. `RAILGUN()` is read once, the
+  maker's inventory for quotes every 30 s (its opens clear it), gas prices for quotes and relayer
+  fees once a minute, and the relayer reads its lanes' balances in one call after each lane's
+  send and every 2 minutes. Every connection counts its requests by method (`evm::RpcMeter`):
+  each service logs its RPC (host and a key fingerprint, never the key) at start and its
+  requests and Alchemy CU every hour, and both monitors export `rpc`. Idle, the two spend
+  ~0.15M CU a day (was ~1.5M); a swap some 20k (was ~0.4M).
 - Concurrent swaps (2026-10-12, branch `fix/concurrent-swaps`): what 15 swaps at once on the
   testnet showed. A swap's relayer requests take turns, each running to its end in a task of its
   own (`Relayer::in_turn`, `turns.rs`): a client giving up at its timeout no longer cuts a send
@@ -148,7 +169,7 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
   `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
-  now (the base fee twice over and the tip), every 30 s. The
+  now (the base fee twice over and the tip), after each lane's send and every 2 minutes. The
   monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
   the account that signed them, so older journal entries still resolve. Still open: sending
   without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared
@@ -237,8 +258,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
     leaves nothing to shield; checks Railgun takes the payout before revealing in a claim.
   - Maker: each swap stores its token (terms never follow the config); share indices come from
     the clock, so a restored backup can't reissue one; `check_swaps` refuses to start on live
-    swaps opened under another key or root secret; settled swaps are re-read for a day, then
-    archived and their wallet accounts dropped; an accept reads its quote and the chain clock
+    swaps opened under another key or root secret; settled swaps are watched for a day (read on
+    the chain only until a finalized block holds them), then archived and their wallet accounts
+    dropped; an accept reads its quote and the chain clock
     before taking the quote or importing an account; `max_awaiting_deposit` caps swaps waiting
     on users.
   - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).

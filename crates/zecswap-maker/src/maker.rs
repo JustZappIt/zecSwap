@@ -3,6 +3,7 @@ mod flow;
 mod gas_alerts;
 mod monitoring;
 mod notifications;
+mod reads;
 mod reverse;
 mod transactions;
 
@@ -21,7 +22,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
-use zecswap_chain::evm::{Address, B256, OnChainSwap, Settlement, Stage, swap_id};
+use zecswap_chain::evm::{Address, B256, OnChainSwap, Settlement, Stage, endpoint, swap_id};
 use zecswap_chain::zcash::{
     AccountUuid, Funds, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect_lazy,
 };
@@ -34,6 +35,7 @@ use crate::policy::{self, Action, Observation};
 use crate::store::{Store, Swap};
 use crate::watchtower::{self, Health};
 use notifications::{Alert, forward_ending};
+use reads::{Confirm, Reads};
 
 // Background observer diagnostics must not expose authenticated URLs or RPC payloads.
 fn observer_failure(error: &anyhow::Error) -> &'static str {
@@ -73,6 +75,8 @@ pub struct Maker {
     prices: crate::market::PriceBook,
     /// The gas price quotes last charged the maker's network cost at, and when it was read.
     quote_gas_price: std::sync::Mutex<Option<(u64, u128)>>,
+    /// What passes read of the chain, for the rest to use instead of reading it again.
+    chain: std::sync::Mutex<reads::ChainCache>,
     telegram: zecswap_alerts::Telegram,
     /// When each failing alert scope started failing, so only a lasting error alerts.
     failing: std::sync::Mutex<HashMap<String, u64>>,
@@ -194,6 +198,7 @@ impl Maker {
             .context("sweep_to")?;
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
         let account = secrets.evm_key.address();
+        info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
         let chain_id = settlement
             .chain_id()
@@ -244,6 +249,7 @@ impl Maker {
             failing: std::sync::Mutex::default(),
             prices,
             quote_gas_price: std::sync::Mutex::default(),
+            chain: std::sync::Mutex::default(),
             monitoring: monitoring::Monitoring::from_env()?,
             inventory,
             store,
@@ -369,8 +375,8 @@ impl Maker {
         self.zcash_health.check()
     }
 
-    /// The gas price a quote charges the maker's network cost at, read at most every fifteen
-    /// seconds; none where quotes charge none, or it can't be read.
+    /// The gas price a quote charges the maker's network cost at, read at most once a minute;
+    /// none where quotes charge none, or it can't be read.
     pub(crate) async fn quote_gas_price(&self) -> Option<u128> {
         if !self.prices.charges_costs() {
             return None;
@@ -378,7 +384,7 @@ impl Maker {
         let now = unix_now();
         let cached = *self.quote_gas_price.lock().unwrap();
         if let Some((at, price)) = cached
-            && now.saturating_sub(at) < 15
+            && now.saturating_sub(at) < 60
         {
             return Some(price);
         }
@@ -416,10 +422,7 @@ impl Maker {
                 "this deployment cannot pay into Railgun".into(),
             ));
         }
-        let inventory = self
-            .settlement
-            .balance_of(self.account, self.config.token)
-            .await?;
+        let inventory = self.inventory_balance().await?;
         if inventory < terms.amount {
             return Err(MakerError::Unavailable);
         }
@@ -540,8 +543,9 @@ impl Maker {
             self.forget(zcash_account).await;
             return Err(e.into());
         }
-        let transaction_hash =
-            self.journal(id, "open", self.settlement.open(&self.terms(&swap)?).await)?;
+        let opened = self.settlement.open(&self.terms(&swap)?).await;
+        self.forget_inventory();
+        let transaction_hash = self.journal(id, "open", opened)?;
         // The user can only deposit once it sees the swap, which on a slow chain can be minutes
         // after `now` when opens queue behind each other; `cancel_after` counts from here.
         self.store
@@ -649,27 +653,64 @@ impl Maker {
             self.run_notifications(),
             self.run_gas_alerts(),
             self.run_transaction_observer(),
-            self.run_flow_observer()
+            self.run_flow_observer(),
+            zecswap_chain::evm::log_usage(
+                self.settlement.meter().clone(),
+                Duration::from_secs(3600)
+            )
         );
     }
 
     async fn tick(&self) -> Result<()> {
-        let now = self.settlement.now().await?;
+        let swaps = self.store.watched_swaps()?;
+        let pending_reverse = self.store.pending_reverse_swaps()?;
         let mut failed = Vec::new();
-        for swap in self.store.watched_swaps()? {
-            if let Err(e) = self.advance(&swap, now).await {
-                failed.push(swap.id);
-                warn!(swap_id = %swap.id, operation = "forward_watchtower", "{e:#}");
-                self.record_alert_failure(
-                    "forward",
-                    swap.id,
-                    self.forward_alert(&swap, Alert::Stuck),
-                );
-            } else {
-                self.record_alert_failure("forward", swap.id, None);
+        let (mut watched, mut readable) = (Vec::new(), Vec::new());
+        for swap in &swaps {
+            match self.terms(swap) {
+                Ok(terms) => {
+                    watched.push(swap);
+                    readable.push((swap.id, terms));
+                }
+                Err(e) => self.forward_failed(swap, &e, &mut failed),
             }
         }
-        for swap in self.store.pending_reverse_swaps()? {
+        let by_id: HashMap<_, _> = watched.iter().map(|swap| (swap.id, *swap)).collect();
+        // Settled states are read deep to check they hold; one that never showed is read deep,
+        // with that block's time, to show it never will.
+        let reads = self
+            .read_swaps(
+                &readable,
+                u64::from(self.config.evm_confirmations.get()),
+                |id, state, now| {
+                    let swap = by_id[&id];
+                    let never_opened = state.is_none() && !swap.settled && now >= swap.t1;
+                    let settled =
+                        state.is_some_and(|s| matches!(s.stage, Stage::Claimed | Stage::Refunded));
+                    Confirm {
+                        state: settled || never_opened,
+                        time: never_opened,
+                    }
+                },
+            )
+            .await?;
+        if reads.now().is_none() {
+            // Nothing to read: a call nodes don't bill keeps the pass a test of the RPC.
+            let chain_id = self.settlement.chain_id().await?;
+            anyhow::ensure!(
+                chain_id == self.chain_id,
+                "the settlement RPC serves chain {chain_id}, not {}",
+                self.chain_id
+            );
+        }
+        self.set_chain_busy(reads.now().is_some() || !pending_reverse.is_empty());
+        for (swap, (_, terms)) in watched.into_iter().zip(&readable) {
+            match self.advance(swap, terms, &reads).await {
+                Ok(()) => self.record_alert_failure("forward", swap.id, None),
+                Err(e) => self.forward_failed(swap, &e, &mut failed),
+            }
+        }
+        for swap in pending_reverse {
             if let Err(e) = self.advance_reverse_claim(&swap).await {
                 failed.push(swap.id);
                 warn!(swap_id = %swap.id, operation = "reverse_claim", "{e:#}");
@@ -677,6 +718,12 @@ impl Maker {
         }
         self.record_monitor_errors(failed);
         Ok(())
+    }
+
+    fn forward_failed(&self, swap: &Swap, e: &anyhow::Error, failed: &mut Vec<B256>) {
+        failed.push(swap.id);
+        warn!(swap_id = %swap.id, operation = "forward_watchtower", "{e:#}");
+        self.record_alert_failure("forward", swap.id, self.forward_alert(swap, Alert::Stuck));
     }
 
     async fn run_zcash(self: &Arc<Self>) {
@@ -777,14 +824,21 @@ impl Maker {
                 warn!(id = %swap.id, "Zcash sweep: {e:#}");
             }
         }
-        for mut swap in self
-            .store
-            .watched_reverse_swaps()?
-            .into_iter()
-            .filter(|_| self.config.reverse.is_some())
-        {
+        if self.config.reverse.is_none() {
+            return Ok(());
+        }
+        let swaps = self.store.watched_reverse_swaps()?;
+        if swaps.is_empty() {
+            return Ok(());
+        }
+        let reads = self.reverse_reads(&swaps).await;
+        for mut swap in swaps {
             self.queue_alert(self.reverse_alert(&swap, Alert::Started));
-            if let Err(e) = self.advance_reverse(&mut swap, synced).await {
+            let advanced = match &reads {
+                Ok(reads) => self.advance_reverse(&mut swap, synced, reads).await,
+                Err(e) => Err(anyhow::anyhow!("reading the reverse swaps: {e:#}")),
+            };
+            if let Err(e) = advanced {
                 warn!(id = %swap.id, "reverse swap: {e:#}");
                 self.record_alert_failure(
                     "reverse",
@@ -799,18 +853,14 @@ impl Maker {
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance"), err(level = "warn"))]
-    async fn advance(&self, swap: &Swap, now: u64) -> Result<()> {
-        let confirmations = u64::from(self.config.evm_confirmations.get());
-        let terms = self.terms(swap)?;
-        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
+    async fn advance(&self, swap: &Swap, terms: &Terms, reads: &Reads) -> Result<()> {
+        let Some(chain) = reads.latest(swap.id, terms)? else {
             if !swap.settled
-                && now >= swap.t1
-                && self.settlement.confirmed_now(confirmations).await? >= swap.t1
-                && self
-                    .settlement
-                    .confirmed_swap(swap.id, &terms, confirmations)
-                    .await?
-                    .is_none()
+                && reads.now().is_some_and(|now| now >= swap.t1)
+                && reads.confirmed_time().is_some_and(|time| time >= swap.t1)
+                && reads
+                    .confirmed(swap.id, terms)?
+                    .is_some_and(|confirmed| confirmed.is_none())
             {
                 info!(id = %swap.id, "the swap never opened");
                 self.return_token(swap);
@@ -818,20 +868,18 @@ impl Maker {
             }
             return Ok(());
         };
-        if chain.refund_lock_until != 0 || chain.stage == Stage::Refunded {
+        if (chain.refund_lock_until != 0 || chain.stage == Stage::Refunded) && !swap.refund_started
+        {
             self.store.start_refund(&swap.id)?;
         }
         let (funds, sweep_confirmed, synced) = self.wallet_observation(swap);
-        let chain_confirmed = if matches!(chain.stage, Stage::Claimed | Stage::Refunded) {
-            self.settlement
-                .confirmed_swap(swap.id, &terms, confirmations)
-                .await?
+        let chain_confirmed = matches!(chain.stage, Stage::Claimed | Stage::Refunded)
+            && reads
+                .confirmed(swap.id, terms)?
+                .flatten()
                 .is_some_and(|confirmed| {
                     confirmed.stage == chain.stage && confirmed.secret == chain.secret
-                })
-        } else {
-            false
-        };
+                });
         if swap.settled {
             let still_settled = match chain.stage {
                 Stage::Refunded => chain_confirmed,
@@ -846,6 +894,12 @@ impl Maker {
             }
             self.store.resume(&swap.id)?;
         }
+        let now = match reads.now() {
+            Some(now) => now,
+            // Reopened by its Zcash side, a finalized swap that the pass didn't read: its claim or
+            // refund decides what comes next, whatever the time.
+            None => self.settlement.now().await?,
+        };
         let observation = Observation {
             now,
             opened_at: swap.opened_at,
@@ -873,18 +927,18 @@ impl Maker {
                 self.journal(
                     swap.id,
                     "ready",
-                    self.settlement.ready(swap.id, &terms).await,
+                    self.settlement.ready(swap.id, terms).await,
                 )?;
             }
             Action::LockRefund => {
                 self.store.start_refund(&swap.id)?;
-                let sent = self.settlement.lock_refund(swap.id, &terms).await;
+                let sent = self.settlement.lock_refund(swap.id, terms).await;
                 self.journal(swap.id, "lock_refund", sent)?;
             }
             Action::Refund => {
                 self.store.start_refund(&swap.id)?;
                 let e = self.maker_share(swap.quote.nonce)?;
-                let sent = self.settlement.refund(swap.id, &terms, &e).await;
+                let sent = self.settlement.refund(swap.id, terms, &e).await;
                 self.journal(swap.id, "refund", sent)?;
             }
             Action::Sweep => {} // The Zcash worker builds and broadcasts sweeps.
@@ -909,9 +963,11 @@ impl Maker {
         self.wallet_snapshots.lock().unwrap().get(&account).copied()
     }
 
+    /// Sweeps once the watchtower's last read shows the swap claimed: only a reorganisation
+    /// undoes a claim, and the watchtower's next read shows that.
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_sweep"), err(level = "warn"))]
     async fn advance_sweep(&self, swap: &Swap) -> Result<()> {
-        if let Some(chain) = self.settlement.swap(swap.id, &self.terms(swap)?).await?
+        if let Some(Some(chain)) = self.last_read(swap.id)
             && chain.stage == Stage::Claimed
         {
             self.sweep(swap, &chain).await?;

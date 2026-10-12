@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 alloy = { version = "1.8", default-features = false, features = [
     "contract",
+    "json-rpc",
     "provider-http",
     "reqwest-rustls-tls",
     "rpc-types",
@@ -23,6 +24,7 @@ alloy-primitives = { version = "~1.5", default-features = false }
 alloy-sol-type-parser = { version = "~1.5", default-features = false }
 async-trait = "0.1"
 http-body = "1"
+tower-layer = "0.3"
 tower-service = "0.3"
 orchard = { workspace = true, features = ["circuit"] }
 pczt = { workspace = true, features = ["prover"] }
@@ -30,6 +32,8 @@ rand.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 secrecy = "0.8"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 tonic = { version = "0.14", default-features = false, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }

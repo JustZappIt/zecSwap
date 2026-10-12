@@ -63,14 +63,15 @@ impl Maker {
     }
 
     /// Reads a transaction's receipt once: whether Railgun took part, for explorer links, and
-    /// what it cost, which `value_costs` prices. Nothing while it is unmined.
-    pub(super) async fn read_transaction(&self, scope: &str, hash: B256) -> Result<()> {
+    /// what it cost, which `value_costs` prices. Nothing while it is unmined, which it answers
+    /// false.
+    pub(super) async fn read_transaction(&self, scope: &str, hash: B256) -> Result<bool> {
         let Some(facts) = self
             .settlement
             .transaction_facts(hash, self.config.token)
             .await?
         else {
-            return Ok(());
+            return Ok(false);
         };
         self.store.save_evm_info(scope, hash, facts.uses_railgun)?;
         if self.store.block_time(scope, facts.block_hash)?.is_none()
@@ -78,7 +79,8 @@ impl Maker {
         {
             self.store.save_block_time(scope, facts.block_hash, time)?;
         }
-        self.store.save_evm_cost(scope, hash, &facts, None)
+        self.store.save_evm_cost(scope, hash, &facts, None)?;
+        Ok(true)
     }
 
     /// Records the fees of the maker's new Zcash sends, then values in USD what is recorded but

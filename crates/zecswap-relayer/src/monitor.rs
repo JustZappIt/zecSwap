@@ -70,6 +70,8 @@ pub struct MonitorSnapshot {
     operations: BTreeMap<&'static str, OperationSnapshot>,
     last_failure: Option<Failure>,
     gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
+    /// What every account of the relayer's has asked the RPC since it started.
+    rpc: zecswap_chain::evm::RpcReport,
 }
 
 #[derive(Serialize)]
@@ -100,6 +102,7 @@ pub(crate) struct Deployment {
     pub(crate) maker: Address,
     pub(crate) fees: Fees,
     pub(crate) gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
+    pub(crate) rpc: zecswap_chain::evm::RpcReport,
 }
 
 impl Monitor {
@@ -186,6 +189,7 @@ impl Monitor {
                 .collect(),
             last_failure: state.last_failure,
             gas_alerts: deployment.gas_alerts,
+            rpc: deployment.rpc,
         }
     }
 }
