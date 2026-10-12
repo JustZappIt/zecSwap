@@ -445,6 +445,16 @@ relayer's and issuer's configs, the maker's `secrets.env` and the nginx site wit
 the previous relayer and issuer refuse `network`. The Worker's previous version ignores
 `TICKET_SECRET`.
 
+Each kind of send left from its own account for the first time, and the relayer kept each account's
+float at the gas price, while a send holds its gas at the fee cap it is filled with: on Sepolia
+hundreds of times the gas price. Within a minute a user's refund lock found the locks account
+holding 0.000008 ETH where it reserves 0.00003, and from 03:39 UTC the stopgap
+`top_up_transactions = 3000` in the relayer's config kept every account sending. The relayer of
+`e4d43fc`, in `/opt/zecswap/releases/20261011-lane-float-e4d43fc` from 03:53 UTC, keeps each
+float at the fee cap instead, and the stopgap line is gone; only the relayer changed.
+[sepolia-lane-float.json](../deployments/sepolia-lane-float.json) records it, and
+`/var/backups/zecswap/20261011-lane-float-e4d43fc` the config with the stopgap.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
