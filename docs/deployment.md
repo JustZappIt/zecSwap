@@ -98,7 +98,7 @@ boundaries. A 34-KiB proof-shaped request reached application validation through
 nginx route; a body over 132 KiB was rejected. An Android HTTP-client user agent also
 reached the API. Maker info still identifies the same deployment, and `/maker/healthz`
 returns 204. These probes submit no transaction. A real Railgun proof and funded Android
-swap remain unverified; follow the [funding API handoff](reverse-flow.md#sponsored-initial-funding-sepolia).
+swap remain unverified; follow the [funding API handoff](reverse-flow.md#sponsored-initial-funding).
 
 Rollback files are in `/var/backups/zecswap/20261002-funding-e831bda` (root-only):
 `relayer-config.toml`, `nginx.conf`, and `previous-current`. Restore their original owners
@@ -457,6 +457,35 @@ previous relayer refuses this config, and the previous maker ignores `quote_cost
    outside version control.
 5. Validate the public endpoints below before updating the app's pinned deployment.
 
+## Switching to mainnet
+
+One setting picks the network: `network = "testnet"` or `"mainnet"` in the maker's, the
+relayer's and the issuer's configs. `crates/zecswap-api/src/network.rs` holds what each network
+fixes, and each service refuses to start on anything of another network:
+
+- The maker and the relayer refuse an EVM RPC on another network's chain (mainnet: Ethereum,
+  chain 1; testnet: Sepolia, Base Sepolia or a local anvil), a contract paying into a Railgun
+  other than the network's own there (mainnet `0xFA7093CD…`, Sepolia `0xeCFCf3b4…`), and on
+  mainnet a token other than USDC (`0xA0b86991…`).
+- The maker refuses a `sweep_to` of another Zcash network, and its wallets a lightwalletd serving
+  another (each asks its server once). `lightwalletd` defaults to the network's.
+- The relayer's fundings go through Railgun's own Relay Adapt on its chain, the default for
+  `[reverse_funding] relay_adapt`; another one is refused.
+- The issuer on mainnet refuses `insecure-test`, whatever `allow_insecure` says.
+- `add-inventory --mint` is refused on mainnet, and the CLI's `--network` picks its lightwalletd.
+
+Mainnet can't run yet: the pinned Zcash crates schedule NU7, whose Ironwood pool swaps use, on
+testnet alone, so a mainnet maker refuses to start until a release schedules it on mainnet.
+
+A mainnet deployment also needs its own: a contract deployed with `RAILGUN` set to the mainnet
+proxy, and the `LOCK_DURATION` chosen for it; the maker's and relayer's `contract`, `token`,
+`maker` and RPC URLs, the relayer's through a private RPC; mainnet ETH and USDC;
+`MAKER_TICKET_SECRET` and the Worker's `TICKET_SECRET`; a fresh data directory; the issuer's
+production packages and signing digests; a Worker of its own (`deploy/worker/wrangler.jsonc`
+names the testnet one); mainnet observability labels ([observability.md](observability.md));
+deposits counted at the wallet's default of 10 confirmations; and the dashboard's mainnet
+environment. Funding sponsorship has no aggregate budget, which matters more on mainnet.
+
 ## Operating the deployment
 
 Grafana Cloud telemetry setup, resource limits, credential handling and rollback
@@ -484,10 +513,17 @@ before switching to the service account.
 
 From `deploy/worker/`, run `npm ci`, `npm run types`, `npm run check`, `npm test`, then
 `npx wrangler deploy --dry-run` before `npm run deploy`. The VPC binding is pinned in
-`wrangler.jsonc`. The gateway streams request bodies unchanged, disables caching and does
-not retry financial requests. It forwards only the `Authorization`, `Content-Type` and
-`Content-Length` headers, so it passes on nothing else a client sends, nor the client address
-Cloudflare attaches to the request.
+`wrangler.jsonc`, and the Worker needs the maker's `MAKER_TICKET_SECRET` as its own secret
+(`npx wrangler secret put TICKET_SECRET`). The gateway streams request bodies unchanged, disables
+caching and does not retry financial requests. It forwards only the `Authorization`,
+`Content-Type` and `Content-Length` headers, so it passes on nothing else a client sends, nor the
+client address Cloudflare attaches to the request.
+
+Each accept answers with a ticket for its swap: the swap id and an HMAC-SHA256 of it under
+`MAKER_TICKET_SECRET`, a secret of its own that leads to none of the maker's keys. Wallets send it
+in the `ZecSwap-Ticket` header of every relayer request for the swap. The Worker checks it with
+WebCrypto, never asking the origin, and only then adds a `ZecSwap-Swap` header naming the swap; it
+drops both headers from what a client sends.
 
 Every request reaches nginx from `cloudflared` on loopback, so nginx can't tell callers apart,
 and limits are never per IP. `deploy/nginx.conf` gives each kind of request its own allowance
@@ -495,18 +531,21 @@ instead, so a flood of one kind never refuses another:
 
 | Requests | Allowance |
 | --- | --- |
-| Settling funded swaps (locks, claims, payouts, refunds, rescues): every relayer `POST` route except `reverse/fund` | 5 a second; up to 50 more wait their turn |
-| Starting swaps: quotes, accepts and `reverse/fund` | 2 a second, bursts of 20 |
+| A swap's relayer requests (fundings, locks, claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
+| The same requests without one | 2 a second shared; up to 20 more wait their turn |
+| Starting swaps: quotes and accepts | 2 a second, bursts of 20 |
 | Private Railgun sends and withdrawals: `railgun/transact` | 2 a second, bursts of 20 |
 | The issuer's challenges and tokens | 2 a second, bursts of 20 |
 | Reverse swap status, which reads the chain on every request | 2 a second, bursts of 20 |
 | Everything else | 10 a second, bursts of 50 |
 
 Each swap's status also has its own allowance, of one a second with bursts of ten, so an app
-polling its swap too fast slows only that swap. Past an allowance nginx answers `503` with
-`Retry-After` and the gateway's `unavailable` error, which clients take as a passing failure;
-the services' own `503`s pass through unchanged. It never answers `429`, which from the issuer means a device's
-tokens for the day are spent.
+polling its swap too fast slows only that swap. Relayer requests without a ticket share their
+small allowance while apps that send none are about; once every app sends tickets, setting
+`$zecswap_tickets_required` to 1 in `deploy/nginx.conf` refuses them with `403` instead. Past an
+allowance nginx answers `503` with `Retry-After` and the gateway's `unavailable` error, which
+clients take as a passing failure; the services' own `503`s pass through unchanged. It never
+answers `429`, which from the issuer means a device's tokens for the day are spent.
 
 Keep the maker seed, root secret, and both databases together in protected backups. A disk
 on the VPS is persistent storage, not an off-host backup. Restoring an old snapshot also
@@ -520,10 +559,10 @@ away from at most `tokens_per_day` swaps a day ([tokens.md](tokens.md)); that li
 the issuer checks Android key attestation, as the hosted testnet issuer has since October 8
 ([Token issuer attestation](#token-issuer-attestation)). The relayer serves only its configured token and maker, on every
 route, and every swap it serves paid for its accept; the funding route keeps its transaction
-validation and gas caps, and there is no aggregate sponsorship budget. nginx's allowances are
-per kind of request, not per caller: a flood of claims for swaps that don't exist still fills
-the claims allowance, since the relayer reads the chain to tell them from real ones. Rely on
-the cap and the tokens, not on them. Keep the existing forward ordering:
+validation and gas caps, and there is no aggregate sponsorship budget. A flood of relayer
+requests without tickets fills only their shared allowance, never a ticketed swap's. Tickets are
+only as scarce as accepts, though: each accept gives one, and so each token spent on one, which
+the issuer's attestation bounds. Rely on the cap and the tokens, not on the allowances. Keep the existing forward ordering:
 depositing ZEC before escrow exists would remove its contract-backed recovery path.
 
 ### Token issuer attestation

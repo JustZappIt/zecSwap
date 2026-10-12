@@ -12,10 +12,11 @@ use tonic::codegen::{Bytes, http};
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tower_service::Service;
 use zcash_client_backend::proto::service::{
-    BlockId, ChainSpec, RawTransaction, SendResponse, TreeState, TxFilter,
+    BlockId, ChainSpec, Empty, RawTransaction, SendResponse, TreeState, TxFilter,
     compact_tx_streamer_client::CompactTxStreamerClient,
 };
-use zcash_protocol::{TxId, consensus::BlockHeight};
+use zcash_protocol::TxId;
+use zcash_protocol::consensus::{BlockHeight, NetworkType};
 
 use crate::Error;
 
@@ -133,6 +134,29 @@ fn endpoint(url: &str) -> Result<Endpoint, Error> {
         endpoint = endpoint.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
     }
     Ok(endpoint)
+}
+
+/// Refuses a server on another Zcash network than `network`.
+pub(crate) async fn check_network(
+    client: &mut Lightwalletd,
+    network: NetworkType,
+) -> Result<(), Error> {
+    let expected = match network {
+        NetworkType::Main => "main",
+        NetworkType::Test => "test",
+        NetworkType::Regtest => "regtest",
+    };
+    let served = client
+        .get_lightd_info(Empty {})
+        .await?
+        .into_inner()
+        .chain_name;
+    if served != expected {
+        return Err(Error::Config(format!(
+            "lightwalletd serves Zcash's {served} network, not {expected}"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) async fn chain_tip(client: &mut Lightwalletd) -> Result<BlockHeight, Error> {

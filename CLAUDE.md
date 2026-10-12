@@ -98,6 +98,30 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Review fixes and the network switch (2026-10-11): calldata wallets post (`railgun/transact`,
+  `reverse/fund` and its inner calls) must be its call's canonical ABI encoding, lengths capped,
+  before anything is decoded (`evm/canonical.rs`): alloy follows offsets anywhere, so shared
+  tails decoded to gigabytes. A withdrawal must pay out the relayer's own token, and the notes of
+  a send that reverted wait an hour (`503`, `Retry-After`). Each accept answers with a `ticket`,
+  an HMAC of the swap id under `MAKER_TICKET_SECRET`, sent in `ZecSwap-Ticket`; the Worker checks
+  it (`TICKET_SECRET`) and names the swap to nginx, which gives each ticketed swap its own
+  allowance (`$zecswap_tickets_required` turns away unticketed ones once apps send tickets).
+  `network = "testnet" | "mainnet"` in the maker's, relayer's and issuer's configs
+  (`zecswap_api::Network`) fixes the Zcash network, chains, Railgun, USDC and lightwalletd, and
+  each refuses to start on another's; mainnet waits on NU7 in the zcash crates.
+- The relayer's queues (2026-10-11): a request that would fail never holds up another. Every send
+  is simulated before it takes its account's turn (`Settlement::submit`, Railgun sends, fundings)
+  and retries wait outside it. Locks the contract would refuse are refused untried (`check_lock`),
+  a repeat of a held lock sends nothing, and a claim's share must be the swap's. A swap's
+  requests take turns (`Relayer::alone`): one posted while another runs gets `503 unavailable`.
+  Each kind of send has its own account (`lanes.rs`): claims and refunds; locks and readies;
+  Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
+  users sign for (payouts, rescues, refund payouts) and tops the others up to
+  `top_up_transactions` (8) of their largest transactions at the gas price now, every 30 s. The
+  monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
+  the account that signed them, so older journal entries still resolve. Still open: sending
+  without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared
+  allowance.
 - Profitability (2026-10-08, branch `feature/profitability`): the price engine asks
   `[pricing.market] providers` in order (`coinmarketcap`, `alchemy`; required; keys
   `ZCASH_CMC_KEY`, `ALCHEMY_API_KEY`), so quotes pause only while every one fails; the

@@ -277,7 +277,7 @@ impl Tokens {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Path, Request, State};
@@ -309,7 +309,7 @@ mod tests {
         paid: Mutex<Vec<B256>>,
     }
 
-    async fn serve(app: Router) -> String {
+    pub(crate) async fn serve(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -320,6 +320,7 @@ mod tests {
         let pem = dir.join("issuer.pem");
         std::fs::write(&pem, key.to_pem().unwrap()).unwrap();
         Issuer::new(zecswap_issuer::Config {
+            network: zecswap_api::Network::Testnet,
             listen: "127.0.0.1:0".parse().unwrap(),
             name: "issuer.test".into(),
             key: pem,
@@ -368,6 +369,7 @@ mod tests {
                 swap_id: quote,
                 t0: 0,
                 t1: 0,
+                ticket: String::new(),
             }))
         }
         async fn status(

@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use alloy_primitives::Address;
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use zcash_address::ZcashAddress;
 use zcash_keys::keys::UnifiedSpendingKey;
-use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Network, Prover, TxId, Wallet, connect};
+use zecswap_api::Network;
+use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Prover, TxId, Wallet, connect};
 
 use crate::store::Store;
 
@@ -18,15 +19,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(20);
 #[derive(Parser)]
 #[command(about = "Test client for ZecSwap: a seed wallet plus the user side of a swap")]
 struct Cli {
-    #[arg(long, value_enum, default_value_t = Chain::Testnet, global = true)]
-    network: Chain,
-    #[arg(
-        long,
-        env = "LIGHTWALLETD_URL",
-        default_value = "https://testnet.zec.rocks:443",
-        global = true
-    )]
-    lightwalletd: String,
+    #[arg(long, default_value_t = Network::Testnet, global = true)]
+    network: Network,
+    /// The network's own (testnet.zec.rocks or zec.rocks) unless given.
+    #[arg(long, env = "LIGHTWALLETD_URL", global = true)]
+    lightwalletd: Option<String>,
     #[arg(
         long,
         env = "ZECSWAP_CLI_DIR",
@@ -36,12 +33,6 @@ struct Cli {
     data_dir: PathBuf,
     #[command(subcommand)]
     command: Command,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Chain {
-    Mainnet,
-    Testnet,
 }
 
 #[derive(Subcommand)]
@@ -87,6 +78,7 @@ enum Command {
 }
 
 pub(crate) struct Session {
+    pub(crate) network: Network,
     pub(crate) store: Store,
     pub(crate) wallet: Wallet,
     pub(crate) client: Lightwalletd,
@@ -140,15 +132,14 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let network = match cli.network {
-        Chain::Mainnet => Network::MainNetwork,
-        Chain::Testnet => Network::TestNetwork,
-    };
+    let network = cli.network;
     std::fs::create_dir_all(&cli.data_dir)?;
+    let lightwalletd = cli.lightwalletd.as_deref();
     let mut ctx = Session {
+        network,
         store: Store::new(&cli.data_dir),
-        wallet: Wallet::open(cli.data_dir.join("wallet.sqlite"), network)?,
-        client: connect(&cli.lightwalletd)
+        wallet: Wallet::open(cli.data_dir.join("wallet.sqlite"), network.zcash())?,
+        client: connect(lightwalletd.unwrap_or(network.lightwalletd()))
             .await
             .context("connecting to lightwalletd")?,
         prover: Prover::default(),

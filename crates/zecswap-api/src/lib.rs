@@ -5,12 +5,15 @@ use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 use zecswap_core::{PublicShare, ShareProof, ViewingKeys};
 
+pub mod network;
 pub mod relayer;
 pub mod reverse;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod service;
 pub mod tokens;
+
+pub use network::Network;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,6 +72,9 @@ pub struct Acceptance {
     pub token_request: Option<String>,
 }
 
+/// The header every relayer request for a swap carries its `Accepted::ticket` in.
+pub const TICKET_HEADER: &str = "ZecSwap-Ticket";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Accepted {
@@ -78,6 +84,11 @@ pub struct Accepted {
     /// the wallet checks on-chain.
     pub t0: u64,
     pub t1: u64,
+    /// Sent as it is in the `ZecSwap-Ticket` header of every relayer request for this swap,
+    /// which then has an allowance at the gateway of its own: the swap id, a dot, and an
+    /// HMAC-SHA256 of the id's 32 bytes under a secret the maker shares with the gateway alone,
+    /// in hex.
+    pub ticket: String,
 }
 
 /// `GET /v1/swaps/{id}`: a forward swap as the maker has it. Everything else about it is

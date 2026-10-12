@@ -17,7 +17,7 @@ use zecswap_chain::evm::{Address, PrivateKeySigner, Settlement, U256, deploy};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Network, Prover, Wallet, connect};
 use zecswap_maker::policy::Timing;
 use zecswap_maker::pricing::Pricing;
-use zecswap_maker::{Chain, Config, Maker, Secrets};
+use zecswap_maker::{Config, Maker, Secrets};
 use zecswap_relayer::Relayer;
 use zeroize::Zeroizing;
 
@@ -49,6 +49,11 @@ const RELAYED_GAS: u64 = 1_500_000;
 const SEND_GAS_LIMIT: u64 = 3_000_000;
 /// The private sends of one scenario, two Railgun transactions.
 const SEND_GAS: u64 = 2 * SEND_GAS_LIMIT;
+/// What each account a relayer derives keeps ETH for: transactions of up to 1M gas for a lock
+/// or claim, `SEND_GAS_LIMIT` for a private send.
+const LANE_TRANSACTIONS: u64 = 3;
+const SWAP_LANES_GAS: u64 = 2 * LANE_TRANSACTIONS * 1_000_000;
+const SEND_LANES_GAS: u64 = SWAP_LANES_GAS + LANE_TRANSACTIONS * SEND_GAS_LIMIT;
 /// Approving Railgun and shielding one note, about 3.8M gas on Sepolia.
 const SHIELD_GAS: u64 = 8_000_000;
 /// Each note a send scenario shields into its sender's Railgun wallet: twenty of the test token,
@@ -117,7 +122,10 @@ impl Settings {
             evm_rpc,
             railgun,
             confirmations,
-            lightwalletd: var_or("ZECSWAP_E2E_LIGHTWALLETD", "https://testnet.zec.rocks:443"),
+            lightwalletd: var_or(
+                "ZECSWAP_E2E_LIGHTWALLETD",
+                zecswap_api::Network::Testnet.lightwalletd(),
+            ),
             funder: funder.parse().context("ZECSWAP_E2E_FUNDER_KEY")?,
             wallet_dir: workspace.join(wallet_dir),
             work_dir,
@@ -282,7 +290,7 @@ impl Env {
             chain
                 .send_eth(
                     relayer_key.address(),
-                    fund(RELAYED_GAS * needs.relayed as u64),
+                    fund(RELAYED_GAS * needs.relayed as u64 + SWAP_LANES_GAS),
                 )
                 .await?;
         }
@@ -294,6 +302,7 @@ impl Env {
             token,
             relayer_key,
             None,
+            needs.relayed > 0,
         )
         .await?;
         let sends = match needs.sends {
@@ -301,7 +310,10 @@ impl Env {
             count => {
                 let (key, shielder) = (PrivateKeySigner::random(), PrivateKeySigner::random());
                 chain
-                    .send_eth(key.address(), fund(SEND_GAS * count as u64))
+                    .send_eth(
+                        key.address(),
+                        fund(SEND_GAS * count as u64 + SEND_LANES_GAS),
+                    )
                     .await?;
                 let shields = SHIELDS * count as u64;
                 chain
@@ -315,7 +327,8 @@ impl Env {
                 let journal = Some((&railgun_seed, "relayer-sends.sqlite"));
                 let (rpc, lossy_rpc) = (&settings.evm_rpc, lossy_rpc(settings.evm_rpc.clone()));
                 let (relayer_url, relayer) =
-                    start_relayer(&settings, rpc, contract, token, key.clone(), journal).await?;
+                    start_relayer(&settings, rpc, contract, token, key.clone(), journal, true)
+                        .await?;
                 let (lossy_relayer_url, _) = start_relayer(
                     &settings,
                     &lossy_rpc.await?,
@@ -323,11 +336,12 @@ impl Env {
                     token,
                     key.clone(),
                     journal,
+                    false,
                 )
                 .await?;
                 let forgetful = Some((&railgun_seed, "relayer-sends-forgotten.sqlite"));
                 let (forgetful_relayer_url, _) =
-                    start_relayer(&settings, rpc, contract, token, key, forgetful).await?;
+                    start_relayer(&settings, rpc, contract, token, key, forgetful, false).await?;
                 Some(SendsNode {
                     relayer_url,
                     relayer,
@@ -375,8 +389,8 @@ impl Env {
                     .work_dir
                     .join(format!("{name}-spent-tokens.sqlite")),
             )),
-            network: Chain::Testnet,
-            lightwalletd: settings.lightwalletd.clone(),
+            network: zecswap_api::Network::Testnet,
+            lightwalletd: Some(settings.lightwalletd.clone()),
             evm_rpc: settings.evm_rpc.clone(),
             contract,
             token,
@@ -393,6 +407,7 @@ impl Env {
             zcash_seed: None,
             evm_key: settings.funder.clone(),
             root: maker_root(&attentive_config.data_dir)?,
+            ticket_key: ticket_key(),
         };
         let attentive = MakerNode::start(attentive_config, attentive_secrets, true).await?;
         let silent_config = maker_config("silent-maker");
@@ -400,6 +415,7 @@ impl Env {
             zcash_seed: None,
             evm_key: silent_key,
             root: maker_root(&silent_config.data_dir)?,
+            ticket_key: ticket_key(),
         };
         let silent = MakerNode::start(silent_config, silent_secrets, true).await?;
 
@@ -697,6 +713,7 @@ async fn start_issuer(
     let return_pem = work_dir.join("return.pem");
     std::fs::write(&return_pem, returns.to_pem()?)?;
     let issuer = zecswap_issuer::Issuer::new(zecswap_issuer::Config {
+        network: zecswap_api::Network::Testnet,
         listen: "127.0.0.1:0".parse().expect("socket address"),
         name: "zecswap-e2e".into(),
         key: pem,
@@ -724,7 +741,8 @@ async fn start_issuer(
 
 /// Runs a relayer in-process on `evm_rpc`, with its own key: it must never be a maker. With the
 /// seed of its own Railgun wallet and a journal, it sends private Railgun sends for a fee note,
-/// and records what each cost and earned, as the relayer's binary does.
+/// and records what each cost and earned, as the relayer's binary does. Only one of the relayers
+/// sharing a key `tops_up` the accounts it derives.
 async fn start_relayer(
     settings: &Settings,
     evm_rpc: &str,
@@ -732,9 +750,11 @@ async fn start_relayer(
     token: Address,
     key: PrivateKeySigner,
     sends: Option<(&[u8; 64], &str)>,
+    tops_up: bool,
 ) -> Result<(String, Arc<Relayer>)> {
     // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
+        network: zecswap_api::Network::Testnet,
         evm_rpc: evm_rpc.into(),
         contract,
         token,
@@ -750,6 +770,7 @@ async fn start_relayer(
             .collect(),
         fee_margin_bps: 1_000,
         claim_margin: 3 * 60,
+        top_up_transactions: LANE_TRANSACTIONS,
         reverse_funding: None,
         railgun_sends: sends.map(|(_, journal)| zecswap_relayer::RailgunSendsConfig {
             fee: SEND_FEE,
@@ -763,6 +784,9 @@ async fn start_relayer(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
     tokio::spawn(relayer.clone().run_costs());
+    if tops_up {
+        tokio::spawn(relayer.clone().run_top_ups());
+    }
     let router = zecswap_relayer::api::router(relayer.clone());
     tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
@@ -829,6 +853,13 @@ fn pricing() -> Pricing {
         max_units: 20,
         costs: None,
     }
+}
+
+/// The suite's makers answer straight to their clients, with no gateway to share it with.
+fn ticket_key() -> Zeroizing<[u8; 32]> {
+    let mut key = Zeroizing::new([0; 32]);
+    UnwrapErr(SysRng).fill_bytes(&mut key[..]);
+    key
 }
 
 /// Kept beside the maker's data so an interrupted run's swaps can still be settled.

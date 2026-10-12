@@ -23,6 +23,7 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zecswap_api::Network;
 use zecswap_api::server::{self, Json, MonitorToken};
 use zecswap_api::service::ErrorCode;
 use zecswap_api::tokens::{self, AttestationChallenge, TokenKey, TokenRequests, TokenResponses};
@@ -36,6 +37,8 @@ const MAX_BATCH: usize = 100;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Testnet or mainnet: mainnet takes no `insecure-test`.
+    pub network: Network,
     pub listen: SocketAddr,
     /// The issuer every token's challenge names, as the maker's `[tokens]` does.
     pub name: String,
@@ -46,7 +49,7 @@ pub struct Config {
     pub tokens_per_day: u32,
     /// How a device proves it is a genuine install.
     pub attestation: Attestation,
-    /// Lets `insecure-test` run, which believes any caller.
+    /// Lets `insecure-test` run on testnet, which believes any caller.
     #[serde(default)]
     pub allow_insecure: bool,
 }
@@ -230,6 +233,9 @@ impl Issuer {
             )",
         )?;
         let attester: Box<dyn Attester> = match &config.attestation {
+            Attestation::InsecureTest if config.network == Network::Mainnet => {
+                bail!("insecure-test attestation believes any caller: never on mainnet")
+            }
             Attestation::InsecureTest if !config.allow_insecure => {
                 bail!("insecure-test attestation believes any caller: set allow_insecure to run it")
             }
@@ -464,15 +470,17 @@ mod tests {
 
     use super::*;
 
-    /// `insecure-test` believes any caller, so it runs only when its config says so outright.
+    /// `insecure-test` believes any caller, so it runs only when its config says so outright,
+    /// and never on mainnet.
     #[test]
-    fn insecure_test_runs_only_when_allowed() {
+    fn insecure_test_runs_only_when_allowed_on_testnet() {
         let dir = tempfile::tempdir().unwrap();
         let key = IssuerKey::generate().unwrap().to_pem().unwrap();
         std::fs::write(dir.path().join("issuer.pem"), key).unwrap();
-        let config = |allow: &str| -> Config {
+        let config = |network: &str, allow: &str| -> Config {
             let text = format!(
                 r#"
+                network = "{network}"
                 listen = "127.0.0.1:0"
                 name = "issuer.test"
                 key = "{dir}/issuer.pem"
@@ -485,9 +493,16 @@ mod tests {
             );
             toml::from_str(&text).unwrap()
         };
-        let refused = Issuer::new(config("")).err().unwrap();
+        let refused = Issuer::new(config("testnet", "")).err().unwrap();
         assert!(refused.to_string().contains("allow_insecure"), "{refused}");
-        assert!(Issuer::new(config("allow_insecure = true")).is_ok());
+        assert!(Issuer::new(config("testnet", "allow_insecure = true")).is_ok());
+        let mainnet = Issuer::new(config("mainnet", "allow_insecure = true"))
+            .err()
+            .unwrap();
+        assert!(
+            mainnet.to_string().contains("never on mainnet"),
+            "{mainnet}"
+        );
     }
 
     /// An issuer in `dir` that takes any device's word for who it is, three tokens a day.
@@ -495,6 +510,7 @@ mod tests {
         let key = dir.join("issuer.pem");
         std::fs::write(&key, IssuerKey::generate().unwrap().to_pem().unwrap()).unwrap();
         Issuer::new(Config {
+            network: Network::Testnet,
             listen: "127.0.0.1:0".parse().unwrap(),
             name: "issuer.test".into(),
             key,

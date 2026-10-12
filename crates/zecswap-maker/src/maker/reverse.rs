@@ -144,11 +144,7 @@ impl Maker {
                     "quote was accepted with other keys".into(),
                 ));
             }
-            return Ok(Accepted {
-                swap_id,
-                t0: quote.ready_deadline,
-                t1: quote.refund_after,
-            });
+            return Ok(self.accepted(swap_id, quote.ready_deadline, quote.refund_after));
         }
         if unix_now() >= quote.terms.expires_at {
             return Err(MakerError::UnknownQuote);
@@ -196,11 +192,7 @@ impl Maker {
             spend.keep()?;
         }
         tracing::info!(%swap_id, outcome = "accepted", "reverse swap accepted; awaiting escrow funding");
-        Ok(Accepted {
-            swap_id,
-            t0: swap.quote.ready_deadline,
-            t1: swap.quote.refund_after,
-        })
+        Ok(self.accepted(swap_id, swap.quote.ready_deadline, swap.quote.refund_after))
     }
 
     pub(super) fn reverse_reserved(&self) -> Result<u64> {
@@ -495,10 +487,7 @@ impl Maker {
             &swap.acceptance.viewing_keys,
         )?;
         let address = joint
-            .unified_address(match self.config.network {
-                crate::Chain::Mainnet => zecswap_core::NetworkType::Main,
-                crate::Chain::Testnet => zecswap_core::NetworkType::Test,
-            })
+            .unified_address(self.config.network.zcash_type())
             .parse()?;
         let txid = wallet.pay(
             &self.prover,

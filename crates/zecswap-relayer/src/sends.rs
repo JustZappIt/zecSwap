@@ -26,6 +26,9 @@ const SETTLED_DEPTH: u64 = 12;
 const REBROADCAST_AFTER: u64 = 60;
 /// Seconds between looks for the receipt of a send this long unmined: a dropped one never mines.
 const UNMINED_RECHECK: u64 = 600;
+/// Seconds after a send that reverted before the relayer sends its notes again: the gas of one
+/// failed send an hour is the most a set of notes can cost it.
+const REVERTED_COOLDOWN: u64 = 3600;
 /// The most sends one export carries; older ones need a later `since`.
 const LEDGER_LIMIT: usize = 1000;
 
@@ -304,11 +307,14 @@ impl Relayer {
             }
         }
         let nullifiers = transact.nullifiers();
-        let (mut spending, mut unknown) = (Vec::new(), false);
+        let (mut spending, mut unknown, mut cooling) = (Vec::new(), false, 0);
         for entry in sends.journal.spending(chain_id, &nullifiers)? {
             match self.fate(&entry).await? {
                 Fate::Sent => spending.push(entry.signed.hash),
-                Fate::Reverted => {}
+                Fate::Reverted => {
+                    let left = (entry.sent_at + REVERTED_COOLDOWN).saturating_sub(now());
+                    cooling = cooling.max(left);
+                }
                 Fate::Dead => sends.journal.forget(chain_id, entry.id)?,
                 Fate::Unknown => unknown = true,
             }
@@ -319,6 +325,9 @@ impl Relayer {
         if unknown {
             return Err(unsettled());
         }
+        if cooling > 0 {
+            return Err(RelayerError::Reverted(cooling));
+        }
         if self.settlement.spends_spent_notes(&transact).await? {
             return Err(RelayerError::Spent(Vec::new()));
         }
@@ -327,7 +336,8 @@ impl Relayer {
             .check(&transact, &sends.keys)
             .map_err(refused)?;
         let tx = self
-            .settlement
+            .lanes
+            .sends
             .send_transact(
                 &sends.policy,
                 &transact,
@@ -347,7 +357,7 @@ impl Relayer {
     }
 
     async fn fate(&self, entry: &Entry) -> Result<Fate> {
-        let chain = &self.settlement;
+        let chain = self.sender_of(&entry.signed);
         Ok(match chain.transaction_status(entry.signed.hash).await? {
             Status::Pending | Status::Mined { succeeded: true } => Fate::Sent,
             Status::Mined { succeeded: false } => Fate::Reverted,

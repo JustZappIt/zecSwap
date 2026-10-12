@@ -1,3 +1,5 @@
+use super::super::railgun::tests::amplifying;
+use super::super::tests::creation;
 use super::super::{PrivateKeySigner, deploy, reverse_funding_calls};
 use super::*;
 use alloy::node_bindings::Anvil;
@@ -5,6 +7,9 @@ use std::path::Path;
 use zecswap_core::{NetworkType, derive_maker_share, derive_user_keys};
 
 type Mutation = Box<dyn Fn(&mut IRelayAdapt::relayCall)>;
+
+/// The chain the SDK vector's proofs are bound to.
+const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 
 fn fixture() -> (FundingPolicy, Domain, B256, IRelayAdapt::relayCall) {
     let json: serde_json::Value = serde_json::from_str(include_str!("sdk-vector.json")).unwrap();
@@ -114,20 +119,34 @@ fn rejects_wrong_envelope_and_unsafe_configuration() {
         )
         .is_err()
     );
-    assert!(p.validate_config(1, Address::repeat_byte(9)).is_err());
-    assert!(p.validate_config(SEPOLIA_CHAIN_ID, p.maker).is_err());
-    assert!(
-        p.validate_config(SEPOLIA_CHAIN_ID, Address::repeat_byte(9))
-            .is_err()
-    );
-    assert!(p.validate_config(SEPOLIA_CHAIN_ID, p.fee_recipient).is_ok());
+    assert!(p.validate_config(p.maker).is_err());
+    assert!(p.validate_config(Address::repeat_byte(9)).is_err());
+    assert!(p.validate_config(p.fee_recipient).is_ok());
     let mut empty = p.clone();
     empty.max_gas_price_wei = 0;
-    assert!(
-        empty
-            .validate_config(SEPOLIA_CHAIN_ID, p.fee_recipient)
-            .is_err()
-    );
+    assert!(empty.validate_config(p.fee_recipient).is_err());
+}
+
+#[test]
+fn calldata_written_to_amplify_is_refused_before_decoding() {
+    let (p, d, id, _) = fixture();
+    let transactions = amplifying(MAX_TRANSACTIONS, 60 * 1024);
+    let mut data = IRelayAdapt::relayCall::SELECTOR.to_vec();
+    // The heads; then an action with no calls: random, requireSuccess, minGasLimit, calls.
+    for word in [64, 64 + transactions.len()] {
+        data.extend(U256::from(word).to_be_bytes::<32>());
+    }
+    data.extend(transactions);
+    for word in [0, 1, 0, 128, 0] {
+        data.extend(U256::from(word).to_be_bytes::<32>());
+    }
+    assert!(data.len() <= MAX_CALLDATA_BYTES);
+    let decoded = IRelayAdapt::relayCall::abi_decode(&data).unwrap();
+    assert!(decoded.abi_encoded_size() > 12_000_000);
+    assert!(matches!(
+        p.validate(d, id, p.relay_adapt, 0, data.into()),
+        Err(FundingError::Rejected("noncanonical Relay Adapt calldata"))
+    ));
 }
 
 #[test]
@@ -228,20 +247,6 @@ fn rejects_unbound_proofs_and_wrong_unshields() {
     }
 }
 
-fn creation(artifacts: &Path, name: &str) -> Vec<u8> {
-    let json: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(artifacts.join(format!("{name}.sol/{name}.json"))).unwrap(),
-    )
-    .unwrap();
-    hex::decode(
-        json["bytecode"]["object"]
-            .as_str()
-            .unwrap()
-            .trim_start_matches("0x"),
-    )
-    .unwrap()
-}
-
 #[tokio::test]
 async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
     let Ok(anvil) = Anvil::new().chain_id(SEPOLIA_CHAIN_ID).try_spawn() else {
@@ -276,7 +281,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
     p.token = token;
     p.relay_adapt = adapter;
     p.fee_recipient = sponsor;
-    p.validate_config(SEPOLIA_CHAIN_ID, sponsor).unwrap();
+    p.validate_config(sponsor).unwrap();
     let d = Domain {
         chain_id: SEPOLIA_CHAIN_ID,
         contract: contract.into(),
@@ -340,7 +345,14 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
     let mut invalid = relay.clone();
     invalid._transactions[0].proof.a.x = U256::ZERO;
     let invalid = validate(&p, d, id, &invalid).unwrap();
-    assert!(chain.sponsor_reverse_funding(&p, &invalid).await.is_err());
+    let line = chain.sending.lock().await;
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        chain.sponsor_reverse_funding(&p, &invalid),
+    )
+    .await;
+    assert!(matches!(refused, Ok(Err(_))), "it waited for the line");
+    drop(line);
     assert_eq!(
         chain.provider.get_transaction_count(sponsor).await.unwrap(),
         nonce

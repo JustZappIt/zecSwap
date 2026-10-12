@@ -11,5 +11,5 @@ mod store;
 mod telegram;
 mod watchtower;
 
-pub use config::{Chain, Config, Secrets};
+pub use config::{Config, Secrets};
 pub use maker::{Maker, MakerError, Status};

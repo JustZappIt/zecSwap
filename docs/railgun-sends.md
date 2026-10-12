@@ -102,7 +102,7 @@ releases them. Post the same bytes again after any answer that says to.
 | `413` | none, from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
 | `404`, `405` | `notFound`, `methodNotAllowed` | This relayer has no such route. Nothing was sent. | As `rejected`. |
 | `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. `{"code": "alreadySpent", "error": "…", "transactions": ["0x…"]}` names the relayer's own transactions that spend them; it is empty when the notes went in one the relayer didn't send or no longer remembers. | Settle from the chain; don't free the notes. |
-| `503` | `unavailable` | An earlier send of these notes has no known outcome yet, the relayer can't price gas right now, or the gateway is busy. | Post the same bytes again later. |
+| `503` | `unavailable` | An earlier send of these notes has no known outcome yet, one reverted less than an hour ago (`Retry-After` says how many seconds are left), the relayer can't price gas right now, or the gateway is busy. | Post the same bytes again later. |
 | `500` | `internal` | The relayer could not read the chain or record the send. Nothing is known. | Post the same bytes again later. |
 
 A transport failure, a timeout or any other answer: post the same bytes again later. The relayer
@@ -113,16 +113,18 @@ recorded transaction no node knows is broadcast again after a minute if its nonc
 and forgotten once its nonce went to another transaction mined twelve blocks deep, after which the
 same bytes are checked and sent afresh. `200` means submitted: the transaction can still revert,
 and the notes are spent only once their nullifiers are on chain. The same bytes keep naming a
-send that reverted; to try again with notes it left unspent, prove again.
+send that reverted; to try again with notes it left unspent, prove again. The relayer sends no
+proof of those notes until an hour after the send that reverted, and answers `503` until then,
+so a wallet can't make it pay for failed sends of the same notes over and over.
 
 The `rejected` reasons, in the `error` field, for the wallet's logs:
 
 - `this relayer sends no Railgun transactions`, `wrong chain`
 - `wrong destination or ETH value`, `the calldata is too large`, `not a Railgun transact call`,
-  `noncanonical transact calldata`
-- `expected between one and sixteen Railgun transactions`, `each Railgun transaction must spend
-  notes`, `a proof is for another chain`, `a proof is bound to an adapt contract`, `redirected
-  unshields are not supported`
+  `noncanonical transact calldata`, `the calldata holds more than the relayer takes`
+- `expected at least one Railgun transaction`, `each Railgun transaction must spend notes`, `a
+  proof is for another chain`, `a proof is bound to an adapt contract`, `redirected unshields are
+  not supported`, `a withdrawal must pay out the relayer's token`
 - `a proof's minimum gas price is above the relayer's cap`, `the transaction does not pay the
   relayer's fee` (below `fee`, or, where it prices gas, below what the gas costs at the honored
   rate: fetch the terms again and prove again)
@@ -133,15 +135,20 @@ Errors never carry calldata, ciphertexts or the chain node's own messages.
 
 ## How the relayer checks a send
 
-Before sending anything it decodes the calldata as Railgun's V2.1 `transact(Transaction[])`
-(`abi/V2.1/RailgunSmartWallet.json`) and requires its canonical encoding, the proxy as `to`, no
-ETH, and each Railgun transaction to spend notes, on this chain, with a zero adapt contract and
-adapt parameters, and an unshield that is none or normal. It reads its fee the way the SDK's
-`extractFirstNoteERC20AmountMapFromTransactionRequest` reads one for public broadcasters: the
-first output of each Railgun transaction, decrypted with the relayer's viewing key, counts if its
-note is the commitment the transaction adds and is in the relayer's token; the sum must reach
-`fee`. The proof binds those ciphertexts, so nobody can swap the note. It then simulates the call
-on the pending state at its gas price, which runs Railgun's own checks of the proofs, their roots,
+Before decoding anything it requires the calldata to be the canonical encoding of Railgun's V2.1
+`transact(Transaction[])` (`abi/V2.1/RailgunSmartWallet.json`), each value in bytes of its own,
+within these limits, read in place: at most 16 Railgun transactions, each spending at most 13 notes
+into at most 13, with no more ciphertexts than outputs, an annotation of at most 62 bytes (what V2
+wallets write) and a memo of at most 1 KiB. It then requires the proxy as `to`, no ETH, and each
+Railgun transaction to spend notes, on this chain, with a zero adapt contract and adapt parameters,
+and an unshield that is none or normal, of the relayer's token alone: Railgun pays a withdrawal out
+through the token's own `transfer`, and a token anyone wrote could pass the simulation and revert
+on chain, at the relayer's cost. It reads its fee the way the SDK's
+`extractFirstNoteERC20AmountMapFromTransactionRequest` reads one for public broadcasters: the first
+output of each Railgun transaction, decrypted with the relayer's viewing key, counts if its note is
+the commitment the transaction adds and is in the relayer's token; the sum must reach `fee`. The
+proof binds those ciphertexts, so nobody can swap the note. It then simulates the call on the
+pending state at its gas price, which runs Railgun's own checks of the proofs, their roots,
 nullifiers and minimum gas prices, and estimates its gas. Where it prices gas, the fee must also
 cover that gas at the price it pays, at the lowest rate it quoted in the last ten minutes (so a
 proof made from terms fetched then still goes, though ETH rose since): fee × 10^18 ≥ gas × gas
@@ -191,8 +198,8 @@ fees collect there. The relayer refuses to start without it, or when it is the m
 The journal records every send before its broadcast, which is what keeps a repeat from sending
 twice; keep it with the relayer's state, never delete it while sends are pending, and run one
 relayer per key and journal. A one-note transfer with fee and change burns about 1.07M gas on a
-fork of Sepolia and 1.34M on Sepolia itself, and the relayer's account must hold that at its gas
-price to send it.
+fork of Sepolia and 1.34M on Sepolia itself, and the account the relayer sends them from must
+hold that at its gas price: it is topped up from the relayer's own (`top_up_transactions`).
 
 ## What each send earns and costs
 

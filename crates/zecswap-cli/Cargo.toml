@@ -20,6 +20,7 @@ zcash_address.workspace = true
 zcash_keys = { version = "=0.17.0-pre.0", features = ["orchard"] }
 zcash_protocol.workspace = true
 zip32 = "0.3"
+zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-client = { path = "../zecswap-client" }
 zecswap-core = { path = "../zecswap-core" }

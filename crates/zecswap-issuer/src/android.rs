@@ -939,6 +939,7 @@ mod tests {
         let dir = dir.display();
         let text = format!(
             r#"
+            network = "testnet"
             listen = "127.0.0.1:0"
             name = "{ISSUER}"
             key = "{dir}/issuer.pem"

@@ -11,6 +11,8 @@ use zecswap_tokens::Pending;
 
 use super::*;
 
+const TICKET_KEY: [u8; 32] = [8; 32];
+
 fn maker() -> (TempDir, Arc<Maker>) {
     let dir = tempfile::tempdir().unwrap();
     let mut config: Config = toml::from_str(include_str!("../../maker.example.toml")).unwrap();
@@ -35,6 +37,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
         account: key.address(),
         lock_duration: 7200,
         root: Zeroizing::new([7; 32]),
+        ticket_key: Zeroizing::new(TICKET_KEY),
         chain_id: 1,
         sweep_to: joint
             .unified_address(zecswap_core::NetworkType::Test)
@@ -57,6 +60,45 @@ fn maker() -> (TempDir, Arc<Maker>) {
         config,
     };
     (dir, Arc::new(maker))
+}
+
+/// A reverse quote of `maker`'s, its share from `nonce`.
+fn reverse_quote(maker: &Maker, nonce: u64) -> zecswap_api::reverse::Quote {
+    let share = maker.maker_share(nonce).unwrap();
+    zecswap_api::reverse::Quote {
+        terms: Quote {
+            quote_id: B256::repeat_byte(1),
+            maker: maker.account,
+            maker_share: share.public(),
+            maker_proof: maker
+                .context([1; 32])
+                .prove_maker(&share, UnwrapErr(SysRng)),
+            chain_id: maker.chain_id,
+            contract: maker.config.contract,
+            token: maker.config.token,
+            amount: 1234567,
+            deposit_zat: 100001,
+            expires_at: 2000,
+            network_cost: None,
+        },
+        user: Address::repeat_byte(2),
+        refund_note: B256::repeat_byte(3),
+        funding_deadline: 3000,
+        ready_deadline: 4000,
+        refund_after: 5000,
+    }
+}
+
+#[test]
+fn lightwalletd_follows_the_network_unless_named() {
+    let example = include_str!("../../maker.example.toml");
+    let unnamed = example
+        .replace("lightwalletd = ", "# lightwalletd = ")
+        .replace(r#"network = "testnet""#, r#"network = "mainnet""#);
+    let config: Config = toml::from_str(&unnamed).unwrap();
+    assert_eq!(config.lightwalletd(), "https://zec.rocks:443");
+    let config: Config = toml::from_str(example).unwrap();
+    assert_eq!(config.lightwalletd(), "https://testnet.zec.rocks:443");
 }
 
 fn acceptance() -> Acceptance {
@@ -114,28 +156,7 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
     let reverse = crate::store::ReverseSwap {
         id: B256::repeat_byte(6),
         nonce: 0,
-        quote: zecswap_api::reverse::Quote {
-            terms: Quote {
-                quote_id: B256::repeat_byte(1),
-                maker: maker.account,
-                maker_share: share.public(),
-                maker_proof: maker
-                    .context([1; 32])
-                    .prove_maker(&share, UnwrapErr(SysRng)),
-                chain_id: maker.chain_id,
-                contract: maker.config.contract,
-                token: maker.config.token,
-                amount: 1234567,
-                deposit_zat: 100001,
-                expires_at: 2000,
-                network_cost: None,
-            },
-            user: Address::repeat_byte(2),
-            refund_note: B256::repeat_byte(3),
-            funding_deadline: 3000,
-            ready_deadline: 4000,
-            refund_after: 5000,
-        },
+        quote: reverse_quote(&maker, 0),
         acceptance: acceptance(),
         account: swap.zcash_account,
         deposit: Some(TxId::from_bytes([8; 32])),
@@ -161,8 +182,8 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
     };
     let mut keys = Vec::new();
     for (network, name) in [
-        (crate::Chain::Testnet, "testnet"),
-        (crate::Chain::Mainnet, "mainnet"),
+        (zecswap_api::Network::Testnet, "testnet"),
+        (zecswap_api::Network::Mainnet, "mainnet"),
     ] {
         maker.config.network = network;
         maker.chain_id = if name == "testnet" { 11155111 } else { 1 };
@@ -598,6 +619,101 @@ async fn both_endpoints_return_503_at_startup_and_when_stale() {
             expected.1
         );
     }
+}
+
+/// Every accept answer carries the swap's ticket, which verifies under the ticket secret alone:
+/// a repeated reverse accept's, and the forward one's, which is built the same way (an accept that
+/// opens a swap needs lightwalletd for its deposit account).
+#[tokio::test]
+async fn accept_answers_carry_a_ticket_that_verifies_under_the_secret() {
+    let verifies = |ticket: &str, swap_id: B256, key: &[u8]| {
+        let mut expected = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        expected.update(swap_id.as_slice());
+        ticket.split_once('.').is_some_and(|(id, mac)| {
+            id == swap_id.to_string()
+                && hex::decode(mac).is_ok_and(|mac| expected.verify_slice(&mac).is_ok())
+        })
+    };
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.config.reverse = Some(crate::config::ReverseConfig {
+        evm_confirmations: std::num::NonZeroU32::MIN,
+        funding_window: 900,
+        ready_after: 7200,
+        refund_after: 10800,
+        deposit_margin: 1800,
+        fee_reserve_zat: 20000,
+    });
+    let inventory = UnifiedSpendingKey::from_seed(
+        &zecswap_chain::zcash::Network::TestNetwork,
+        &[1; 32],
+        0u32.try_into().unwrap(),
+    )
+    .unwrap();
+    maker.inventory = Some((AccountUuid::from_uuid(uuid::Uuid::nil()), inventory));
+    let quote = maker
+        .store
+        .insert_reverse_quote(|nonce| {
+            let mut quote = reverse_quote(&maker, nonce);
+            quote.terms.expires_at = unix_now() + 600;
+            Ok(quote)
+        })
+        .unwrap();
+    let (nonce, _) = maker
+        .store
+        .reverse_quote(quote.terms.quote_id)
+        .unwrap()
+        .unwrap();
+    let user = SecretShare::random(UnwrapErr(SysRng));
+    let payout = Payout {
+        user: quote.user.into(),
+        note: Some(quote.refund_note.0),
+    };
+    let acceptance = Acceptance {
+        user_share: user.public(),
+        user_proof: maker.context(quote.terms.quote_id.0).prove_user(
+            &quote.terms.maker_share,
+            &user,
+            &payout,
+            UnwrapErr(SysRng),
+        ),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+        token_request: None,
+    };
+    let swap_id = zecswap_chain::evm::reverse_swap_id(quote.user, &quote.terms.maker_share);
+    let swap = crate::store::ReverseSwap {
+        id: swap_id,
+        nonce,
+        quote: quote.clone(),
+        acceptance: acceptance.clone(),
+        account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        deposit: None,
+        sweep: None,
+        settled: false,
+        token_return: None,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&swap, unix_now(), None)
+        .unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+
+    let reverse = maker
+        .accept_reverse(quote.terms.quote_id, acceptance, None)
+        .await
+        .unwrap();
+    assert_eq!(reverse.swap_id, swap_id);
+    assert!(verifies(&reverse.ticket, swap_id, &TICKET_KEY));
+    assert!(!verifies(&reverse.ticket, swap_id, &[9; 32]));
+    let forward_id = B256::repeat_byte(4);
+    let forward = maker.accepted(forward_id, 3700, 7300);
+    assert!(verifies(&forward.ticket, forward_id, &TICKET_KEY));
+    assert!(!verifies(
+        &forward.ticket,
+        B256::repeat_byte(5),
+        &TICKET_KEY
+    ));
 }
 
 #[tokio::test(start_paused = true)]

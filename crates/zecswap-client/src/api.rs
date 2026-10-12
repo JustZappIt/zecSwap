@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
 use zecswap_api::service::{ErrorCode, ErrorResponse};
-use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status};
+use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status, TICKET_HEADER};
 
 use crate::tokens::Tokens;
 
@@ -100,7 +100,9 @@ impl MakerApi {
 }
 
 /// A relayer's API. It can delay a swap but not redirect it: all it sends is signed by the
-/// swap's own key or checked by the contract.
+/// swap's own key or checked by the contract. Each request for a swap carries the ticket its
+/// accept answered with, where the wallet has one: the gateway gives the swap an allowance of
+/// its own.
 #[derive(Clone)]
 pub struct RelayerApi(Endpoint);
 
@@ -125,30 +127,54 @@ impl RelayerApi {
 
     /// Submit a persisted, locally proved funding transaction. Returned hashes are pending;
     /// reconcile the escrow independently, including after any transport failure.
-    pub async fn fund_reverse(&self, request: &zecswap_api::reverse::Funding) -> Result<Sent> {
-        self.0.post("/v1/reverse/fund", request).await
+    pub async fn fund_reverse(
+        &self,
+        request: &zecswap_api::reverse::Funding,
+        ticket: Option<&str>,
+    ) -> Result<Sent> {
+        self.0
+            .post_for_swap("/v1/reverse/fund", request, ticket)
+            .await
     }
 
     pub async fn ready_reverse(
         &self,
         request: &zecswap_api::reverse::Authorization,
+        ticket: Option<&str>,
     ) -> Result<Sent> {
-        self.0.post("/v1/reverse/ready", request).await
+        self.0
+            .post_for_swap("/v1/reverse/ready", request, ticket)
+            .await
     }
 
     pub async fn lock_reverse_refund(
         &self,
         request: &zecswap_api::reverse::Authorization,
+        ticket: Option<&str>,
     ) -> Result<Sent> {
-        self.0.post("/v1/reverse/lock-refund", request).await
+        self.0
+            .post_for_swap("/v1/reverse/lock-refund", request, ticket)
+            .await
     }
 
-    pub async fn refund_reverse(&self, request: &zecswap_api::reverse::Refund) -> Result<Sent> {
-        self.0.post("/v1/reverse/refund", request).await
+    pub async fn refund_reverse(
+        &self,
+        request: &zecswap_api::reverse::Refund,
+        ticket: Option<&str>,
+    ) -> Result<Sent> {
+        self.0
+            .post_for_swap("/v1/reverse/refund", request, ticket)
+            .await
     }
 
-    pub async fn reverse_refund_payout(&self, request: &Payout) -> Result<Sent> {
-        self.0.post("/v1/reverse/refund-payout", request).await
+    pub async fn reverse_refund_payout(
+        &self,
+        request: &Payout,
+        ticket: Option<&str>,
+    ) -> Result<Sent> {
+        self.0
+            .post_for_swap("/v1/reverse/refund-payout", request, ticket)
+            .await
     }
 
     pub async fn terms(&self) -> Result<Terms> {
@@ -191,16 +217,22 @@ impl RelayerApi {
         }
     }
 
-    pub(crate) async fn lock_claim(&self, request: &LockClaim) -> Result<Sent> {
-        self.0.post("/v1/lock-claim", request).await
+    pub(crate) async fn lock_claim(
+        &self,
+        request: &LockClaim,
+        ticket: Option<&str>,
+    ) -> Result<Sent> {
+        self.0
+            .post_for_swap("/v1/lock-claim", request, ticket)
+            .await
     }
 
-    pub(crate) async fn claim(&self, request: &Claim) -> Result<Sent> {
-        self.0.post("/v1/claim", request).await
+    pub(crate) async fn claim(&self, request: &Claim, ticket: Option<&str>) -> Result<Sent> {
+        self.0.post_for_swap("/v1/claim", request, ticket).await
     }
 
-    pub(crate) async fn payout(&self, request: &Payout) -> Result<Sent> {
-        self.0.post("/v1/payout", request).await
+    pub(crate) async fn payout(&self, request: &Payout, ticket: Option<&str>) -> Result<Sent> {
+        self.0.post_for_swap("/v1/payout", request, ticket).await
     }
 }
 
@@ -268,14 +300,21 @@ impl Endpoint {
     }
 
     async fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
-        self.read(
-            self.http
-                .post(format!("{}{path}", self.url))
-                .json(body)
-                .send()
-                .await?,
-        )
-        .await
+        self.post_for_swap(path, body, None).await
+    }
+
+    /// As `post`, with the ticket of the swap the request is for.
+    async fn post_for_swap<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+        ticket: Option<&str>,
+    ) -> Result<T> {
+        let mut request = self.http.post(format!("{}{path}", self.url)).json(body);
+        if let Some(ticket) = ticket {
+            request = request.header(TICKET_HEADER, ticket);
+        }
+        self.read(request.send().await?).await
     }
 
     async fn read<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
@@ -289,5 +328,48 @@ impl Endpoint {
                 response.text().await?
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use axum::Router;
+    use axum::http::HeaderMap;
+    use axum::routing::post;
+
+    use super::*;
+    use crate::tokens::tests::serve;
+
+    #[tokio::test]
+    async fn a_request_for_a_swap_carries_its_ticket() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = {
+            let seen = seen.clone();
+            move |headers: HeaderMap| async move {
+                let ticket = headers
+                    .get(TICKET_HEADER)
+                    .map(|value| value.to_str().unwrap());
+                seen.lock().unwrap().push(ticket.map(str::to_owned));
+                axum::Json(Sent {
+                    transactions: vec![],
+                })
+            }
+        };
+        let relayer =
+            RelayerApi::new(serve(Router::new().route("/v1/reverse/fund", post(record))).await)
+                .unwrap();
+        let funding = zecswap_api::reverse::Funding {
+            swap_id: B256::repeat_byte(1),
+            chain_id: 1,
+            to: Address::ZERO,
+            data: Default::default(),
+            value: 0,
+        };
+        let ticket = format!("{}.{}", B256::repeat_byte(1), "ab".repeat(32));
+        relayer.fund_reverse(&funding, Some(&ticket)).await.unwrap();
+        relayer.fund_reverse(&funding, None).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), [Some(ticket), None]);
     }
 }

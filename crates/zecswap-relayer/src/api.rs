@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
@@ -83,7 +83,9 @@ async fn lock_claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<LockClaim>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.lock_claim(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.lock_claim(request))
+        .await;
     Ok(Json(relayer.observe("lock_claim", sent)?))
 }
 
@@ -91,7 +93,7 @@ async fn claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Claim>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.claim(request).await;
+    let sent = relayer.alone(request.swap_id, relayer.claim(request)).await;
     Ok(Json(relayer.observe("claim", sent)?))
 }
 
@@ -99,7 +101,9 @@ async fn payout(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.payout(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.payout(request))
+        .await;
     Ok(Json(relayer.observe("payout", sent)?))
 }
 
@@ -107,7 +111,9 @@ async fn rescue(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.rescue(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.rescue(request))
+        .await;
     Ok(Json(relayer.observe("rescue", sent)?))
 }
 
@@ -115,7 +121,9 @@ async fn ready_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.ready_reverse(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.ready_reverse(request))
+        .await;
     Ok(Json(relayer.observe("ready_reverse", sent)?))
 }
 
@@ -123,7 +131,9 @@ async fn fund_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Funding>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.fund_reverse(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.fund_reverse(request))
+        .await;
     Ok(Json(relayer.observe("fund_reverse", sent)?))
 }
 
@@ -131,7 +141,9 @@ async fn lock_reverse_refund(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Authorization>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.lock_reverse_refund(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.lock_reverse_refund(request))
+        .await;
     Ok(Json(relayer.observe("lock_reverse_refund", sent)?))
 }
 
@@ -139,7 +151,9 @@ async fn refund_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::reverse::Refund>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.refund_reverse(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.refund_reverse(request))
+        .await;
     Ok(Json(relayer.observe("refund_reverse", sent)?))
 }
 
@@ -147,7 +161,9 @@ async fn reverse_refund_payout(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Payout>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.reverse_refund_payout(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.reverse_refund_payout(request))
+        .await;
     Ok(Json(relayer.observe("reverse_refund_payout", sent)?))
 }
 
@@ -155,7 +171,9 @@ async fn rescue_reverse(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<zecswap_api::relayer::Rescue>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer.rescue_reverse(request).await;
+    let sent = relayer
+        .alone(request.swap_id, relayer.rescue_reverse(request))
+        .await;
     Ok(Json(relayer.observe("rescue_reverse", sent)?))
 }
 
@@ -193,11 +211,22 @@ impl IntoResponse for RelayerError {
                 ErrorCode::Unavailable,
                 *reason,
             ),
-            RelayerError::Unpriced => server::error(
+            RelayerError::Unpriced | RelayerError::Busy => server::error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::Unavailable,
                 self.to_string(),
             ),
+            RelayerError::Reverted(seconds) => {
+                let mut response = server::error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorCode::Unavailable,
+                    self.to_string(),
+                );
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from(*seconds));
+                response
+            }
             RelayerError::Internal(e) => {
                 error!("{e:#}");
                 server::error(

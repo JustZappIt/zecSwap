@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use zecswap_api::Network;
 use zecswap_chain::evm::{Address, PrivateKeySigner};
-use zecswap_chain::zcash::Network;
 use zeroize::Zeroizing;
 
 use crate::policy::Timing;
@@ -14,8 +14,11 @@ use crate::pricing::Pricing;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub network: Chain,
-    pub lightwalletd: String,
+    /// Testnet or mainnet: the Zcash network, the chains, Railgun and token the maker takes, and
+    /// the lightwalletd it uses unless `lightwalletd` names another.
+    pub network: Network,
+    #[serde(default)]
+    pub lightwalletd: Option<String>,
     /// The EVM chain the settlement contract is on.
     #[serde(alias = "base_rpc")]
     pub evm_rpc: String,
@@ -141,13 +144,6 @@ impl ReverseConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Chain {
-    Mainnet,
-    Testnet,
-}
-
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text =
@@ -155,11 +151,10 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    pub fn network(&self) -> Network {
-        match self.network {
-            Chain::Mainnet => Network::MainNetwork,
-            Chain::Testnet => Network::TestNetwork,
-        }
+    pub fn lightwalletd(&self) -> &str {
+        self.lightwalletd
+            .as_deref()
+            .unwrap_or(self.network.lightwalletd())
     }
 }
 
@@ -170,6 +165,9 @@ pub struct Secrets {
     pub evm_key: PrivateKeySigner,
     /// Every maker share derives from this and a quote nonce (`MAKER_ROOT_SECRET`, 32 bytes hex).
     pub root: Zeroizing<[u8; 32]>,
+    /// Keys each swap's ticket (`MAKER_TICKET_SECRET`, 32 bytes hex). The gateway holds it too,
+    /// so it must lead to nothing else of the maker's.
+    pub ticket_key: Zeroizing<[u8; 32]>,
     pub zcash_seed: Option<Zeroizing<Vec<u8>>>,
 }
 
@@ -178,14 +176,10 @@ impl Secrets {
         let evm_key = env("MAKER_PRIVATE_KEY")?
             .parse()
             .context("MAKER_PRIVATE_KEY")?;
-        let root_hex = env("MAKER_ROOT_SECRET")?;
-        let root = hex::decode(root_hex.trim_start_matches("0x"))
-            .ok()
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .context("MAKER_ROOT_SECRET must be 32 bytes of hex")?;
         Ok(Self {
             evm_key,
-            root: Zeroizing::new(root),
+            root: secret("MAKER_ROOT_SECRET")?,
+            ticket_key: secret("MAKER_TICKET_SECRET")?,
             zcash_seed: match std::env::var("MAKER_ZCASH_SEED") {
                 Ok(value) => {
                     let value = Zeroizing::new(value);
@@ -203,6 +197,14 @@ impl Secrets {
             },
         })
     }
+}
+
+fn secret(name: &str) -> Result<Zeroizing<[u8; 32]>> {
+    hex::decode(env(name)?.trim_start_matches("0x"))
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(Zeroizing::new)
+        .with_context(|| format!("{name} must be 32 bytes of hex"))
 }
 
 fn env(name: &str) -> Result<Zeroizing<String>> {

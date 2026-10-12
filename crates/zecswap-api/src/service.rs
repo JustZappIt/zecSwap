@@ -26,13 +26,6 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ZcashNetwork {
-    Mainnet,
-    Testnet,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerInfo {
@@ -41,7 +34,7 @@ pub struct MakerInfo {
     pub chain_id: u64,
     pub contract: Address,
     pub token: Address,
-    pub zcash_network: ZcashNetwork,
+    pub zcash_network: crate::Network,
     pub reverse_enabled: bool,
     /// Where accepts take tokens, the key the maker hands them back under (base64url SPKI):
     /// one for everyone, which wallets pin.
