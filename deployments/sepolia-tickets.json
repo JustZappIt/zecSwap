@@ -1,0 +1,30 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T03:32:35Z",
+  "sourceCommit": "d7afd11",
+  "release": "/opt/zecswap/releases/20261011-tickets-d7afd11",
+  "previousRelease": "/opt/zecswap/releases/20261009-price-history-46d2db9",
+  "backup": "/var/backups/zecswap/20261011-tickets-d7afd11",
+  "makerSha256": "03d752bbcdb791973e731dc913e649b29d5447c33bda2736ea7cd44d63e81d6d",
+  "relayerSha256": "669b2385b7b8c403dd512d43e7afd528755577b3556f1824434a32e179d4861d",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "nginxSiteSha256": "f64ffe90b2459b04a6fec99be196da952360c2e6711fff5379421f5affd36268",
+  "workerVersion": "<worker version>",
+  "changes": {
+    "makerSecrets": "MAKER_TICKET_SECRET added (32 bytes of hex, the Worker's TICKET_SECRET; no other copy kept)",
+    "relayerConfig": "network = \"testnet\" added; [reverse_funding] relay_adapt kept, Railgun's own on Sepolia",
+    "issuerConfig": "network = \"testnet\" added",
+    "gateway": "relayer requests for a swap with a checked ticket get an allowance per swap (1/s, 10 queued); others share one (2/s, 20 queued); $zecswap_tickets_required 0",
+    "worker": "TICKET_SECRET secret; checks ZecSwap-Ticket with WebCrypto and names the swap in ZecSwap-Swap"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "nginxTest": "syntax is ok",
+    "makerInfo": "testnet, chain 11155111, through nginx and the public gateway",
+    "relayerTerms": "payout fee 100000, funding through 0x7e3d929ebd5bdc84d02bd3205c777578f33a214d",
+    "claimsThroughNginx": "422 from the relayer with a swap named and without",
+    "publicGateway": "15 claims at once with a checked ticket for one swap: 11 reached the relayer, 4 refused 503; with a forged ticket: 15 reached it",
+    "errorsAfterStart": 0
+  }
+}

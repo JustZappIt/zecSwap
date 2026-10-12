@@ -24,7 +24,9 @@ day the maker takes Privacy Pass tokens ([October 7 tokens](#october-7-tokens)):
 that pin this contract and both token keys can swap; earlier builds cannot. Since 04:45 UTC on
 October 8 the issuer gives tokens only to installs whose key a locked phone's secure hardware
 attests, and the gateway gives each kind of request its own allowance
-([October 8](#october-8-attestation-and-gateway-allowances)).
+([October 8](#october-8-attestation-and-gateway-allowances)). Since 03:32 UTC on October 12 each
+swap's relayer requests can carry its ticket for an allowance of their own
+([October 12](#october-12-tickets-and-network-names)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -415,6 +417,33 @@ Rollback files are in `/var/backups/zecswap/20261009-swap-fees-546faa8` (root-on
 configs, `maker.sqlite` and `previous-current`. Restore the configs with `cp -a`, point
 `/opt/zecswap/current` back at the previous release and restart the maker and relayer: the
 previous relayer refuses this config, and the previous maker ignores `quote_costs`.
+
+## October 12 tickets and network names
+
+At 03:32 UTC the maker, relayer and issuer restarted on builds of `d7afd11` in
+`/opt/zecswap/releases/20261011-tickets-d7afd11`, now `/opt/zecswap/current`; the release before it
+was `20261009-price-history-46d2db9`. The relayer checks that a wallet's calldata is its call's
+canonical encoding before decoding any of it, takes withdrawals of its own token alone, and holds a
+reverted send's notes for an hour; each kind of send leaves from its own account. Each accept
+answers with a ticket: the maker's `secrets.env` gained `MAKER_TICKET_SECRET`, and the Worker the
+same value as `TICKET_SECRET` (version `485414be`), with no other copy kept. The relayer's and the
+issuer's configs gained `network = "testnet"`, and the relayer keeps Railgun's own Relay Adapt.
+nginx gives each ticketed swap's relayer requests an allowance of their own;
+`$zecswap_tickets_required` stays 0 until the app sends tickets.
+
+The deploy script checked the staged files and that the Droplet was as `46d2db9` left it, backed up
+the relayer's and issuer's configs, the maker's `secrets.env`, the nginx site, `maker.sqlite` and the
+relayer's journal, ran `nginx -t`, and after the restart saw through nginx the maker's info
+(testnet, Sepolia), the relayer's terms, the issuer's key, and claims reach the relayer with a swap
+named and without. Through the public gateway, 15 claims at once with a checked ticket for one swap
+saw 11 reach the relayer and 4 refused, and with a forged ticket all 15 reached it.
+[sepolia-tickets.json](../deployments/sepolia-tickets.json) records the checksums.
+
+Rollback files are in `/var/backups/zecswap/20261011-tickets-d7afd11` (root-only). Restore the
+relayer's and issuer's configs, the maker's `secrets.env` and the nginx site with `cp -a`, point
+`/opt/zecswap/current` back at the previous release, reload nginx and restart the three services:
+the previous relayer and issuer refuse `network`. The Worker's previous version ignores
+`TICKET_SECRET`.
 
 ## Deployment sequence
 
