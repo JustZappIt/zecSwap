@@ -1,0 +1,26 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T08:03:57Z",
+  "sourceCommit": "86651c2",
+  "release": "/opt/zecswap/releases/20261012-node-tip-86651c2",
+  "previousRelease": "/opt/zecswap/releases/20261012-relayer-alerts-0d4cdb3",
+  "backup": "/var/backups/zecswap/20261012-node-tip-86651c2",
+  "makerSha256": "bab76dfededcf56084ff0814f8024cee0aff83a29e2aa8da80b703d754f8051a",
+  "relayerSha256": "3e47321f550d4d70aa6b5df675e6f722dc1561fe86274231f7ab6732e2c9ae02",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "changes": {
+    "maker": "its sends tip what the node suggests under a cap of twice the next block's base fee, and its ledger credits a sponsored funding's fee to the relayer when its funding account sends it",
+    "relayer": "its sends tip what the node suggests, and its accounts' floats follow that cap",
+    "issuer": "0d4cdb3's binary, byte for byte; not restarted"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "stagedChecksums": "matched before install",
+    "relayerTerms": "200 locally within 3 s of the restart; payout fee 100000 through the public gateway",
+    "makerInfo": "200 locally within 3 s of the restart; chain 11155111 and the contract through the public gateway",
+    "makerHealth": "204 at 08:04:33, 36 s after the restart",
+    "errorsAfterStart": 0,
+    "relayerAccount": "0.104 ETH after the owner's top-up, from 0.0013"
+  }
+}

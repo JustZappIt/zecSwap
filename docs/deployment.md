@@ -28,7 +28,9 @@ attests, and the gateway gives each kind of request its own allowance
 swap's relayer requests can carry its ticket for an allowance of their own
 ([October 12](#october-12-tickets-and-network-names)), and since 04:48 UTC the relayer sends a
 Telegram message for each private send and unshield, and the maker one when its account or the
-relayer's runs low on ETH ([October 12 alerts](#october-12-relayer-and-gas-alerts)).
+relayer's runs low on ETH ([October 12 alerts](#october-12-relayer-and-gas-alerts)). Since 08:03
+UTC their sends pay the gas price quotes and fees charge
+([October 12 gas](#october-12-sends-at-the-quoted-gas-price)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -482,6 +484,31 @@ Rollback files are in `/var/backups/zecswap/20261012-relayer-alerts-0d4cdb3` (ro
 the maker's config with `cp -a`, remove the relayer's drop-in and reload systemd, point
 `/opt/zecswap/current` back at the previous release and restart the maker and relayer. The
 previous relayer ignores the queue's tables in its journal.
+
+## October 12 sends at the quoted gas price
+
+At 08:03 UTC the maker and relayer restarted on builds of `86651c2` in
+`/opt/zecswap/releases/20261012-node-tip-86651c2`, now `/opt/zecswap/current`; the issuer is
+`0d4cdb3`'s, byte for byte, and did not restart. Every contract call they send tips what the node
+suggests, the tip in the gas price that quotes and the relayer's fees charge, under a cap of twice
+the next block's base fee ([Each swap pays its own network cost](#each-swap-pays-its-own-network-cost)).
+alloy's own estimate had tipped the median of recent blocks' tips: on Sepolia 0.5 to 1 gwei half
+the time, against the 0.001 gwei quotes charged. The stress run's five 1 tUSD swaps at 05:45 UTC
+lost $17.82 between the maker and the relayer, and the relayer's own account, which pays every
+payout, fell to 0.0013 ETH before the owner topped it up to 0.104. The maker's ledger also credits
+a sponsored funding's fee to the relayer when its funding account sends it. No config changed.
+
+The deploy checked that the Droplet ran `20261012-relayer-alerts-0d4cdb3` and the staged
+checksums, backed up `maker.sqlite` and the relayer's journal, and after the restart saw the
+relayer's terms and the maker's info answer within three seconds, maker health return 204 after
+36, both services answer through the public gateway, and no warning or error in either journal.
+No transaction had been sent since the restart when this was recorded; the next swap's sends are
+the first at the node's tip. [sepolia-node-tip.json](../deployments/sepolia-node-tip.json) records
+the checksums.
+
+Rollback files are in `/var/backups/zecswap/20261012-node-tip-86651c2` (root-only):
+`maker.sqlite`, `railgun-sends.sqlite` and `previous-current`. Point `/opt/zecswap/current` back at
+the previous release and restart the maker and relayer; the stores didn't change, so they stay.
 
 ## Deployment sequence
 
