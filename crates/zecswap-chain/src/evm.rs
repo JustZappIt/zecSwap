@@ -157,13 +157,16 @@ pub struct TransactionFacts {
     pub gas_price: u128,
     /// Whether the configured Railgun proxy emitted anything in it.
     pub uses_railgun: bool,
-    /// The escrow token it moved to its own sender: a relayer's fee.
+    /// The escrow token it paid a relayer: what it moved to its own sender, or a sponsored
+    /// funding's fee.
     pub paid_to_sender: U256,
 }
 
-/// What a transaction paid its sender in `token`. Its transfers to the sender count, or, where
+/// What a transaction paid a relayer in `token`. Its transfers to the sender count, or, where
 /// the token logs no transfers (Sepolia's test token logs none), the fees the escrow's `PaidOut`
-/// and `Rescued` name the sender for and the transfers to it that a Relay Adapt call makes.
+/// and `Rescued` name the sender for and the transfers a Relay Adapt call makes: a sponsored
+/// funding's one transfer is the relayer's fee, which its own account takes while its funding
+/// account sends it.
 fn paid_to(
     sender: Address,
     token: Address,
@@ -209,7 +212,6 @@ fn paid_to(
                 .iter()
                 .filter(|call| call.to == token)
                 .filter_map(|call| IErc20::transferCall::abi_decode(&call.data).ok())
-                .filter(|payment| payment.to == sender)
                 .fold(U256::ZERO, |total, payment| {
                     total.saturating_add(payment.amount)
                 })
@@ -1254,7 +1256,8 @@ mod tests {
         assert_eq!(paid(relayer, &logs, None), U256::from(100_000));
         assert_eq!(paid(vault, &[log(escrow, &paid_out)], None), U256::ZERO);
 
-        // A sponsored funding pays its fee by a call in its Relay Adapt calldata.
+        // A sponsored funding pays its fee by a call in its Relay Adapt calldata, to the relayer's
+        // own account, which may have sent it or left that to its funding account.
         let call = |data: Vec<u8>| railgun::IRelayAdapt::Call {
             to: token,
             data: data.into(),
@@ -1285,7 +1288,11 @@ mod tests {
             },
         }
         .abi_encode();
-        assert_eq!(paid(relayer, &[], Some(&relay)), U256::from(250_000));
-        assert_eq!(paid(vault, &[], Some(&relay)), U256::ZERO);
+        let funding = address!("0x00000000000000000000000000000000000000e5");
+        for sender in [relayer, funding] {
+            assert_eq!(paid(sender, &[], Some(&relay)), U256::from(250_000));
+        }
+        let logged = [log(token, &transfer(relayer, 250_000))];
+        assert_eq!(paid(relayer, &logged, Some(&relay)), U256::from(250_000));
     }
 }

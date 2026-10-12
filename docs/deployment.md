@@ -879,7 +879,8 @@ quote was made at (`quote`: `source` is the provider, or `live`/`history` for a 
 before quotes kept their prices, valued afterwards), every Ethereum transaction on it and
 the maker's Zcash sends on it. A transaction is listed if one of the swap's events was in it
 or the maker sent it for the swap, a reverted send included: its sender, success, gas used,
-effective gas price, the escrow token it moved to its sender (a relayer's fee) and ETH/USD at
+effective gas price, the escrow token it paid a relayer (moved to its sender, or for a sponsored
+funding, to the relayer's own account while its funding account sends it) and ETH/USD at
 its block's time. A Zcash send (`sweep`, reverse `deposit`, or `recovery` after a refund) has
 its exact fee and ZEC/USD when it was sent. Prices are the maker's own when it saw the event
 within five minutes (`live`), else Alchemy's nearest five-minute candle within a quarter hour
