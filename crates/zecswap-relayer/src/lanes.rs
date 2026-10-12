@@ -29,7 +29,6 @@ pub(crate) struct Lanes {
 }
 
 impl Lanes {
-    #[cfg(test)]
     pub(crate) fn connect(
         rpc: &str,
         contract: Address,
@@ -75,6 +74,35 @@ impl Lanes {
         }
         used
     }
+}
+
+/// Sends each lane's ETH, all but its gas, to `to`. Run with the relayer stopped: its next top-up
+/// would fill them again.
+pub async fn drain_lanes(
+    config: &Config,
+    key: &PrivateKeySigner,
+    to: Address,
+) -> anyhow::Result<()> {
+    let lanes = Lanes::connect(&config.evm_rpc, config.contract, key)?;
+    for (lane, settlement) in [
+        ("claims", &lanes.claims),
+        ("locks", &lanes.locks),
+        ("sends", &lanes.sends),
+        ("funding", &lanes.funding),
+    ] {
+        let account = settlement.account().context("a lane sends")?;
+        let balance = settlement.eth_balance(account).await?;
+        // Twice a transfer's gas at today's cap, so a base fee that rises meanwhile still fits.
+        let gas = U256::from(2 * 21_000) * U256::from(settlement.max_fee_per_gas().await?);
+        if balance <= gas {
+            info!(lane, %account, %balance, "nothing to drain");
+            continue;
+        }
+        let amount = balance - gas;
+        let hash = settlement.send_eth(to, amount).await?;
+        info!(lane, %account, %amount, %hash, "drained a lane");
+    }
+    Ok(())
 }
 
 pub(crate) fn derive(key: &PrivateKeySigner, lane: &str) -> anyhow::Result<PrivateKeySigner> {

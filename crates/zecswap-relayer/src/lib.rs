@@ -45,6 +45,7 @@ use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, RpcMeter, Settlement, St
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
 
+pub use lanes::drain_lanes;
 pub use sends::{Sending, SendsSnapshot};
 
 use crate::lanes::Lanes;
