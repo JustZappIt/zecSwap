@@ -36,6 +36,15 @@ RPC/Zcash failures use `|~ "(?i)rpc|zcash|lightwallet|ethereum|sync|scan"`
 followed by the failure filter above. No entries can mean an idle service;
 these are logs, not an uptime alert.
 
+What each service asks its RPC: at start a `settlement RPC` line names its host and a
+fingerprint of its key, and every hour `RPC requests in the last period` gives the requests by
+method (`methods`), their total and the compute units Alchemy bills for them
+(`compute_units`):
+
+```logql
+{app="zecswap",environment="testnet"} |= "RPC requests in the last period"
+```
+
 Public IDs are searchable as structured metadata, outside the indexed selector:
 
 ```logql

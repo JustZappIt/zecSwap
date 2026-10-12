@@ -90,8 +90,11 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
         shown["fees"],
         serde_json::json!({"payout": "1", "funding": null, "sends": null})
     );
+    // The RPC is named by its host and a fingerprint of any key; errors, which quote its URL,
+    // never reach the monitor.
+    assert_eq!(shown["rpc"]["endpoint"], "127.0.0.1, no key");
     let text = shown.to_string();
-    for said in ["127.0.0.1", "another token or maker", "error"] {
+    for said in ["127.0.0.1:1", "another token or maker", "error"] {
         assert!(!text.contains(said), "{said} in {text}");
     }
 }

@@ -699,7 +699,8 @@ clients take as a passing failure; the services' own `503`s pass through unchang
 answers `429`, which from the issuer means a device's tokens for the day are spent.
 `zecswap-cli` waits such a `503` out and sends the request again, for 90 seconds in all.
 
-A quote reserves nothing: it costs the maker two chain reads and a row. An accept spends the
+A quote reserves nothing: it costs the maker a row, and at most two chain reads, its gas price
+and inventory readings lasting a minute and half a minute. An accept spends the
 maker's gas on its `open` and answers once the open lands, and the maker's opens queue one a
 block, so ten accepts at a time finish within the three minutes a client waits for one; past
 them, an accept is turned away at the gateway before it costs anything, its quote still good.
@@ -722,6 +723,28 @@ requests without tickets fills only their shared allowance, never a ticketed swa
 only as scarce as accepts, though: each accept gives one, and so each token spent on one, which
 the issuer's attestation bounds. Rely on the cap and the tokens, not on the allowances. Keep the existing forward ordering:
 depositing ZEC before escrow exists would remove its contract-backed recovery path.
+
+### RPC use
+
+The maker and the relayer read Ethereum through the RPC URL in their configs, and Alchemy caps
+what an account spends a month (30M compute units on its free tier) whichever of its keys spends
+it: give a deployment an account of its own, apart from development's and the apps', or a
+pay-as-you-go plan. Each service logs its RPC when it starts, by its host and a fingerprint of
+its key (the first eight hex digits of the key's SHA-256, never the key), and every hour the
+requests it sent by method, with the compute units Alchemy bills for them
+(`RPC requests in the last period`); each monitor exports the same since its start as `rpc`.
+
+| What | Reads | Compute units |
+| --- | --- | --- |
+| Maker watchtower, every 15 s | With no live swap, one `eth_chainId`, billed nothing. Otherwise the latest block, every live swap in one call, and those settling a few blocks deep in another. A swap whose claim or refund a finalized block holds is never read again | 0 idle; 50 to 75 a pass, however many swaps |
+| Maker Zcash worker | The watchtower's reads; reverse swaps read the same way | 0 without reverse swaps |
+| Transaction observer | Each block's events once, in ten-block windows, every 15 s while swaps are live and every 90 s otherwise; the newest twelve again every 2 minutes, or 10 | about 85k a day idle |
+| Quotes and reverse status | The gas price once a minute, the inventory every 30 s; status from the passes' reads | little, however often asked |
+| Relayer lanes | Every lane's balance in one call, after each of its sends and every 2 minutes | about 35k a day |
+| Relayer fees | The gas price, once a minute at most, however often terms are read | at most 30k a day |
+
+Idle, the two spend about 0.15M compute units a day; a swap about 20k more, beside its own
+transactions.
 
 ### Token issuer attestation
 
@@ -855,9 +878,10 @@ confirmed events, including transactions sent by the app or relayer. A separate
 read-only task scans ten-block RPC windows without locking the wallet or fetching
 prices. Recent blocks are scanned first; historical swaps are backfilled from their
 earliest accepted quote. SQLite stores the cursor and public event metadata under
-the network/chain/contract/maker scope. Each pass reconciles the latest twelve blocks
-to remove orphaned events after a shallow reorganization; deeper reorgs require an
-operator rescan. Confirmation depth follows `reverse.evm_confirmations`, or two when
+the network/chain/contract/maker scope. Each block is read once as the cursor passes it,
+and the latest twelve again every two minutes while swaps are live (every ten otherwise),
+to remove events a shallow reorganization orphaned; deeper reorgs require an operator
+rescan. Confirmation depth follows `reverse.evm_confirmations`, or two when
 reverse swaps are disabled. Confirmed does not mean finalized.
 
 A rescue is the only event with a Telegram message of its own; every other event reaches
@@ -903,8 +927,8 @@ local tests. Production and mainnet should explicitly enable market pricing.
 
 The spread is a share of the swap, but the maker's gas and Zcash fee are the same whatever its
 size, so a small swap's spread can't cover them. With `[pricing.costs]` every quote charges them
-on top of the spread, at the chain's gas price when it is made (read at most every fifteen
-seconds) and the quote's own ZEC, USDC and ETH prices:
+on top of the spread, at the chain's gas price when it is made (read at most once a minute) and
+the quote's own ZEC, USDC and ETH prices:
 
 ```toml
 [pricing.costs]

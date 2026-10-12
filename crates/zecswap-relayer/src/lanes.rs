@@ -9,14 +9,16 @@ use alloy_primitives::{Address, U256, keccak256};
 use anyhow::Context as _;
 use tracing::{info, warn};
 use zecswap_chain::evm::railgun::Signed;
-use zecswap_chain::evm::{PrivateKeySigner, Settlement};
+use zecswap_chain::evm::{PrivateKeySigner, RpcMeter, Settlement};
 use zeroize::Zeroizing;
 
 use crate::{Config, Relayer};
 
 /// A bound on a lock's or claim's gas, Sepolia's repriced state included.
 pub(crate) const SETTLEMENT_GAS: u64 = 1_000_000;
-const TOP_UP_INTERVAL: Duration = Duration::from_secs(30);
+/// Lanes are topped up after each of their sends, which alone spend their ETH, and this often
+/// besides, as the fee cap their float is kept at follows the base fee.
+const TOP_UP_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings.
 pub(crate) struct Lanes {
@@ -27,13 +29,29 @@ pub(crate) struct Lanes {
 }
 
 impl Lanes {
+    #[cfg(test)]
     pub(crate) fn connect(
         rpc: &str,
         contract: Address,
         key: &PrivateKeySigner,
     ) -> anyhow::Result<Self> {
+        Self::connect_metered(rpc, contract, key, &RpcMeter::default())
+    }
+
+    /// Every lane counts its requests on `meter`.
+    pub(crate) fn connect_metered(
+        rpc: &str,
+        contract: Address,
+        key: &PrivateKeySigner,
+        meter: &RpcMeter,
+    ) -> anyhow::Result<Self> {
         let lane = |name| -> anyhow::Result<Settlement> {
-            Ok(Settlement::connect(rpc, contract, derive(key, name)?)?)
+            Ok(Settlement::connect_metered(
+                rpc,
+                contract,
+                derive(key, name)?,
+                meter,
+            )?)
         };
         Ok(Self {
             claims: lane("claims")?,
@@ -80,24 +98,40 @@ impl Relayer {
                     failure_kind, "topping up the sending accounts failed; retrying"
                 );
             }
-            tokio::time::sleep(TOP_UP_INTERVAL).await;
+            tokio::select! {
+                () = tokio::time::sleep(TOP_UP_INTERVAL) => {}
+                () = self.lanes.claims.sent() => {}
+                () = self.lanes.locks.sent() => {}
+                () = self.lanes.sends.sent() => {}
+                () = self.lanes.funding.sent() => {}
+            }
         }
     }
 
     /// Tops up each lane under half of what `top_up_transactions` of its largest transactions
-    /// must hold at the fee cap sends are filled with now.
+    /// must hold at the fee cap sends are filled with now. Every balance is read in one call.
     pub(crate) async fn top_up(&self) -> anyhow::Result<Vec<(&'static str, U256)>> {
         let fee = U256::from(self.settlement.max_fee_per_gas().await?);
+        let lanes = self.lanes.used(&self.config);
+        let mut owners = lanes
+            .iter()
+            .map(|(_, settlement, _)| settlement.account().context("a lane sends"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        owners.push(self.account);
+        let mut balances = self.settlement.eth_balances(&owners).await?;
+        let mut own = balances
+            .pop()
+            .context("no balance for the relayer's own account")?;
         let mut sent = Vec::new();
-        for (lane, settlement, gas) in self.lanes.used(&self.config) {
-            let account = settlement.account().context("a lane sends")?;
+        for ((lane, _, gas), (account, balance)) in
+            lanes.into_iter().zip(owners.into_iter().zip(balances))
+        {
             let keep = fee * U256::from(gas) * U256::from(self.config.top_up_transactions);
-            let balance = self.settlement.eth_balance(account).await?;
             if balance >= keep / U256::from(2) {
                 continue;
             }
             let amount = keep - balance;
-            if self.settlement.eth_balance(self.account).await? < amount {
+            if own < amount {
                 warn!(
                     lane,
                     "the relayer's own account has too little ETH to top this lane up"
@@ -105,6 +139,7 @@ impl Relayer {
                 continue;
             }
             self.settlement.send_eth(account, amount).await?;
+            own -= amount;
             info!(lane, %account, %amount, "topped up a lane");
             sent.push((lane, amount));
         }

@@ -3,8 +3,10 @@
 mod canonical;
 mod events;
 pub mod funding;
+mod meter;
 pub mod railgun;
 pub use events::{SwapEvent, SwapEventKind};
+pub use meter::{RpcMeter, RpcReport, RpcUsage, endpoint, log_usage};
 
 use std::time::Duration;
 
@@ -12,18 +14,23 @@ use alloy::contract::{CallBuilder, CallDecoder};
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::{Ethereum, EthereumWallet, TransactionBuilder};
 use alloy::primitives::keccak256;
+use alloy::providers::bindings::IMulticall3;
 use alloy::providers::utils::{EIP1559_BASE_FEE_MULTIPLIER, Eip1559Estimation};
-use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
+use alloy::providers::{
+    DynProvider, MULTICALL3_ADDRESS, PendingTransactionBuilder, Provider, ProviderBuilder,
+};
+use alloy::rpc::client::ClientBuilder;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify, OnceCell};
 use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
 use crate::Error;
 
+pub use alloy::eips::BlockId;
 pub use alloy::primitives::{Address, B256, U256};
 pub use alloy::signers::local::PrivateKeySigner;
 
@@ -31,6 +38,8 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(180);
 const SEND_ATTEMPTS: u32 = 4;
 const SEND_RETRY_DELAY: Duration = Duration::from_secs(3);
+/// Reads one `aggregate3` carries, far under any node's gas cap for a call.
+const BATCH: usize = 100;
 
 sol! {
     struct ReverseOpenWords {
@@ -263,6 +272,13 @@ pub struct SwapState {
     pub paid_out: bool,
 }
 
+/// A block's number and time: the time is the clock the contract's deadlines run on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub number: u64,
+    pub timestamp: u64,
+}
+
 /// A note Railgun recorded shielding, as its `Shield` event reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shielded {
@@ -338,6 +354,11 @@ pub struct Settlement {
     /// The account's key, for transactions recorded before they are broadcast.
     wallet: Option<EthereumWallet>,
     sending: Line,
+    meter: RpcMeter,
+    /// The contract's Railgun proxy, which it fixes at deployment.
+    railgun: OnceCell<Address>,
+    /// Whether Multicall3 is deployed, so reads of many swaps or accounts take one call.
+    multicall: OnceCell<bool>,
 }
 
 /// The account's sends, one at a time. A turn that ends, whether or not its transaction went
@@ -374,24 +395,42 @@ impl Settlement {
         contract: Address,
         signer: PrivateKeySigner,
     ) -> Result<Self, Error> {
+        Self::connect_metered(rpc_url, contract, signer, &RpcMeter::default())
+    }
+
+    /// As `connect`, counting its requests on `meter`, which other connections may share.
+    pub fn connect_metered(
+        rpc_url: &str,
+        contract: Address,
+        signer: PrivateKeySigner,
+        meter: &RpcMeter,
+    ) -> Result<Self, Error> {
         let account = signer.address();
         let wallet = EthereumWallet::from(signer);
         Ok(Self::new(
-            signing_provider(rpc_url, Some(wallet.clone()))?,
+            signing_provider(rpc_url, Some(wallet.clone()), meter)?,
             contract,
             Some((account, wallet)),
+            meter,
         ))
     }
 
     /// For a party with no account on the chain, which reads and leaves sending to a relayer.
     pub fn read_only(rpc_url: &str, contract: Address) -> Result<Self, Error> {
-        Ok(Self::new(signing_provider(rpc_url, None)?, contract, None))
+        let meter = RpcMeter::default();
+        Ok(Self::new(
+            signing_provider(rpc_url, None, &meter)?,
+            contract,
+            None,
+            &meter,
+        ))
     }
 
     fn new(
         provider: DynProvider,
         contract: Address,
         account: Option<(Address, EthereumWallet)>,
+        meter: &RpcMeter,
     ) -> Self {
         let (account, wallet) = account.unzip();
         Self {
@@ -400,6 +439,9 @@ impl Settlement {
             account,
             wallet,
             sending: Line::default(),
+            meter: meter.clone(),
+            railgun: OnceCell::new(),
+            multicall: OnceCell::new(),
         }
     }
 
@@ -412,19 +454,32 @@ impl Settlement {
         self.account
     }
 
+    /// What this connection has asked its node, and every other connection sharing its meter.
+    pub fn meter(&self) -> &RpcMeter {
+        &self.meter
+    }
+
     pub async fn chain_id(&self) -> Result<u64, Error> {
         self.provider.get_chain_id().await.map_err(Error::contract)
     }
 
     /// The latest block's timestamp: the clock the contract's deadlines run on.
     pub async fn now(&self) -> Result<u64, Error> {
+        Ok(self.head().await?.timestamp)
+    }
+
+    /// The latest block, read once for both its number and its time.
+    pub async fn head(&self) -> Result<Head, Error> {
         let block = self
             .provider
             .get_block_by_number(BlockNumberOrTag::Latest)
             .await
             .map_err(Error::contract)?
             .ok_or_else(|| Error::Contract("no latest block".into()))?;
-        Ok(block.header.timestamp)
+        Ok(Head {
+            number: block.header.number,
+            timestamp: block.header.timestamp,
+        })
     }
 
     pub async fn confirmed_now(&self, confirmations: u64) -> Result<u64, Error> {
@@ -501,13 +556,128 @@ impl Settlement {
         on_chain(id, decode_state(swap)?, terms)
     }
 
-    /// Railgun's proxy, which payouts shield into; zero where the contract pays accounts only.
-    pub async fn railgun(&self) -> Result<Address, Error> {
-        self.contract
-            .RAILGUN()
-            .call()
+    /// What the contract stores of each swap in `ids` at block `at`, in one call for every
+    /// hundred where Multicall3 is deployed, else one a swap.
+    pub async fn swap_states(
+        &self,
+        ids: &[B256],
+        at: BlockId,
+    ) -> Result<Vec<Option<SwapState>>, Error> {
+        if !self.multicall_deployed().await? {
+            let mut states = Vec::with_capacity(ids.len());
+            for id in ids {
+                let swap = self
+                    .contract
+                    .getSwap(*id)
+                    .block(at)
+                    .call()
+                    .await
+                    .map_err(Error::contract)?;
+                states.push(decode_state(swap)?);
+            }
+            return Ok(states);
+        }
+        let calls = ids.iter().map(|id| {
+            (
+                self.contract(),
+                IZecSwap::getSwapCall { id: *id }.abi_encode(),
+            )
+        });
+        self.aggregate(calls.collect(), at)
+            .await?
+            .into_iter()
+            .map(|data| {
+                let swap =
+                    IZecSwap::getSwapCall::abi_decode_returns(&data).map_err(Error::contract)?;
+                decode_state(swap)
+            })
+            .collect()
+    }
+
+    /// The ETH each of `owners` holds, in one call where Multicall3 is deployed.
+    pub async fn eth_balances(&self, owners: &[Address]) -> Result<Vec<U256>, Error> {
+        if !self.multicall_deployed().await? {
+            let mut balances = Vec::with_capacity(owners.len());
+            for owner in owners {
+                balances.push(self.eth_balance(*owner).await?);
+            }
+            return Ok(balances);
+        }
+        let calls = owners.iter().map(|owner| {
+            let call = IMulticall3::getEthBalanceCall { addr: *owner };
+            (MULTICALL3_ADDRESS, call.abi_encode())
+        });
+        self.aggregate(calls.collect(), BlockId::latest())
+            .await?
+            .into_iter()
+            .map(|data| {
+                IMulticall3::getEthBalanceCall::abi_decode_returns(&data).map_err(Error::contract)
+            })
+            .collect()
+    }
+
+    async fn multicall_deployed(&self) -> Result<bool, Error> {
+        self.multicall
+            .get_or_try_init(|| async {
+                let code = self
+                    .provider
+                    .get_code_at(MULTICALL3_ADDRESS)
+                    .await
+                    .map_err(Error::contract)?;
+                Ok::<_, Error>(!code.is_empty())
+            })
             .await
-            .map_err(Error::contract)
+            .copied()
+    }
+
+    /// Each call's answer, in order, from `aggregate3` at `at`; any call that fails fails all.
+    async fn aggregate(
+        &self,
+        calls: Vec<(Address, Vec<u8>)>,
+        at: BlockId,
+    ) -> Result<Vec<alloy::primitives::Bytes>, Error> {
+        let mut answers = Vec::with_capacity(calls.len());
+        for batch in calls.chunks(BATCH) {
+            let calls = batch
+                .iter()
+                .map(|(target, data)| IMulticall3::Call3 {
+                    target: *target,
+                    allowFailure: false,
+                    callData: data.clone().into(),
+                })
+                .collect();
+            let request = TransactionRequest::default()
+                .with_to(MULTICALL3_ADDRESS)
+                .with_input(IMulticall3::aggregate3Call { calls }.abi_encode());
+            let returned = self
+                .provider
+                .call(request)
+                .block(at)
+                .await
+                .map_err(Error::contract)?;
+            let results = IMulticall3::aggregate3Call::abi_decode_returns(&returned)
+                .map_err(Error::contract)?;
+            if results.len() != batch.len() {
+                return Err(Error::Contract("Multicall3 answered another count".into()));
+            }
+            answers.extend(results.into_iter().map(|result| result.returnData));
+        }
+        Ok(answers)
+    }
+
+    /// Railgun's proxy, which payouts shield into; zero where the contract pays accounts only.
+    /// The contract fixes it at deployment, so it is read once.
+    pub async fn railgun(&self) -> Result<Address, Error> {
+        self.railgun
+            .get_or_try_init(|| async {
+                self.contract
+                    .RAILGUN()
+                    .call()
+                    .await
+                    .map_err(Error::contract)
+            })
+            .await
+            .copied()
     }
 
     /// Whether Railgun takes `token` now: it is there, not paused, and not blocking the token.
@@ -989,7 +1159,11 @@ pub async fn deploy(
     signer: PrivateKeySigner,
     init_code: Vec<u8>,
 ) -> Result<Address, Error> {
-    let provider = signing_provider(rpc_url, Some(EthereumWallet::from(signer)))?;
+    let provider = signing_provider(
+        rpc_url,
+        Some(EthereumWallet::from(signer)),
+        &RpcMeter::default(),
+    )?;
     let tx = TransactionRequest::default().with_deploy_code(init_code);
     confirmed(send_at_fees(&provider, tx).await?)
         .await?
@@ -1031,7 +1205,11 @@ async fn fees(provider: &DynProvider) -> Result<Eip1559Estimation, Error> {
     })
 }
 
-fn signing_provider(rpc_url: &str, wallet: Option<EthereumWallet>) -> Result<DynProvider, Error> {
+fn signing_provider(
+    rpc_url: &str,
+    wallet: Option<EthereumWallet>,
+    meter: &RpcMeter,
+) -> Result<DynProvider, Error> {
     let url = rpc_url
         .parse()
         .map_err(|e| Error::Config(format!("RPC URL {rpc_url}: {e}")))?;
@@ -1039,10 +1217,13 @@ fn signing_provider(rpc_url: &str, wallet: Option<EthereumWallet>) -> Result<Dyn
         .timeout(RPC_TIMEOUT)
         .build()
         .map_err(Error::contract)?;
+    let client = ClientBuilder::default()
+        .layer(meter.layer())
+        .http_with_client(http, url);
     let Some(wallet) = wallet else {
         return Ok(ProviderBuilder::new()
             .disable_recommended_fillers()
-            .connect_reqwest(http, url)
+            .connect_client(client)
             .erased());
     };
     // The default nonce cache advances on sends that fail, and every later transaction then
@@ -1053,7 +1234,7 @@ fn signing_provider(rpc_url: &str, wallet: Option<EthereumWallet>) -> Result<Dyn
         .with_simple_nonce_management()
         .fetch_chain_id()
         .wallet(wallet)
-        .connect_reqwest(http, url)
+        .connect_client(client)
         .erased())
 }
 
@@ -1134,7 +1315,9 @@ fn decode_state(swap: IZecSwap::Swap) -> Result<Option<SwapState>, Error> {
     }))
 }
 
-fn on_chain(
+/// The swap `state` shows, read against the terms it should have opened with: none if it never
+/// opened, `Error::WrongTerms` if it opened on others.
+pub fn on_chain(
     id: B256,
     state: Option<SwapState>,
     terms: &Terms,

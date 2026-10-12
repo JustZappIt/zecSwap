@@ -13,8 +13,9 @@ pub(crate) const SEND_FEE_VALIDITY: u64 = 600;
 /// How long a quoted swap fee is honored: the fee a wallet shows when a swap starts is the fee
 /// its claim or funding pays, while the swap runs.
 pub(crate) const SWAP_FEE_VALIDITY: u64 = 3600;
-/// How long a gas price read is current.
-const GAS_PRICE_MAX_AGE: u64 = 15;
+/// How long a gas price read is current: the dashboard and wallets read the terms every half
+/// minute or so, and a fee priced on a minute-old gas price is honored for an hour anyway.
+const GAS_PRICE_MAX_AGE: u64 = 60;
 
 /// What a swap fee pays the relayer back for.
 #[derive(Clone, Copy, Debug)]

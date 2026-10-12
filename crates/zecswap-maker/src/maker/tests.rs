@@ -32,6 +32,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
         failing: std::sync::Mutex::default(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         quote_gas_price: Default::default(),
+        chain: Default::default(),
         monitoring: monitoring::Monitoring::new(Default::default()),
         inventory: None,
         account: key.address(),
@@ -1711,7 +1712,14 @@ async fn a_reverse_swap_hands_its_token_back_once_its_escrow_is_funded() {
         .store
         .insert_reverse_swap(&swap, unix_now(), None)
         .unwrap();
-    maker.advance_reverse(&mut swap, true).await.unwrap();
+    let reads = maker
+        .reverse_reads(std::slice::from_ref(&swap))
+        .await
+        .unwrap();
+    maker
+        .advance_reverse(&mut swap, true, &reads)
+        .await
+        .unwrap();
     let id = swap.id;
     let returned = |maker: &Maker| maker.store.reverse_swap(id).unwrap().unwrap().token_return;
     assert!(returned(&maker).is_none(), "not funded yet");
@@ -1732,7 +1740,14 @@ async fn a_reverse_swap_hands_its_token_back_once_its_escrow_is_funded() {
         let call = serde_json::json!([{"from": payer, "to": to, "data": format!("0x{}", hex::encode(data))}]);
         anvil_rpc(&anvil.endpoint(), "eth_sendTransaction", call).await;
     }
-    maker.advance_reverse(&mut swap, true).await.unwrap();
+    let reads = maker
+        .reverse_reads(std::slice::from_ref(&swap))
+        .await
+        .unwrap();
+    maker
+        .advance_reverse(&mut swap, true, &reads)
+        .await
+        .unwrap();
     assert!(returned(&maker).is_some());
 
     let response = crate::api::router(maker.clone())
@@ -1752,4 +1767,120 @@ async fn a_reverse_swap_hands_its_token_back_once_its_escrow_is_funded() {
         .unwrap();
     let key = maker.tokens().unwrap().return_key().clone();
     pending.finalize(&key, &signature).unwrap();
+}
+
+/// Puts Multicall3's code where it is on every public chain, which a fresh anvil lacks.
+async fn install_multicall3(anvil: &alloy::node_bindings::AnvilInstance) {
+    use alloy::providers::MULTICALL3_ADDRESS;
+    use alloy::providers::bindings::IMulticall3;
+
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[1].clone());
+    let deployed = zecswap_chain::evm::deploy(&url, key, IMulticall3::BYTECODE.to_vec())
+        .await
+        .unwrap();
+    let code = anvil_rpc(&url, "eth_getCode", serde_json::json!([deployed, "latest"])).await;
+    anvil_rpc(
+        &url,
+        "anvil_setCode",
+        serde_json::json!([MULTICALL3_ADDRESS, code]),
+    )
+    .await;
+}
+
+/// A pass reads every swap it watches in one call, however many there are.
+#[tokio::test]
+async fn a_pass_reads_every_swap_it_watches_in_one_call() {
+    let Some((anvil, _dir, maker)) = on_anvil().await else {
+        return;
+    };
+    install_multicall3(&anvil).await;
+    for id in 1..=5 {
+        let swap = recorded_swap(&maker, id, None).await;
+        maker
+            .settlement
+            .open(&maker.terms(&swap).unwrap())
+            .await
+            .unwrap();
+    }
+    let before = maker.settlement.meter().usage();
+    maker.tick().await.unwrap();
+    let pass = maker.settlement.meter().usage().since(&before);
+    assert_eq!(pass.requests.get("eth_call"), Some(&1), "{pass:?}");
+    assert_eq!(
+        pass.requests.get("eth_getBlockByNumber"),
+        Some(&1),
+        "{pass:?}"
+    );
+    let swaps = maker.store.watched_swaps().unwrap();
+    assert!(swaps.iter().all(|swap| {
+        maker
+            .last_read(swap.id)
+            .flatten()
+            .is_some_and(|chain| chain.stage == Stage::Open)
+    }));
+}
+
+/// A settled swap is read every pass until a finalized block holds its refund, and never
+/// after: no reorganisation can undo it.
+#[tokio::test]
+async fn a_finalized_refund_is_never_read_again() {
+    let Some((anvil, _dir, maker, swap, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([swap.opened_at + 3300]),
+    )
+    .await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    for _ in 0..2 {
+        maker.tick().await.unwrap();
+    }
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x2"])).await;
+    maker.tick().await.unwrap();
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+    let usage = |maker: &Maker| maker.settlement.meter().usage();
+
+    let before = usage(&maker);
+    maker.tick().await.unwrap();
+    let pass = usage(&maker).since(&before);
+    assert!(pass.requests.contains_key("eth_call"), "{pass:?}");
+
+    // anvil finalizes 64 blocks back.
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x50"])).await;
+    maker.tick().await.unwrap();
+    let before = usage(&maker);
+    maker.tick().await.unwrap();
+    let pass = usage(&maker).since(&before);
+    assert_eq!(pass.methods(), "eth_chainId=1", "a call nodes don't bill");
+    assert_eq!(pass.compute_units(), 0);
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+}
+
+/// Once the observer keeps up, it reads each block's events once, and a pass with no new blocks
+/// reads none.
+#[tokio::test]
+async fn an_observer_reads_each_block_once() {
+    let Some((anvil, _dir, maker, _, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    maker.transaction_pass().await.unwrap();
+    let usage = |maker: &Maker| maker.settlement.meter().usage();
+    let logs = |maker: &Maker, before| {
+        let pass: zecswap_chain::evm::RpcUsage = usage(maker).since(&before);
+        pass.requests.get("eth_getLogs").copied().unwrap_or(0)
+    };
+
+    let before = usage(&maker);
+    maker.transaction_pass().await.unwrap();
+    assert_eq!(logs(&maker, before), 0, "no new blocks");
+
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x3"])).await;
+    let before = usage(&maker);
+    maker.transaction_pass().await.unwrap();
+    assert_eq!(logs(&maker, before), 1, "the new blocks, once");
 }

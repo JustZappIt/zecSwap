@@ -41,7 +41,7 @@ use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
 use zecswap_api::server::MonitorToken;
 use zecswap_chain::evm::funding::FundingPolicy;
 use zecswap_chain::evm::railgun::{MAX_CALLDATA_BYTES, SendPolicy};
-use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, Settlement, Stage};
+use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, RpcMeter, Settlement, Stage, endpoint};
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
 
@@ -272,8 +272,11 @@ impl Relayer {
                 "gas_alerts queue their messages in the railgun_sends journal"
             );
         }
-        let lanes = Lanes::connect(&config.evm_rpc, config.contract, &key)?;
-        let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
+        info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
+        let meter = RpcMeter::default();
+        let lanes = Lanes::connect_metered(&config.evm_rpc, config.contract, &key, &meter)?;
+        let settlement =
+            Settlement::connect_metered(&config.evm_rpc, config.contract, key, &meter)?;
         let domain = Domain {
             chain_id: settlement.chain_id().await?,
             contract: config.contract.into(),
@@ -390,8 +393,17 @@ impl Relayer {
         result
     }
 
+    /// What every account of the relayer's has asked the RPC.
+    pub fn rpc_meter(&self) -> RpcMeter {
+        self.settlement.meter().clone()
+    }
+
     pub fn monitor_snapshot(&self) -> monitor::MonitorSnapshot {
         self.monitor.snapshot(monitor::Deployment {
+            rpc: self
+                .settlement
+                .meter()
+                .report(endpoint(&self.config.evm_rpc)),
             relayer: self.account,
             accounts: self.lane_accounts(),
             chain_id: self.domain.chain_id,
@@ -484,8 +496,8 @@ impl Relayer {
         }
     }
 
-    /// The gas price now, read at most every fifteen seconds; none where it isn't needed or
-    /// can't be read.
+    /// The gas price now, read at most once a minute; none where it isn't needed or can't be
+    /// read.
     async fn gas_price(&self, pricing: &pricing::GasPricing, gas: u64, now: u64) -> Option<u128> {
         if gas == 0 {
             return None;

@@ -64,6 +64,8 @@ pub(crate) struct MonitorSnapshot {
     policy: Policy,
     swaps: Vec<MonitorSwap>,
     swap_limit: usize,
+    /// What the maker has asked its settlement RPC since it started.
+    rpc: zecswap_chain::evm::RpcReport,
 }
 
 #[derive(Serialize)]
@@ -201,6 +203,10 @@ impl Maker {
             None => None,
         };
         Ok(MonitorSnapshot {
+            rpc: self
+                .settlement
+                .meter()
+                .report(zecswap_chain::evm::endpoint(&self.config.evm_rpc)),
             transactions: self.store.transaction_status(&self.transaction_scope())?,
             zcash_flow: self.store.flow_status(&self.transaction_scope())?,
             notifications: self.store.notification_status(self.telegram.enabled())?,

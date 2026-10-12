@@ -193,6 +193,115 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     );
 }
 
+/// A pass reads any number of swaps, and accounts, in one call where Multicall3 is deployed, as
+/// on every chain the services use, and the same answers one at a time where it isn't; the
+/// contract's Railgun proxy, which it fixes at deployment, is read once.
+#[tokio::test]
+async fn many_swaps_and_balances_are_read_in_one_call() {
+    use zecswap_chain::evm::BlockId;
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("MockRailgun.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let account = key.address();
+    let creation = |name: &str| creation_code(&artifacts, name);
+    let railgun = deploy(&url, key.clone(), creation("MockRailgun"))
+        .await
+        .unwrap();
+    let token = deploy(&url, key.clone(), creation("TestToken"))
+        .await
+        .unwrap();
+    let mut code = creation("ZecSwap");
+    code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&railgun.into_word().0);
+    let contract = deploy(&url, key.clone(), code).await.unwrap();
+    let maker = Settlement::connect(&url, contract, key.clone()).unwrap();
+    maker.mint_test_token(token, account, 3_000).await.unwrap();
+    maker.add_inventory(token, 3_000).await.unwrap();
+    let now = maker.now().await.unwrap();
+    let mut ids = Vec::new();
+    for nonce in 0..3 {
+        let user_share = derive_maker_share(&[3; 32], nonce).unwrap().public();
+        let terms = Terms {
+            maker: account.into(),
+            token: token.into(),
+            amount: 1_000,
+            maker_share: derive_maker_share(&[9; 32], nonce).unwrap().public(),
+            user_share,
+            user: [7; 20],
+            t0: now + 3_600,
+            t1: now + 7_200,
+            payout_note: [0; 32],
+        };
+        maker.open(&terms).await.unwrap();
+        ids.push(swap_id(account, &user_share));
+    }
+    ids.push(swap_id(
+        Address::repeat_byte(5),
+        &derive_maker_share(&[4; 32], 0).unwrap().public(),
+    ));
+    let owners = [anvil.addresses()[2], Address::repeat_byte(6)];
+    let eth_calls = |chain: &Settlement| {
+        chain
+            .meter()
+            .usage()
+            .requests
+            .get("eth_call")
+            .copied()
+            .unwrap_or(0)
+    };
+
+    let single = Settlement::read_only(&url, contract).unwrap();
+    let one_by_one = single.swap_states(&ids, BlockId::latest()).await.unwrap();
+    assert_eq!(eth_calls(&single), 4, "no Multicall3: a call a swap");
+    assert_eq!(one_by_one.iter().flatten().count(), 3);
+    assert!(one_by_one[3].is_none());
+    let balances = single.eth_balances(&owners).await.unwrap();
+
+    install_multicall3(&url, &key).await;
+    let batched = Settlement::read_only(&url, contract).unwrap();
+    assert_eq!(
+        batched.swap_states(&ids, BlockId::latest()).await.unwrap(),
+        one_by_one
+    );
+    assert_eq!(batched.eth_balances(&owners).await.unwrap(), balances);
+    assert_eq!(
+        eth_calls(&batched),
+        2,
+        "one call each, whatever their number"
+    );
+    assert_eq!(batched.railgun().await.unwrap(), railgun);
+    assert_eq!(batched.railgun().await.unwrap(), railgun);
+    assert_eq!(eth_calls(&batched), 3, "the Railgun proxy is read once");
+    let usage = batched.meter().usage();
+    assert_eq!(usage.requests.get("eth_getCode"), Some(&1));
+    assert_eq!(usage.failed, 0);
+}
+
+/// Puts Multicall3's code where it is on every public chain, which a fresh anvil lacks.
+async fn install_multicall3(url: &str, key: &PrivateKeySigner) {
+    use alloy::providers::bindings::IMulticall3;
+    use alloy::providers::{MULTICALL3_ADDRESS, Provider, ProviderBuilder};
+
+    let deployed = deploy(url, key.clone(), IMulticall3::BYTECODE.to_vec())
+        .await
+        .unwrap();
+    let provider = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    let code = provider.get_code_at(deployed).await.unwrap();
+    let () = provider
+        .raw_request("anvil_setCode".into(), (MULTICALL3_ADDRESS, code))
+        .await
+        .unwrap();
+}
+
 fn creation_code(artifacts: &Path, name: &str) -> Vec<u8> {
     let path = artifacts.join(format!("{name}.sol/{name}.json"));
     let artifact: serde_json::Value =

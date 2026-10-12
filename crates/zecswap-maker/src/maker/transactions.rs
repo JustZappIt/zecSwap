@@ -124,16 +124,21 @@ impl Maker {
             }
             self.store.init_transaction_cursor(&scope, start, head)?;
         }
-        // New swaps must not wait for the historical backfill.
-        let recent = head.saturating_sub(11);
-        for from in (recent..=head).step_by(10) {
-            self.index_window(&scope, from, (from + 9).min(head), false)
-                .await?;
-        }
         let cursor = self
             .store
             .transaction_cursor(&scope)?
             .expect("initialized cursor");
+        // The newest twelve blocks are read ahead of a cursor still backfilling history, so new
+        // swaps never wait on it, and read again now and then once it keeps up, for events a
+        // reorganisation moved or dropped. Otherwise each block is read once, as the cursor
+        // passes it.
+        let recent = head.saturating_sub(11);
+        if cursor.next_block < recent || self.reconcile_due() {
+            for from in (recent..=head).step_by(10) {
+                self.index_window(&scope, from, (from + 9).min(head), false)
+                    .await?;
+            }
+        }
         let end = (cursor.next_block.saturating_add(499)).min(head);
         let windows: Vec<_> = (cursor.next_block..=end)
             .step_by(10)
@@ -221,7 +226,11 @@ impl Maker {
                     "swap cost recording delayed; retrying"
                 );
             }
-            tokio::time::sleep(Duration::from_secs(15)).await;
+            // Swaps live on the chain make events every few blocks; without any, a pass every
+            // minute and a half keeps up, in windows nearly full, and fresher than the two
+            // minutes after which the dashboard calls the history stale.
+            let idle = if self.chain_busy() { 15 } else { 90 };
+            tokio::time::sleep(Duration::from_secs(idle)).await;
         }
     }
 
@@ -232,7 +241,13 @@ impl Maker {
         let scope = self.transaction_scope();
         let mut remaining = 25;
         for hash in self.store.unread_transactions(&scope, remaining as usize)? {
-            self.read_transaction(&scope, hash).await?;
+            // A send the node has no receipt of may never mine: asked again every five minutes.
+            if self.recently_unmined(hash) {
+                continue;
+            }
+            if !self.read_transaction(&scope, hash).await? {
+                self.unmined(hash);
+            }
             remaining -= 1;
         }
         let mut timed = std::collections::HashSet::new();
