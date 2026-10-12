@@ -99,6 +99,23 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Concurrent swaps (2026-10-12, branch `fix/concurrent-swaps`): what 15 swaps at once on the
+  testnet showed. A swap's relayer requests take turns, each running to its end in a task of its
+  own (`Relayer::in_turn`, `turns.rs`): a client giving up at its timeout no longer cuts a send
+  off half way, and its repeat waits for the first instead of getting `503`. Each swap's one-time
+  steps (claim, payout, ready, refund, refund payout) go out once (`send_once`): a repeat while
+  the first may still land answers `503 unavailable` and sends nothing, one after it landed
+  answers with no transactions, and only one that reverted or left the pool goes again; a
+  restarted relayer sends none from an account whose earlier sends aren't mined
+  (`Steps::note_earlier`). A payout of a paid-out swap answers `200` with no transactions (it was
+  `400`), a claim of a claimed swap pays out what is left, a send failing on a step that landed
+  meanwhile is no failure (`unless_landed`), and a receipt that never came is `503`, never `500`.
+  The client posts a relayer request until the chain shows it (`User::relayed`): after a timeout
+  or a `5xx` it watches the chain for 15 s and posts again, a claim only while its lock keeps
+  `CLAIM_MARGIN`; a `4xx` ends it. Endpoints wait out a `503` with `Retry-After` (30 s at most,
+  90 s in all). nginx gives quotes and accepts zones of their own and lets ten accepts in at a
+  time. In that run the payouts stalled for 4.5 minutes because the relayer's own account ran
+  short of ETH, and every payout queued behind the first.
 - Sends pay the gas price quotes charge (2026-10-11): every send through `Settlement`
   (`submit`, `send_eth`, `deploy`) tips what the node suggests (`eth_maxPriorityFeePerGas`, the
   tip in `eth_gasPrice`, at which the maker's network cost and the relayer's fees are priced),
@@ -126,7 +143,7 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   is simulated before it takes its account's turn (`Settlement::submit`, Railgun sends, fundings)
   and retries wait outside it. Locks the contract would refuse are refused untried (`check_lock`),
   a repeat of a held lock sends nothing, and a claim's share must be the swap's. A swap's
-  requests take turns (`Relayer::alone`): one posted while another runs gets `503 unavailable`.
+  requests take turns (`Relayer::in_turn`): one posted while another runs waits for it.
   Each kind of send has its own account (`lanes.rs`): claims and refunds; locks and readies;
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
