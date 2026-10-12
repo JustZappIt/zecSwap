@@ -1,0 +1,28 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T03:53:20Z",
+  "sourceCommit": "e4d43fc",
+  "release": "/opt/zecswap/releases/20261011-lane-float-e4d43fc",
+  "previousRelease": "/opt/zecswap/releases/20261011-tickets-d7afd11",
+  "backup": "/var/backups/zecswap/20261011-lane-float-e4d43fc",
+  "makerSha256": "03d752bbcdb791973e731dc913e649b29d5447c33bda2736ea7cd44d63e81d6d",
+  "relayerSha256": "412ba42899c909d95c628adbb48e9b782a72cb5193dd4efe385e6cc17a50d0c5",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "incident": {
+    "from": "2026-10-12T03:32:35Z",
+    "to": "2026-10-12T03:39:41Z",
+    "what": "the locks lane held 0.000008 ETH where a refund lock reserves up to 0.00003 at Sepolia's fee cap; one user's refund lock failed until the stopgap",
+    "stopgap": "top_up_transactions = 3000 in the relayer's config from 03:39:41, removed by this release"
+  },
+  "changes": {
+    "relayer": "each lane's float is top_up_transactions of its largest sends at the fee cap sends are filled with, not the gas price",
+    "relayerConfig": "the stopgap line removed"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "relayerTerms": "payout fee 100000 through nginx and the public gateway",
+    "lanesAfterRestart": "none topped up (each holds more than eight sends at the fee cap need); no send short of ETH",
+    "services": "maker healthz 204; maker, relayer, issuer, nginx and the tunnel active"
+  }
+}
