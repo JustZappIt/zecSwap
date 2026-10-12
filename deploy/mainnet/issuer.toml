@@ -1,0 +1,22 @@
+# The mainnet token issuer, for when the mainnet app spends tokens. `zecswap-issuer keygen
+# /etc/zecswap-issuer/key.pem` writes its key and prints the public half the maker's [tokens] and
+# the app pin. Install as /etc/zecswap-issuer/config.toml, root:zecswap-issuer, 0640.
+network = "mainnet"
+listen = "127.0.0.1:8789"
+# In every install's attested key: never change it once the app ships.
+name = "zecswap-mainnet-issuer"
+key = "/etc/zecswap-issuer/key.pem"
+data_dir = "/var/lib/zecswap-issuer"
+tokens_per_day = 3
+
+[attestation.android-key]
+roots = [
+    "/etc/zecswap-issuer/roots/google-1.pem",
+    "/etc/zecswap-issuer/roots/google-2.pem",
+]
+status_list = "/var/lib/zecswap-issuer/attestation-status.json"
+packages = ["xyz.justzappit.zapp"]
+# SHA-256 of the signing certificate of the build testers install (`apksigner verify
+# --print-certs`, or Play Console's app signing key): never a shared development key.
+signing_digests = ["<64 hex digits>"]
+min_security_level = "trusted-environment"

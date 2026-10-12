@@ -1,0 +1,23 @@
+// The mainnet gateway: the same Worker, to the mainnet host's tunnel. From deploy/worker/:
+//   npx wrangler secret put TICKET_SECRET -c wrangler.mainnet.jsonc   (the mainnet maker's
+//   MAKER_TICKET_SECRET), then npx wrangler deploy -c wrangler.mainnet.jsonc
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zecswap-mainnet",
+  "account_id": "<cloudflare account id>",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  },
+  "secrets": { "required": ["TICKET_SECRET"] },
+  "vpc_services": [
+    // The Workers VPC Service for the mainnet host's tunnel, not the testnet's.
+    { "binding": "ORIGIN", "service_id": "<mainnet VPC service id>" }
+  ]
+}

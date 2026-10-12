@@ -662,17 +662,30 @@ fixes, and each service refuses to start on anything of another network:
 - The issuer on mainnet refuses `insecure-test`, whatever `allow_insecure` says.
 - `add-inventory --mint` is refused on mainnet, and the CLI's `--network` picks its lightwalletd.
 
-Mainnet can't run yet: the pinned Zcash crates schedule NU7, whose Ironwood pool swaps use, on
-testnet alone, so a mainnet maker refuses to start until a release schedules it on mainnet.
+Swaps use the Ironwood pool, which NU6.3 brought (mainnet height 3,428,143; zec.rocks served
+mainnet on NU6.3's branch `0x37A5165B` on October 12), so a maker on the pinned crates runs on
+mainnet. They schedule NU7 on testnet alone: before NU7 activates on mainnet (its height is due
+to be chosen on October 20), the maker and the app must move to crates that schedule it there,
+or their Zcash transactions are refused, as testnet's were on October 4.
 
 A mainnet deployment also needs its own: a contract deployed with `RAILGUN` set to the mainnet
-proxy, and the `LOCK_DURATION` chosen for it; the maker's and relayer's `contract`, `token`,
-`maker` and RPC URLs, the relayer's through a private RPC; mainnet ETH and USDC;
-`MAKER_TICKET_SECRET` and the Worker's `TICKET_SECRET`; a fresh data directory; the issuer's
-production packages and signing digests; a Worker of its own (`deploy/worker/wrangler.jsonc`
-names the testnet one); mainnet observability labels ([observability.md](observability.md));
-deposits counted at the wallet's default of 10 confirmations; and the dashboard's mainnet
-environment. Funding sponsorship has no aggregate budget, which matters more on mainnet.
+proxy, and the `LOCK_DURATION` chosen for it (`scripts/deploy-contract.sh`); the maker's and
+relayer's `contract`, `token`, `maker` and RPC URLs ([deploy/mainnet/](../deploy/mainnet/)
+holds the beta's configs); mainnet ETH and USDC; secrets of its own
+(`scripts/mainnet-secrets.sh`, whose BIP-39 phrases restore the maker's ZEC inventory in any
+Zcash wallet and the relayer's fees in any Railgun wallet); a fresh host
+(`deploy/mainnet/bootstrap.sh`); the issuer's production packages and signing digests; a
+Worker of its own (`deploy/worker/wrangler.mainnet.jsonc`); mainnet observability labels
+([observability.md](observability.md)); deposits counted at the wallet's default of 10
+confirmations; and the dashboard's mainnet environment. Funding sponsorship has no aggregate
+budget, which matters more on mainnet.
+
+Funds leave a mainnet deployment by these routes alone. `max_awaiting_deposit = 0` and a restart
+refuse every new swap while the watchtower settles the open ones; `zecswap-maker
+withdraw-inventory all --to <address>` then moves the USDC no swap holds; the maker's Zcash phrase
+restores its ZEC inventory in a Zcash wallet, with the maker stopped; forward swaps' ZEC is swept
+to `sweep_to` as they settle; and `zecswap-relayer drain-lanes --to <address>`, with the relayer
+stopped, empties its sending accounts. The maker's and relayer's own ETH leave with their keys.
 
 ## Operating the deployment
 
