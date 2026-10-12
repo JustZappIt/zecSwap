@@ -117,9 +117,16 @@ async fn lanes_are_kept_in_eth_from_the_relayers_own_account() {
         relayer.settlement.eth_balance(account).await.unwrap()
     };
 
+    // Each send holds its gas at the fee cap it is filled with, which on Sepolia runs to hundreds
+    // of times the gas price.
+    let fee = relayer.settlement.max_fee_per_gas().await.unwrap();
     let sent = relayer.top_up().await.unwrap();
     let lanes = sent.iter().map(|(lane, _)| *lane).collect::<Vec<_>>();
     assert_eq!(lanes, ["claims", "locks", "sends"]);
+    assert_eq!(
+        sent[0].1,
+        U256::from(fee) * U256::from(crate::lanes::SETTLEMENT_GAS) * U256::from(8)
+    );
     assert_eq!(sent[2].1, sent[0].1 * U256::from(3));
     assert_eq!(balance(&relayer.lanes.claims).await, sent[0].1);
     assert_eq!(balance(&relayer.lanes.funding).await, U256::ZERO);

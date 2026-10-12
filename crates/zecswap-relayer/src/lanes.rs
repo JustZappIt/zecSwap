@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 use crate::{Config, Relayer};
 
 /// A bound on a lock's or claim's gas, Sepolia's repriced state included.
-const SETTLEMENT_GAS: u64 = 1_000_000;
+pub(crate) const SETTLEMENT_GAS: u64 = 1_000_000;
 const TOP_UP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings.
@@ -84,13 +84,14 @@ impl Relayer {
         }
     }
 
-    /// Tops up each lane under half of what `top_up_transactions` cost at the gas price now.
+    /// Tops up each lane under half of what `top_up_transactions` of its largest transactions
+    /// must hold at the fee cap sends are filled with now.
     pub(crate) async fn top_up(&self) -> anyhow::Result<Vec<(&'static str, U256)>> {
-        let gas_price = U256::from(self.settlement.gas_price().await?);
+        let fee = U256::from(self.settlement.max_fee_per_gas().await?);
         let mut sent = Vec::new();
         for (lane, settlement, gas) in self.lanes.used(&self.config) {
             let account = settlement.account().context("a lane sends")?;
-            let keep = gas_price * U256::from(gas) * U256::from(self.config.top_up_transactions);
+            let keep = fee * U256::from(gas) * U256::from(self.config.top_up_transactions);
             let balance = self.settlement.eth_balance(account).await?;
             if balance >= keep / U256::from(2) {
                 continue;

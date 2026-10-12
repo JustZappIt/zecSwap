@@ -883,6 +883,16 @@ impl Settlement {
         self.provider.get_gas_price().await.map_err(Error::contract)
     }
 
+    /// The fee cap a send is filled with now: the ETH it must hold for each gas it may burn,
+    /// which can be many times the gas price.
+    pub async fn max_fee_per_gas(&self) -> Result<u128, Error> {
+        self.provider
+            .estimate_eip1559_fees()
+            .await
+            .map(|fees| fees.max_fee_per_gas)
+            .map_err(Error::contract)
+    }
+
     pub async fn eth_balance(&self, owner: Address) -> Result<U256, Error> {
         self.provider
             .get_balance(owner)
