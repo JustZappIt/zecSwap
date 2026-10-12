@@ -14,8 +14,9 @@ fee_gas = 1300000
 providers = ["coinmarketcap", "alchemy"]
 fee_margin_bps = 1000
 claim_margin = 300
-# ETH each sending account keeps, in its largest transactions: `drain-lanes` takes it back.
-top_up_transactions = 4
+# ETH each sending account keeps, in its largest transactions at the fee cap: 0.0044 ETH in all
+# at 0.12 gwei. `drain-lanes` takes it back.
+top_up_transactions = 2
 
 [reverse_funding]
 max_gas_limit = 4000000
@@ -29,7 +30,8 @@ max_gas_limit = 3000000
 max_gas_price_wei = 20000000000
 journal = "/var/lib/zecswap-mainnet-relayer/railgun-sends.sqlite"
 
+# Funded with 0.006 ETH, of which the sending accounts keep 0.0044; a swap burns 0.00015.
 [gas_alerts]
-low_wei = 5000000000000000
-recovery_wei = 10000000000000000
+low_wei = 1000000000000000
+recovery_wei = 2000000000000000
 interval_seconds = 300
