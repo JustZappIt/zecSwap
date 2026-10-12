@@ -7,6 +7,9 @@ contract = "<deployments/mainnet-beta.json's contract>"
 token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 # A u1 address of a wallet you hold off this host: every forward swap's ZEC is swept to it.
 sweep_to = "<u1...>"
+# Zcash confirmations a deposit needs before ready, and a sweep before it counts: the owner
+# chose 2 for the beta, whose swaps are small.
+confirmations = 2
 evm_confirmations = 12
 data_dir = "/var/lib/zecswap-mainnet-maker"
 listen = "127.0.0.1:8797"
@@ -33,7 +36,7 @@ reverse_gas = 350000
 zcash_fee_zat = 15000
 margin_bps = 2000
 
-# For a contract with a 1,800 s lock, and deposits counted at 10 confirmations (about 12.5 minutes).
+# For a contract with a 1,800 s lock; generous for deposits counted at 2 confirmations.
 [timing]
 quote_ttl = 120
 t0_after = 3600
