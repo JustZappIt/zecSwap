@@ -117,8 +117,8 @@ async fn lanes_are_kept_in_eth_from_the_relayers_own_account() {
         relayer.settlement.eth_balance(account).await.unwrap()
     };
 
-    // Each send holds its gas at the fee cap it is filled with, which on Sepolia runs to hundreds
-    // of times the gas price.
+    // Each send holds its gas at the fee cap it is filled with: the base fee twice over and the
+    // tip, above the gas price it pays.
     let fee = relayer.settlement.max_fee_per_gas().await.unwrap();
     let sent = relayer.top_up().await.unwrap();
     let lanes = sent.iter().map(|(lane, _)| *lane).collect::<Vec<_>>();

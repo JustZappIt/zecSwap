@@ -30,6 +30,54 @@ async fn a_send_that_fails_leaves_no_nonce_gap() {
         .unwrap();
 }
 
+/// A send tips what the node suggests, so it pays the gas price that quotes and the relayer's
+/// fees charge, not the median of recent blocks' tips that alloy's own estimate tips.
+#[tokio::test]
+async fn a_send_pays_the_gas_price_quotes_charge() {
+    use alloy::consensus::Transaction as _;
+    use alloy::network::{EthereumWallet, TransactionBuilder};
+    use alloy::providers::{Provider, ProviderBuilder};
+    use alloy::rpc::types::TransactionRequest;
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let url = anvil.endpoint();
+    let others = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(PrivateKeySigner::from(
+            anvil.keys()[1].clone(),
+        )))
+        .connect_http(url.parse().unwrap());
+    // Recent blocks tip far over the latest, as Sepolia's bots, tipping a flat gwei, often do.
+    for gwei in [100, 100, 100, 2] {
+        let tip = gwei * 1_000_000_000;
+        let tx = TransactionRequest::default()
+            .with_to(Address::repeat_byte(2))
+            .with_max_priority_fee_per_gas(tip)
+            .with_max_fee_per_gas(tip + 10_000_000_000);
+        let pending = others.send_transaction(tx).await.unwrap();
+        assert!(pending.get_receipt().await.unwrap().status());
+    }
+    // anvil suggests the latest block's least tip; alloy's estimate is their median, 100 gwei.
+    let tip = others.get_max_priority_fee_per_gas().await.unwrap();
+    assert_eq!(tip, 2_000_000_000);
+
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let chain = Settlement::connect(&url, Address::ZERO, key).unwrap();
+    let price = chain.gas_price().await.unwrap();
+    let cap = chain.max_fee_per_gas().await.unwrap();
+    let sent = chain
+        .send_eth(Address::repeat_byte(3), U256::from(1))
+        .await
+        .unwrap();
+    let tx = others.get_transaction_by_hash(sent).await.unwrap().unwrap();
+    assert_eq!(tx.max_priority_fee_per_gas(), Some(tip));
+    assert_eq!(tx.max_fee_per_gas(), cap);
+    let receipt = others.get_transaction_receipt(sent).await.unwrap().unwrap();
+    assert_eq!(receipt.effective_gas_price, price);
+}
+
 /// A swap paid into Railgun, settled by a relayer on the user's signatures: the Rust signer,
 /// swap id, note commitment and `Shield` decoding all agree with the contract.
 #[tokio::test]
