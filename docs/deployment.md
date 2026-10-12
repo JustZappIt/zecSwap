@@ -672,6 +672,18 @@ confirmations, locks and the maker's sweeps are on the dashboard. Messages never
 contract, the maker's address or block numbers, and the notification worker never asks a
 price feed.
 
+The relayer sends one message for each Railgun send it broadcasts for a wallet, once the send
+mines, queued in its journal in the same write as the send's cost. A private send (0zk to 0zk)
+gives the fee it paid the relayer, as its amount is private. An unshield (USDC out of Railgun
+to a public address) gives the amount it took out, before Railgun's own unshield fee, and the
+relayer's fee. A send that reverted says that nothing moved and the relayer paid the gas. Each
+ends with the time it mined and the transaction on Etherscan, and none names an address. Give
+the relayer the maker's pair with a drop-in
+`/etc/systemd/system/zecswap-relayer.service.d/telegram.conf` naming the same
+`EnvironmentFile=/etc/zecswap-maker/telegram.env` (systemd reads it as root), then restart it.
+Its `sending Railgun transactions` log line shows `alerts=true`. A relayer without
+`[railgun_sends]` sends nothing.
+
 Rebroadcasting a recorded ZEC transaction may return a backend duplicate error while
 it is already in the mempool or mined. The adapter checks `GetTransaction` for the
 same transaction ID and exact serialized bytes before treating such a rejection as
@@ -718,9 +730,9 @@ pending time, last acknowledged delivery time, and a sanitized delivery error.
 It never includes the bot token or destination ID. The dashboard displays this as
 the Telegram alerts health check. Mainnet uses the same code: deploy its own maker
 with separate configuration/data. The bot/destination environment pair is its switch: give
-the mainnet maker the pair (the testnet's chat will do, since every message names its
-network and links its own chain's explorer and dashboard) and a `[gas_alerts]` listing
-mainnet's accounts, then run `telegram-test`; without the pair it sends nothing.
+the mainnet maker and relayer the pair (the testnet's chat will do, since every message names
+its network and links its own chain's explorer and dashboard), and the maker a `[gas_alerts]`
+listing mainnet's accounts, then run `telegram-test`; without the pair neither sends anything.
 Deduplication IDs include the deployment.
 
 Ethereum transaction references are indexed from the configured settlement contract's

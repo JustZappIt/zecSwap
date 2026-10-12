@@ -7,9 +7,9 @@ mod notifications;
 mod reverse;
 mod transactions;
 pub(crate) use monitoring::{MonitorCounts, MonitorSwap, TokenDay};
-pub(crate) use notifications::{Notification, NotificationStatus};
 pub(crate) use reverse::ReverseSwap;
 pub(crate) use transactions::{EvmTransaction, TransactionStatus};
+pub(crate) use zecswap_alerts::{Notification, NotificationStatus};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -132,6 +132,7 @@ impl Store {
             )?;
         }
         conn.execute_batch(reverse::SCHEMA)?;
+        conn.execute_batch(zecswap_alerts::SCHEMA)?;
         conn.execute_batch(notifications::SCHEMA)?;
         conn.execute_batch(transactions::SCHEMA)?;
         conn.execute_batch(flow::SCHEMA)?;

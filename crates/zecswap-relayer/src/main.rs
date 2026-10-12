@@ -10,7 +10,8 @@ use zeroize::Zeroizing;
 
 /// Serves the relayer API. Its key comes from `RELAYER_PRIVATE_KEY`, and with `[railgun_sends]`
 /// its Railgun wallet's 64-byte BIP-39 seed from `RELAYER_RAILGUN_SEED`, in hex: never a config
-/// file, and never the maker's.
+/// file, and never the maker's. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, both or neither,
+/// send a message for each Railgun send once it mines.
 #[derive(Parser)]
 #[command(about = "ZecSwap relayer: sends the transactions of users with no account on the chain")]
 struct Cli {
@@ -39,6 +40,7 @@ async fn main() -> Result<()> {
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);
     tokio::spawn(relayer.clone().run_costs());
     tokio::spawn(relayer.clone().run_top_ups());
+    tokio::spawn(relayer.clone().run_alerts());
 
     let listener = tokio::net::TcpListener::bind(relayer.listen()).await?;
     info!("relaying on {}", listener.local_addr()?);

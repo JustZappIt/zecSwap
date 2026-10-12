@@ -73,7 +73,7 @@ pub struct Maker {
     prices: crate::market::PriceBook,
     /// The gas price quotes last charged the maker's network cost at, and when it was read.
     quote_gas_price: std::sync::Mutex<Option<(u64, u128)>>,
-    telegram: crate::telegram::Telegram,
+    telegram: zecswap_alerts::Telegram,
     /// When each failing alert scope started failing, so only a lasting error alerts.
     failing: std::sync::Mutex<HashMap<String, u64>>,
     tokens: Option<Arc<Gate>>,
@@ -177,7 +177,7 @@ impl Maker {
             alerts.check()?;
         }
         let prices = crate::market::PriceBook::from_env(&config.pricing)?;
-        let telegram = crate::telegram::Telegram::from_env()?;
+        let telegram = zecswap_alerts::Telegram::from_env()?;
         std::fs::create_dir_all(&config.data_dir)?;
         let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
         anyhow::ensure!(

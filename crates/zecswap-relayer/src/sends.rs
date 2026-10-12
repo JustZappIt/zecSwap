@@ -1,7 +1,8 @@
 //! Private Railgun sends and withdrawals, sent as the wallet's broadcaster for a fee note to the
 //! relayer's own 0zk address. Each is recorded before it is broadcast, so posting the same bytes
 //! again never sends twice, and a proof whose notes an earlier send spends is told so. Once it
-//! mines, what it cost and earned is recorded beside it, for the monitor.
+//! mines, what it cost and earned is recorded beside it, for the monitor, with a Telegram message
+//! saying what it was where alerts are on.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,6 +13,8 @@ use alloy_primitives::{Address, B256};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use tracing::warn;
+use zecswap_alerts::{Notification, Telegram, explorer, time, units};
+use zecswap_api::Network;
 use zecswap_api::relayer::{RailgunTransact, Sent};
 use zecswap_chain::evm::railgun::{SendError, SendPolicy, Signed, Status};
 use zecswap_prices::{Asset, Unpriced};
@@ -36,6 +39,7 @@ pub(crate) struct Sends {
     pub(crate) policy: SendPolicy,
     pub(crate) keys: Keys,
     journal: Journal,
+    telegram: Telegram,
     /// One send at a time, so a post repeated while the first runs finds it recorded.
     one_at_a_time: tokio::sync::Mutex<()>,
     /// When each long-unmined send's receipt was last looked for.
@@ -61,27 +65,98 @@ enum Fate {
 }
 
 impl Sends {
-    pub(crate) fn open(policy: SendPolicy, keys: Keys, journal: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn open(
+        policy: SendPolicy,
+        keys: Keys,
+        journal: &Path,
+        telegram: Telegram,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             policy,
             keys,
             journal: Journal::open(journal)?,
+            telegram,
             one_at_a_time: tokio::sync::Mutex::new(()),
             unmined: Mutex::default(),
         })
     }
 
-    /// What a recorded send was and paid this relayer: a withdrawal or a private send, and the
-    /// fee its notes carry, read again from its bytes; none if they no longer pass the policy.
-    fn paid(&self, chain_id: u64, signed: &Signed) -> Option<(&'static str, u128)> {
+    /// What a recorded send was and paid this relayer, read again from its bytes; none if they
+    /// no longer pass the policy.
+    fn paid(&self, chain_id: u64, signed: &Signed) -> Option<Paid> {
         let (to, value, data) = signed.call()?;
         let transact = self.policy.decode(chain_id, to, value, data).ok()?;
-        let kind = if transact.unshields() {
+        Some(Paid {
+            unshielded: transact.unshielded(),
+            fee: transact.fee_paid(&self.keys, self.policy.token),
+        })
+    }
+}
+
+/// A send as its bytes tell it: a withdrawal's amount (none for a private send), and the fee its
+/// notes pay the relayer.
+struct Paid {
+    unshielded: Option<u128>,
+    fee: u128,
+}
+
+impl Paid {
+    fn kind(&self) -> &'static str {
+        if self.unshielded.is_some() {
             "unshield"
         } else {
             "send"
-        };
-        Some((kind, transact.fee_paid(&self.keys, self.policy.token)))
+        }
+    }
+}
+
+/// A mined send's message: what it was and whether it reverted, what it moved and paid the
+/// relayer, when it mined, and the transaction. No addresses, and a private send's amount is
+/// private.
+fn send_alert(
+    network: Network,
+    chain_id: u64,
+    hash: B256,
+    paid: Option<&Paid>,
+    succeeded: bool,
+    at: u64,
+) -> Notification {
+    // The relayer's token is USDC, as its pricing takes it.
+    let usdc = |amount| format!("{} USDC", units(amount, 6));
+    let (what, moved) = match paid {
+        Some(Paid {
+            unshielded: Some(amount),
+            fee,
+        }) => (
+            "unshield",
+            Some(format!(
+                "{} out of Railgun · fee {}",
+                usdc(*amount),
+                usdc(*fee)
+            )),
+        ),
+        Some(Paid {
+            unshielded: None,
+            fee,
+        }) => (
+            "private send",
+            Some(format!("Amount private · fee {}", usdc(*fee))),
+        ),
+        None => ("Railgun send", None),
+    };
+    let (title, detail) = if succeeded {
+        (what.to_owned(), moved)
+    } else {
+        let lost = "Nothing moved; the relayer paid the gas and earned no fee.";
+        (format!("{what} reverted"), Some(lost.to_owned()))
+    };
+    let network = network.name();
+    let detail = detail.map(|line| format!("{line}\n")).unwrap_or_default();
+    let link = explorer(chain_id, hash).unwrap_or_else(|| hash.to_string());
+    Notification {
+        key: format!("{network}:{chain_id}:railgun:{hash}"),
+        text: format!("ZecSwap {network} · {title}\n{detail}{}\n{link}", time(at)),
+        created_at: now(),
     }
 }
 
@@ -143,6 +218,14 @@ pub struct SendRecord {
 }
 
 impl Relayer {
+    /// Delivers the sends' Telegram messages, where alerts are on, for as long as the relayer
+    /// runs.
+    pub async fn run_alerts(self: Arc<Self>) {
+        if let Some(sends) = &self.sends {
+            zecswap_alerts::run(&sends.journal.0, &sends.telegram).await;
+        }
+    }
+
     /// Records each send's receipt once it has mined and values its gas and fee, a bounded
     /// number a pass, for as long as the relayer runs.
     pub async fn run_costs(self: Arc<Self>) {
@@ -197,19 +280,31 @@ impl Relayer {
             let Some(block_time) = self.settlement.block_time(facts.block_hash).await? else {
                 continue;
             };
-            let (kind, fee) = sends.paid(chain_id, &entry.signed).unzip();
+            let paid = sends.paid(chain_id, &entry.signed);
+            let alert = sends.telegram.enabled().then(|| {
+                let (network, succeeded) = (self.config.network, facts.succeeded);
+                send_alert(
+                    network,
+                    chain_id,
+                    hash,
+                    paid.as_ref(),
+                    succeeded,
+                    block_time,
+                )
+            });
             sends.journal.save_cost(
                 chain_id,
                 hash,
                 &Cost {
-                    kind,
-                    fee,
+                    kind: paid.as_ref().map(Paid::kind),
+                    fee: paid.map(|paid| paid.fee),
                     succeeded: facts.succeeded,
                     block_number: facts.block_number,
                     block_time,
                     gas_used: facts.gas_used,
                     gas_price: facts.gas_price,
                 },
+                alert.as_ref(),
             )?;
         }
         if let Some(history) = &self.history {
@@ -449,6 +544,7 @@ impl Journal {
                  PRIMARY KEY (chain_id, tx_hash)
              );",
         )?;
+        db.execute_batch(zecswap_alerts::SCHEMA)?;
         Ok(Self(Mutex::new(db)))
     }
 
@@ -530,8 +626,17 @@ impl Journal {
             .collect()
     }
 
-    fn save_cost(&self, chain_id: u64, hash: B256, cost: &Cost) -> rusqlite::Result<()> {
-        self.0.lock().unwrap().execute(
+    /// Records a mined send's cost, and queues its message with it: once, however often read.
+    fn save_cost(
+        &self,
+        chain_id: u64,
+        hash: B256,
+        cost: &Cost,
+        alert: Option<&Notification>,
+    ) -> rusqlite::Result<()> {
+        let mut db = self.0.lock().unwrap();
+        let tx = db.transaction()?;
+        let saved = tx.execute(
             "INSERT OR IGNORE INTO send_costs (chain_id, tx_hash, kind, fee, succeeded, block_number,
                  block_time, gas_used, gas_price) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -546,7 +651,10 @@ impl Journal {
                 cost.gas_price.to_string(),
             ],
         )?;
-        Ok(())
+        if saved == 1 {
+            zecswap_alerts::insert(&tx, alert)?;
+        }
+        tx.commit()
     }
 
     /// Costs not yet valued, newest first, with their block's time.

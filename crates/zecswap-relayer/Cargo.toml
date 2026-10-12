@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zecswap-alerts = { path = "../zecswap-alerts" }
 zecswap-api = { path = "../zecswap-api", features = ["server"] }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-core = { path = "../zecswap-core" }

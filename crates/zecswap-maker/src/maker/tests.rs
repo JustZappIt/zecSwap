@@ -28,7 +28,7 @@ fn maker() -> (TempDir, Arc<Maker>) {
     let key = PrivateKeySigner::random();
     let maker = Maker {
         tokens: None,
-        telegram: crate::telegram::Telegram::new(None, None).unwrap(),
+        telegram: zecswap_alerts::Telegram::new(None, None).unwrap(),
         failing: std::sync::Mutex::default(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
         quote_gas_price: Default::default(),
@@ -139,7 +139,7 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
     };
     assert!(maker.forward_alert(&swap, Alert::Started).is_none());
     maker.telegram =
-        crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+        zecswap_alerts::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
     maker
         .store
         .insert_quote(
@@ -277,7 +277,7 @@ async fn errors_alert_once_they_last_five_minutes() {
     let (_dir, maker) = maker();
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
     maker.telegram =
-        crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+        zecswap_alerts::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
     let id = B256::repeat_byte(7);
     let error = |at| {
         Some(crate::store::Notification {

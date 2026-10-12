@@ -7,6 +7,8 @@
 #   ALCHEMY_API_KEY       optional, with [railgun_sends]: values each send's gas and fee in USD;
 #                         needed when `providers` names alchemy
 #   ZCASH_CMC_KEY         needed when `providers` names coinmarketcap
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  optional, both or neither, with [railgun_sends]: a
+#                         message for each private send and unshield once it mines
 #
 # On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
 # the public mempool while its lock is held, but it invites griefing.

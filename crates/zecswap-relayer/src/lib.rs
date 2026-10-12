@@ -315,8 +315,9 @@ impl Relayer {
                     max_gas_limit: sends.max_gas_limit,
                     max_gas_price_wei: sends.max_gas_price_wei.into(),
                 };
-                info!(railgun = %keys.address(), %proxy, "sending Railgun transactions");
-                Some(sends::Sends::open(policy, keys, &sends.journal)?)
+                let telegram = zecswap_alerts::Telegram::from_env()?;
+                info!(railgun = %keys.address(), %proxy, alerts = telegram.enabled(), "sending Railgun transactions");
+                Some(sends::Sends::open(policy, keys, &sends.journal, telegram)?)
             }
         };
         let pricing = (!config.providers.is_empty())

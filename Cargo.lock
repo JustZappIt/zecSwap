@@ -6988,6 +6988,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "zecswap-alerts"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "anyhow",
+ "axum",
+ "chrono",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "zecswap-api"
 version = "0.1.0"
 dependencies = [
@@ -7187,7 +7205,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "blake2b_simd",
- "chrono",
  "clap",
  "futures-util",
  "hex",
@@ -7209,6 +7226,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zcash_address",
+ "zecswap-alerts",
  "zecswap-api",
  "zecswap-chain",
  "zecswap-core",
@@ -7275,6 +7293,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "zecswap-alerts",
  "zecswap-api",
  "zecswap-chain",
  "zecswap-core",

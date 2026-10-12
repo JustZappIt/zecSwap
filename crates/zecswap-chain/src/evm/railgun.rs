@@ -273,11 +273,14 @@ impl Transact {
             .collect()
     }
 
-    /// Whether it pays out of Railgun to a public address: a withdrawal, not a private send.
-    pub fn unshields(&self) -> bool {
+    /// What it pays out of Railgun to a public address, in base units of the token it unshields:
+    /// a withdrawal's amount, before Railgun's own fee; none for a private send.
+    pub fn unshielded(&self) -> Option<u128> {
         self.transactions
             .iter()
-            .any(|tx| tx.boundParams.unshield == 1)
+            .filter(|tx| tx.boundParams.unshield == 1)
+            .map(|tx| tx.unshieldPreimage.value.to::<u128>())
+            .reduce(u128::saturating_add)
     }
 
     /// What it pays the wallet of `keys` in `token`, read as Railgun's public broadcasters read

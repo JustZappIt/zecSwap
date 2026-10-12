@@ -1,28 +1,9 @@
 use anyhow::{Result, ensure};
+use zecswap_alerts::{explorer, time, units};
 use zecswap_chain::evm::{B256, OnChainSwap, Stage, SwapEventKind};
 
 use super::{Maker, unix_now};
 use crate::store::{Notification, ReverseSwap, Store, Swap};
-
-async fn deliver_notification(store: &Store, telegram: &crate::telegram::Telegram) -> Result<()> {
-    if let Some(delivery) = store.claim_notification(unix_now())? {
-        match telegram.send(&delivery.text).await {
-            Ok(message_id) => store.acknowledge_notification(&delivery, unix_now(), message_id)?,
-            Err(error) => {
-                let delay = error
-                    .retry_after
-                    .unwrap_or(
-                        5u64.saturating_mul(1u64 << delivery.attempts.min(6))
-                            .min(300),
-                    )
-                    .max(3);
-                store.retry_notification(&delivery, unix_now(), delay, &error.message)?;
-                tracing::warn!("{}; bridge alert queued for retry", error.message);
-            }
-        }
-    }
-    Ok(())
-}
 
 const DASHBOARD: &str = "https://zapp-dashboard-seven.vercel.app/bridge";
 
@@ -30,42 +11,12 @@ const DASHBOARD: &str = "https://zapp-dashboard-seven.vercel.app/bridge";
 /// recovers within a few passes.
 const LASTING_ERROR: u64 = 5 * 60;
 
-fn units(amount: u128, decimals: u8) -> String {
-    let base = 10u128.pow(u32::from(decimals));
-    let fraction = format!("{:0width$}", amount % base, width = usize::from(decimals));
-    let fraction = fraction.trim_end_matches('0');
-    if fraction.is_empty() {
-        (amount / base).to_string()
-    } else {
-        format!("{}.{fraction}", amount / base)
-    }
-}
-
-fn time(seconds: u64) -> String {
-    i64::try_from(seconds)
-        .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map(|t| t.format("%-d %b %H:%M UTC").to_string())
-        .unwrap_or_else(|| seconds.to_string())
-}
-
 fn duration(seconds: u64) -> String {
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m", seconds / 60),
         _ => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
     }
-}
-
-fn explorer(chain_id: u64, hash: B256) -> Option<String> {
-    let explorer = match chain_id {
-        1 => "https://etherscan.io",
-        11155111 => "https://sepolia.etherscan.io",
-        8453 => "https://basescan.org",
-        84532 => "https://sepolia.basescan.org",
-        _ => return None,
-    };
-    Some(format!("{explorer}/tx/{hash}"))
 }
 
 /// How a swap ended: the word its last alert gives and, unless it simply completed, why.
@@ -293,24 +244,12 @@ impl Maker {
     }
 
     pub(super) async fn run_notifications(&self) {
-        if !self.telegram.enabled() {
-            std::future::pending::<()>().await;
-        }
-        loop {
-            if deliver_notification(&self.store, &self.telegram)
-                .await
-                .is_err()
-            {
-                tracing::warn!("Telegram delivery queue unavailable; retrying");
-            }
-            // Also stays below Telegram's per-chat flood limit.
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        }
+        zecswap_alerts::run(self.store.outbox(), &self.telegram).await;
     }
 
     /// Sends a clearly labeled setup message without creating or funding a swap.
     pub async fn telegram_test(config: &crate::Config) -> Result<()> {
-        let telegram = crate::telegram::Telegram::from_env()?;
+        let telegram = zecswap_alerts::Telegram::from_env()?;
         let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
         ensure!(telegram.enabled(), "Telegram alerts are not configured");
         let network = config.network;
@@ -328,7 +267,7 @@ impl Maker {
         store.enqueue_notification(&event)?;
         tokio::time::timeout(std::time::Duration::from_secs(45), async {
             while !store.notification_delivered(&event.key)? {
-                deliver_notification(&store, &telegram).await?;
+                zecswap_alerts::deliver(store.outbox(), &telegram).await?;
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
             Ok::<_, anyhow::Error>(())
@@ -349,35 +288,10 @@ mod tests {
     use zecswap_core::SecretShare;
 
     #[test]
-    fn exact_amounts_do_not_use_floating_point() {
-        assert_eq!(units(123456789, 8), "1.23456789");
-        assert_eq!(units(1, 6), "0.000001");
-        assert_eq!(
-            units(u128::MAX, 6),
-            "340282366920938463463374607431768.211455"
-        );
-    }
-
-    #[test]
-    fn times_read_to_the_minute() {
-        assert_eq!(time(1_791_720_221), "11 Oct 12:03 UTC");
+    fn durations_read_to_the_minute() {
         assert_eq!(duration(59), "59s");
         assert_eq!(duration(14 * 60 + 59), "14m");
         assert_eq!(duration(3600 + 5 * 60), "1h 05m");
-    }
-
-    #[test]
-    fn explorer_links_follow_the_chain() {
-        let hash = B256::repeat_byte(3);
-        assert_eq!(
-            explorer(11155111, hash).unwrap(),
-            format!("https://sepolia.etherscan.io/tx/{hash}")
-        );
-        assert_eq!(
-            explorer(1, hash).unwrap(),
-            format!("https://etherscan.io/tx/{hash}")
-        );
-        assert!(explorer(31337, hash).is_none());
     }
 
     fn chain(stage: Stage, payout_note: Option<B256>, paid_out: bool) -> OnChainSwap {
