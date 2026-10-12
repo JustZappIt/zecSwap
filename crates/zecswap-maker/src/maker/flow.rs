@@ -116,8 +116,8 @@ impl Maker {
     async fn flow_pass(&self) -> Result<()> {
         let scope = self.transaction_scope();
         let path = self.config.data_dir.join("flow-wallet.sqlite");
-        let mut wallet = Wallet::open(&path, self.config.network())?;
-        let mut client = zecswap_chain::zcash::connect(&self.config.lightwalletd).await?;
+        let mut wallet = Wallet::open(&path, self.config.network.zcash())?;
+        let mut client = zecswap_chain::zcash::connect(self.config.lightwalletd()).await?;
         let original = readonly(&self.config.data_dir.join("wallet.sqlite"))?;
         let mut accounts = Vec::new();
         // Include completed swaps: final recovery often happens after the maker's job ends.

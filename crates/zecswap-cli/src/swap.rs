@@ -62,10 +62,17 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
             },
         ),
     };
-    let network = ctx.wallet.network().network_type();
     let maker = spending(MakerApi::new(args.maker)?);
     let seed = ctx.store.seed()?;
-    let user = User::new(&seed, &seed, network, settlement, maker, args.token, route);
+    let user = User::new(
+        &seed,
+        &seed,
+        ctx.network,
+        settlement,
+        maker,
+        args.token,
+        route,
+    );
 
     let mut run = match ctx.store.load::<Run>(STATE)? {
         Some(mut run) if !run.finished => {

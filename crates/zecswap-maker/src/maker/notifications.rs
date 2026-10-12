@@ -149,10 +149,7 @@ impl Maker {
         }
     }
     pub(super) fn alert_network(&self) -> &'static str {
-        match self.config.network {
-            crate::Chain::Mainnet => "mainnet",
-            crate::Chain::Testnet => "testnet",
-        }
+        self.config.network.name()
     }
 
     fn alert_scope(&self, direction: &str, id: B256) -> String {
@@ -316,10 +313,7 @@ impl Maker {
         let telegram = crate::telegram::Telegram::from_env()?;
         let store = Store::open(&config.data_dir.join("maker.sqlite"))?;
         ensure!(telegram.enabled(), "Telegram alerts are not configured");
-        let network = match config.network {
-            crate::Chain::Mainnet => "mainnet",
-            crate::Chain::Testnet => "testnet",
-        };
+        let network = config.network;
         let event = Notification {
             key: format!(
                 "{network}:{}:setup:{}",

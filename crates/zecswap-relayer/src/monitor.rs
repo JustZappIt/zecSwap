@@ -61,6 +61,7 @@ pub struct MonitorSnapshot {
     generated_at: u64,
     uptime_seconds: u64,
     relayer: Address,
+    accounts: BTreeMap<&'static str, Address>,
     chain_id: u64,
     contract: Address,
     token: Address,
@@ -91,6 +92,7 @@ struct OperationSnapshot {
 /// What the snapshot says of the relayer itself.
 pub(crate) struct Deployment {
     pub(crate) relayer: Address,
+    pub(crate) accounts: BTreeMap<&'static str, Address>,
     pub(crate) chain_id: u64,
     pub(crate) contract: Address,
     pub(crate) token: Address,
@@ -157,6 +159,7 @@ impl Monitor {
             generated_at,
             uptime_seconds: generated_at.saturating_sub(self.started_at),
             relayer: deployment.relayer,
+            accounts: deployment.accounts,
             chain_id: deployment.chain_id,
             contract: deployment.contract,
             token: deployment.token,

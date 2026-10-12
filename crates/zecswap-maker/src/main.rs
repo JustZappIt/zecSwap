@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tracing::info;
 
+use zecswap_api::Network;
 use zecswap_chain::evm::Settlement;
 use zecswap_maker::{Config, Maker, Secrets, api};
 
@@ -50,6 +51,9 @@ async fn main() -> Result<()> {
     let config = Config::load(&cli.config)?;
     match cli.command {
         Command::TelegramTest => return Maker::telegram_test(&config).await,
+        Command::AddInventory { mint: true, .. } if config.network == Network::Mainnet => {
+            bail!("only testnet tokens mint")
+        }
         // Needs only the EVM key, so it also empties a retired deployment, whose store a newer
         // build may refuse.
         Command::WithdrawInventory { amount } => return withdraw_inventory(&config, amount).await,

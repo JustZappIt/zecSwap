@@ -242,9 +242,14 @@ impl Player {
             let settlement = Settlement::connect(&env.evm_rpc, env.contract, env.payout_key())?;
             (settlement, Route::Account)
         };
-        let network = env.network.network_type();
         let user = User::new(
-            &env.seed, &env.seed, network, settlement, maker, env.token, route,
+            &env.seed,
+            &env.seed,
+            zecswap_api::Network::Testnet,
+            settlement,
+            maker,
+            env.token,
+            route,
         )
         .with_min_time_to_t0(env.min_time_to_t0);
         Ok(Self {

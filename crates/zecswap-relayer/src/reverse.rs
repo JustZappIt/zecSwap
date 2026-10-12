@@ -11,7 +11,7 @@ impl Relayer {
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "fund_reverse"), err(level = "warn"))]
     pub async fn fund_reverse(&self, request: zecswap_api::reverse::Funding) -> Result<Sent> {
         use zecswap_chain::evm::funding::FundingError;
-        let mut policy = self.config.funding_policy(self.account).ok_or_else(|| {
+        let mut policy = self.funding.clone().ok_or_else(|| {
             RelayerError::Rejected("initial reverse funding sponsorship is disabled".into())
         })?;
         policy.fee = self.honored_swap_fee(SwapFee::Funding).await;
@@ -35,7 +35,8 @@ impl Relayer {
             )
             .map_err(map_error)?;
         let tx = self
-            .settlement
+            .lanes
+            .funding
             .sponsor_reverse_funding(&policy, &validated)
             .await
             .map_err(map_error)?;
@@ -59,7 +60,8 @@ impl Relayer {
         }
         Ok(Sent {
             transactions: vec![
-                self.settlement
+                self.lanes
+                    .locks
                     .ready_with_sig(
                         request.swap_id,
                         &terms,
@@ -87,9 +89,29 @@ impl Relayer {
                 transactions: vec![],
             });
         }
+        match swap.stage {
+            Stage::Claimed => {
+                return Err(RelayerError::Rejected(
+                    "the maker claimed the escrow".into(),
+                ));
+            }
+            Stage::Ready if now < swap.t1 => {
+                return Err(RelayerError::Rejected(
+                    "a ready swap can be refunded from t1".into(),
+                ));
+            }
+            _ => {}
+        }
+        self.check_lock(
+            request.deadline,
+            swap.refund_lock_until,
+            swap.claim_lock_until,
+            now,
+        )?;
         Ok(Sent {
             transactions: vec![
-                self.settlement
+                self.lanes
+                    .locks
                     .lock_refund_with_sig(
                         request.swap_id,
                         &terms,
@@ -136,7 +158,8 @@ impl Relayer {
             ));
         }
         let tx = self
-            .settlement
+            .lanes
+            .claims
             .refund(request.swap_id, &terms, &secret)
             .await?;
         let mut transactions = vec![tx];

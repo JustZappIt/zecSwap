@@ -13,10 +13,10 @@ use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
-use alloy::sol_types::SolCall;
 use alloy::transports::RpcError;
 use zecswap_railgun::{Keys, OutputCiphertext, ShieldNote};
 
+use super::canonical::{self, Malformed, Shape};
 use super::{Address, B256, IErc20, Settlement, U256};
 use crate::Error;
 
@@ -24,6 +24,29 @@ use crate::Error;
 pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
 /// The most Railgun transactions one call may carry.
 pub const MAX_TRANSACTIONS: usize = 16;
+/// Railgun's circuits spend at most 13 notes into at most 13 (the engine's `railgun-txid.js`).
+const MAX_NULLIFIERS: usize = 13;
+const MAX_COMMITMENTS: usize = 13;
+/// V2 wallets write a 16-byte IV and 46 bytes of sender data
+/// (`Memo.createEncryptedNoteAnnotationDataV2`).
+const MAX_ANNOTATION_BYTES: usize = 62;
+/// A memo is its sender's text, which the SDK doesn't limit; the app's wallets write none.
+const MAX_MEMO_BYTES: usize = 1024;
+
+const CIPHERTEXT: Shape = Shape::Tuple(&[
+    Shape::Words(6), // ciphertext, the blinded viewing keys
+    Shape::Bytes(MAX_ANNOTATION_BYTES),
+    Shape::Bytes(MAX_MEMO_BYTES),
+]);
+/// A `Transaction`, with no more output ciphertexts than outputs.
+pub(super) const TRANSACTION: Shape = Shape::Tuple(&[
+    Shape::Words(9), // proof, merkleRoot
+    Shape::Array(&Shape::Words(1), MAX_NULLIFIERS),
+    Shape::Capping(&Shape::Words(1), MAX_COMMITMENTS),
+    Shape::Tuple(&[Shape::Words(6), Shape::Capped(&CIPHERTEXT)]), // boundParams
+    Shape::Words(5),                                              // unshieldPreimage
+]);
+const TRANSACT: &[Shape] = &[Shape::Array(&TRANSACTION, MAX_TRANSACTIONS)];
 
 sol! {
     struct G1Point { uint256 x; uint256 y; }
@@ -135,6 +158,14 @@ impl Signed {
             envelope.input().clone(),
         ))
     }
+
+    pub fn signer(&self) -> Option<Address> {
+        let envelope = TxEnvelope::decode_2718(&mut self.raw.as_ref()).ok()?;
+        envelope
+            .signature()
+            .recover_address_from_prehash(&envelope.signature_hash())
+            .ok()
+    }
 }
 
 /// What the chain knows of a transaction.
@@ -151,7 +182,7 @@ pub enum Status {
 impl SendPolicy {
     /// Checks the envelope, the canonical encoding and each Railgun transaction's binding: it
     /// spends notes, on this chain, with no adapt contract (only those may call `transact`
-    /// directly), and unshields at most normally.
+    /// directly), and unshields at most normally, the relayer's token alone.
     pub fn decode(&self, chain_id: u64, to: Address, value: u128, data: Bytes) -> Result<Transact> {
         require(
             to == self.railgun && value == 0,
@@ -161,13 +192,18 @@ impl SendPolicy {
             data.len() <= MAX_CALLDATA_BYTES,
             "the calldata is too large",
         )?;
-        let call = IRailgunSmartWallet::transactCall::abi_decode_validate(&data)
-            .map_err(|_| SendError::Rejected("not a Railgun transact call"))?;
-        require(call.abi_encode() == data, "noncanonical transact calldata")?;
+        let call = canonical::decode::<IRailgunSmartWallet::transactCall>(&data, TRANSACT)
+            .map_err(|malformed| {
+                SendError::Rejected(match malformed {
+                    Malformed::NotTheCall => "not a Railgun transact call",
+                    Malformed::Noncanonical => "noncanonical transact calldata",
+                    Malformed::TooLong => "the calldata holds more than the relayer takes",
+                })
+            })?;
         let transactions = call._transactions;
         require(
-            !transactions.is_empty() && transactions.len() <= MAX_TRANSACTIONS,
-            "expected between one and sixteen Railgun transactions",
+            !transactions.is_empty(),
+            "expected at least one Railgun transaction",
         )?;
         let mut min_gas_price = 0;
         for tx in &transactions {
@@ -184,6 +220,12 @@ impl SendPolicy {
             require(
                 bound.unshield <= 1,
                 "redirected unshields are not supported",
+            )?;
+            // Railgun pays a withdrawal out through the token's own `transfer`, which a token
+            // anyone wrote can make revert after the simulation passed.
+            require(
+                bound.unshield == 0 || erc20(&tx.unshieldPreimage.token, self.token),
+                "a withdrawal must pay out the relayer's token",
             )?;
             min_gas_price = min_gas_price.max(bound.minGasPrice.to::<u128>());
         }
@@ -296,7 +338,6 @@ impl Settlement {
         let (Some(account), Some(wallet)) = (self.account, &self.wallet) else {
             return Err(Error::Config("a read-only connection cannot send".into()).into());
         };
-        let _sending = self.sending.lock().await;
         let gas_price = self
             .provider
             .get_gas_price()
@@ -353,6 +394,7 @@ impl Settlement {
             .saturating_add(estimate / 5)
             .min(policy.max_gas_limit);
         require(afford(gas_limit), "the relayer is low on ETH")?;
+        let _sending = self.sending.lock().await;
         let nonce = self
             .provider
             .get_transaction_count(account)
@@ -487,10 +529,198 @@ impl Settlement {
     }
 }
 
+pub(super) fn erc20(token: &TokenData, address: Address) -> bool {
+    token.tokenType == 0 && token.tokenAddress == address && token.tokenSubID.is_zero()
+}
+
 fn require(condition: bool, reason: &'static str) -> Result<()> {
     if condition {
         Ok(())
     } else {
         Err(SendError::Rejected(reason))
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::time::Duration;
+
+    use alloy::node_bindings::Anvil;
+    use alloy::primitives::aliases::U72;
+    use alloy::sol_types::SolCall;
+
+    use super::*;
+    use crate::evm::PrivateKeySigner;
+
+    const POLICY: SendPolicy = SendPolicy {
+        railgun: Address::repeat_byte(0x42),
+        token: Address::repeat_byte(3),
+        fee: 0,
+        max_gas_limit: 3_000_000,
+        max_gas_price_wei: 50_000_000_000,
+    };
+
+    fn erc20_token(address: Address) -> TokenData {
+        TokenData {
+            tokenType: 0,
+            tokenAddress: address,
+            tokenSubID: U256::ZERO,
+        }
+    }
+
+    /// A `transact` call of one Railgun transaction spending one note, which unshields `token` if
+    /// `unshield` is 1. Its proof and notes are placeholders: decoding checks a call's form.
+    fn transact(chain_id: u64, unshield: u8, token: TokenData) -> Vec<u8> {
+        let point = || G1Point {
+            x: U256::ZERO,
+            y: U256::ZERO,
+        };
+        IRailgunSmartWallet::transactCall {
+            _transactions: vec![Transaction {
+                proof: SnarkProof {
+                    a: point(),
+                    b: G2Point {
+                        x: [U256::ZERO; 2],
+                        y: [U256::ZERO; 2],
+                    },
+                    c: point(),
+                },
+                merkleRoot: B256::ZERO,
+                nullifiers: vec![B256::repeat_byte(1)],
+                commitments: vec![B256::repeat_byte(2)],
+                boundParams: BoundParams {
+                    treeNumber: 0,
+                    minGasPrice: U72::ZERO,
+                    unshield,
+                    chainID: chain_id,
+                    adaptContract: Address::ZERO,
+                    adaptParams: B256::ZERO,
+                    commitmentCiphertext: vec![],
+                },
+                unshieldPreimage: Preimage {
+                    npk: B256::ZERO,
+                    token,
+                    value: U120::from(unshield),
+                },
+            }],
+        }
+        .abi_encode()
+    }
+
+    #[test]
+    fn a_withdrawal_pays_out_the_relayers_token_alone() {
+        let decode = |unshield, token| {
+            POLICY.decode(1, POLICY.railgun, 0, transact(1, unshield, token).into())
+        };
+        assert!(decode(1, erc20_token(POLICY.token)).is_ok());
+        let other = Address::repeat_byte(9);
+        // A private send pays nothing out, whatever its unshield preimage says.
+        assert!(decode(0, erc20_token(other)).is_ok());
+        let others = [
+            erc20_token(other),
+            TokenData {
+                tokenType: 1,
+                ..erc20_token(POLICY.token)
+            },
+            TokenData {
+                tokenSubID: U256::from(1),
+                ..erc20_token(POLICY.token)
+            },
+        ];
+        for token in others {
+            assert!(matches!(
+                decode(1, token),
+                Err(SendError::Rejected(
+                    "a withdrawal must pay out the relayer's token"
+                ))
+            ));
+        }
+    }
+
+    /// `Transaction[]` as calldata from its length on, written to amplify: `transactions`
+    /// transactions in the same bytes, each with its 13 outputs' ciphertexts in the same bytes,
+    /// each with its memo in the same `memo` bytes, placed a word after where it belongs. Alloy
+    /// decodes it to over transactions × 13 × memo bytes.
+    pub(in crate::evm) fn amplifying(transactions: usize, memo: usize) -> Vec<u8> {
+        let outputs = MAX_COMMITMENTS;
+        let mut data = Vec::new();
+        let mut word = |value: usize| data.extend(U256::from(value).to_be_bytes::<32>());
+        let mut words = |values: &[usize]| values.iter().for_each(|&value| word(value));
+        words(&[transactions]);
+        words(&vec![32 * transactions; transactions]);
+        // Proof and root; nullifiers, commitments and bound parameters after the 17 words of
+        // heads; the unshield preimage.
+        words(&[0; 9]);
+        words(&[32 * 17, 32 * 19, 32 * (20 + outputs)]);
+        words(&[0; 5]);
+        words(&[1, 1]);
+        words(&[outputs]);
+        words(&vec![2; outputs]);
+        words(&[0; 6]);
+        words(&[32 * 7, outputs]);
+        words(&vec![32 * outputs; outputs]);
+        // The ciphertext: no annotation, and the memo past the word after it.
+        words(&[0; 6]);
+        words(&[32 * 8, 32 * 10, 0, 0, memo]);
+        data.resize(data.len() + memo.next_multiple_of(32), 0);
+        data
+    }
+
+    #[test]
+    fn calldata_written_to_amplify_is_refused_before_decoding() {
+        let mut data = IRailgunSmartWallet::transactCall::SELECTOR.to_vec();
+        data.extend(U256::from(32).to_be_bytes::<32>());
+        data.extend(amplifying(MAX_TRANSACTIONS, 60 * 1024));
+        assert!(data.len() <= MAX_CALLDATA_BYTES);
+        let decoded = IRailgunSmartWallet::transactCall::abi_decode(&data).unwrap();
+        assert!(decoded.abi_encoded_size() > 12_000_000);
+        assert!(matches!(
+            POLICY.decode(1, POLICY.railgun, 0, data.into()),
+            Err(SendError::Rejected("noncanonical transact calldata"))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_send_that_would_be_refused_never_waits_for_the_line() {
+        let Ok(anvil) = Anvil::new().try_spawn() else {
+            eprintln!("skipped: anvil is not installed");
+            return;
+        };
+        let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+        let account = key.address();
+        let settlement =
+            Settlement::connect(&anvil.endpoint(), Address::repeat_byte(1), key).unwrap();
+        let chain_id = settlement.chain_id().await.unwrap();
+        // No code there: any call succeeds.
+        let (policy, railgun) = (POLICY, POLICY.railgun);
+        let data = transact(chain_id, 0, erc20_token(POLICY.token));
+        let transact = policy.decode(chain_id, railgun, 0, data.into()).unwrap();
+        let send = |covered: bool| {
+            settlement.send_transact(&policy, &transact, move |_, _| covered, |_| Ok(()))
+        };
+
+        let line = settlement.sending.lock().await;
+        let refused = tokio::time::timeout(Duration::from_secs(10), send(false)).await;
+        assert!(
+            matches!(
+                refused,
+                Ok(Err(SendError::Rejected(
+                    "the transaction does not pay the relayer's fee"
+                )))
+            ),
+            "it waited for the line"
+        );
+        let paid = send(true);
+        tokio::pin!(paid);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut paid)
+                .await
+                .is_err(),
+            "it sent out of turn"
+        );
+        drop(line);
+        paid.await.unwrap();
+        let sent = settlement.provider.get_transaction_count(account).pending();
+        assert_eq!(sent.await.unwrap(), 1);
     }
 }

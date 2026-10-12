@@ -4,6 +4,8 @@
 # `[tokens]` lists. ISSUER_MONITOR_TOKEN in the environment, at least 32 characters, opens
 # GET /v1/monitor to it: the day's totals, never a device.
 
+# "testnet" or "mainnet": mainnet never runs `insecure-test`.
+network = "testnet"
 listen = "127.0.0.1:8789"
 # The issuer name every token's challenge carries; the maker's `[tokens] issuer` repeats it. The
 # app's attested key names it too: changing it makes every install's key count for nothing.
@@ -41,4 +43,4 @@ min_security_level = "trusted-environment"
 #   attestation = "insecure-test"
 #   allow_insecure = true
 # takes the device's word for its id, so it limits nothing. Without `allow_insecure` the issuer
-# refuses to start in that mode.
+# refuses to start in that mode, and on mainnet it always does.

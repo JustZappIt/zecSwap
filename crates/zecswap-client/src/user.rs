@@ -4,9 +4,8 @@ use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
-use zcash_protocol::consensus::NetworkType;
 use zecswap_api::relayer::{self, Claim, LockClaim, Sent};
-use zecswap_api::{Acceptance, Quote};
+use zecswap_api::{Acceptance, Network, Quote};
 use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, swap_id};
 use zecswap_core::{
     Domain, JointAccount, Payout, SpendKey, SwapContext, Terms, UserSwapKeys, derive_user_keys,
@@ -39,6 +38,10 @@ pub struct UserSwap {
     /// The deadlines the maker reported opening with, which complete the swap's terms.
     pub t0: u64,
     pub t1: u64,
+    /// The ticket the maker answered the accept with; none in a swap kept from before makers
+    /// gave them.
+    #[serde(default)]
+    pub ticket: Option<String>,
 }
 
 /// How a user is paid, and who sends its transactions.
@@ -69,7 +72,7 @@ pub struct Paid {
 /// Railgun wallet of its Railgun seed.
 pub struct User {
     seed: Zeroizing<Vec<u8>>,
-    network: NetworkType,
+    network: Network,
     settlement: Settlement,
     maker: MakerApi,
     token: Address,
@@ -82,7 +85,7 @@ impl User {
     pub fn new(
         seed: &[u8],
         railgun_seed: &[u8],
-        network: NetworkType,
+        network: Network,
         settlement: Settlement,
         maker: MakerApi,
         token: Address,
@@ -126,6 +129,10 @@ impl User {
             .quote(units, payout.user.into(), payout.note.map(B256::from))
             .await?;
         let chain_id = self.settlement.chain_id().await?;
+        // The maker checks its chain is its own network's too: a deposit on another Zcash
+        // network than the maker's would never be seen.
+        let railgun = self.settlement.railgun().await?;
+        self.network.check(chain_id, railgun, self.token)?;
         ensure!(quote.chain_id == chain_id, "the quote is for another chain");
         ensure!(
             quote.contract == self.settlement.contract() && quote.token == self.token,
@@ -162,6 +169,7 @@ impl User {
             swap_id,
             t0: accepted.t0,
             t1: accepted.t1,
+            ticket: Some(accepted.ticket),
         })
     }
 
@@ -236,7 +244,7 @@ impl User {
                     deadline,
                     signature: self.keys(swap.index)?.auth.sign(&digest).into(),
                 };
-                relayer.lock_claim(&request).await?;
+                relayer.lock_claim(&request, swap.ticket.as_deref()).await?;
             }
         }
         Ok(())
@@ -339,7 +347,7 @@ impl User {
                 });
             }
             // Revealed before an interruption: only the payout is left.
-            Stage::Claimed => relayer.payout(&payout).await?,
+            Stage::Claimed => relayer.payout(&payout, swap.ticket.as_deref()).await?,
             Stage::Open | Stage::Ready => {
                 // A payout Railgun won't take would sit in the contract; better the swap
                 // unwinds, which leaves the ZEC with the user.
@@ -354,12 +362,12 @@ impl User {
                     secret: keys.share.to_be_bytes().into(),
                     payout: payout.clone(),
                 };
-                let sent = relayer.claim(&claim).await?;
+                let sent = relayer.claim(&claim, swap.ticket.as_deref()).await?;
                 self.caught_up(swap, |chain| chain.stage == Stage::Claimed)
                     .await?;
                 // The relayer reveals first and pays out after; a payout that failed is retried.
                 if sent.transactions.len() < 2 {
-                    relayer.payout(&payout).await?
+                    relayer.payout(&payout, swap.ticket.as_deref()).await?
                 } else {
                     sent
                 }
@@ -433,7 +441,12 @@ impl User {
     }
 
     fn keys(&self, index: u32) -> Result<UserSwapKeys> {
-        Ok(derive_user_keys(&self.seed, self.network, 0, index)?)
+        Ok(derive_user_keys(
+            &self.seed,
+            self.network.zcash_type(),
+            0,
+            index,
+        )?)
     }
 
     fn domain(&self, swap: &UserSwap) -> Domain {

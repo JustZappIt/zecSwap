@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use futures_util::FutureExt;
+use hmac::{Hmac, Mac};
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
+use sha2::Sha256;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
@@ -56,6 +58,7 @@ pub struct Maker {
     account: Address,
     lock_duration: u64,
     root: Zeroizing<[u8; 32]>,
+    ticket_key: Zeroizing<[u8; 32]>,
     chain_id: u64,
     sweep_to: ZcashAddress,
     store: Store,
@@ -89,7 +92,10 @@ struct Zcash {
 
 impl Zcash {
     fn open_wallet(config: &Config) -> Result<Wallet> {
-        let wallet = Wallet::open(config.data_dir.join("wallet.sqlite"), config.network())?;
+        let wallet = Wallet::open(
+            config.data_dir.join("wallet.sqlite"),
+            config.network.zcash(),
+        )?;
         Ok(match config.confirmations {
             Some(confirmations) => wallet.with_confirmations(confirmations),
             None => wallet,
@@ -178,6 +184,14 @@ impl Maker {
             config.reverse.is_some() || store.pending_reverse_swaps()?.is_empty(),
             "reverse swaps are pending; keep reverse configuration enabled until they settle"
         );
+        let network = config.network;
+        anyhow::ensure!(
+            network.ironwood(),
+            "this build's Zcash crates schedule no NU7 on {network}, and swaps use its Ironwood \
+             pool: update them once NU7 is scheduled there"
+        );
+        zecswap_core::SweepIntent::recipient(&config.sweep_to, network.zcash_type())
+            .context("sweep_to")?;
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
         let account = secrets.evm_key.address();
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
@@ -185,11 +199,15 @@ impl Maker {
             .chain_id()
             .await
             .context("reaching the settlement chain")?;
+        let railgun = settlement.railgun().await?;
+        network
+            .check(chain_id, railgun, config.token)
+            .with_context(|| format!("the maker's config names {network}"))?;
         let lock_duration = settlement.lock_duration().await?;
         config.timing.check(lock_duration)?;
         let mut zcash = Zcash {
             wallet: Some(Zcash::open_wallet(&config)?),
-            client: connect_lazy(&config.lightwalletd)?,
+            client: connect_lazy(config.lightwalletd())?,
         };
         let inventory = if let Some(reverse) = &config.reverse {
             reverse.check()?;
@@ -198,7 +216,7 @@ impl Maker {
                 .await
                 .context("configured contract does not support reverse swaps")?;
             anyhow::ensure!(
-                !settlement.railgun().await?.is_zero(),
+                !railgun.is_zero(),
                 "reverse swaps require a Railgun deployment"
             );
             let seed = secrets
@@ -230,6 +248,7 @@ impl Maker {
             inventory,
             store,
             root: secrets.root,
+            ticket_key: secrets.ticket_key,
             chain_id,
             sweep_to,
             settlement,
@@ -326,8 +345,7 @@ impl Maker {
     }
 
     pub fn info(&self) -> zecswap_api::service::MakerInfo {
-        use crate::config::Chain;
-        use zecswap_api::service::{MakerInfo, ZcashNetwork};
+        use zecswap_api::service::MakerInfo;
 
         MakerInfo {
             api_version: 1,
@@ -335,10 +353,7 @@ impl Maker {
             chain_id: self.chain_id,
             contract: self.config.contract,
             token: self.config.token,
-            zcash_network: match self.config.network {
-                Chain::Mainnet => ZcashNetwork::Mainnet,
-                Chain::Testnet => ZcashNetwork::Testnet,
-            },
+            zcash_network: self.config.network,
             reverse_enabled: self.inventory.is_some(),
             token_return_key: self
                 .tokens
@@ -532,11 +547,20 @@ impl Maker {
         self.store
             .set_opened_at(&id, self.settlement.now().await?)?;
         info!(swap_id = %id, %transaction_hash, outcome = "mined", amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
-        Ok(Accepted {
-            swap_id: id,
-            t0: swap.t0,
-            t1: swap.t1,
-        })
+        Ok(self.accepted(id, swap.t0, swap.t1))
+    }
+
+    /// The answer to an accept of `swap_id`, forward or reverse, with the swap's ticket.
+    pub(crate) fn accepted(&self, swap_id: B256, t0: u64, t1: u64) -> Accepted {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.ticket_key.as_ref())
+            .expect("HMAC takes keys of any length");
+        mac.update(swap_id.as_slice());
+        Accepted {
+            swap_id,
+            t0,
+            t1,
+            ticket: format!("{swap_id}.{}", hex::encode(mac.finalize().into_bytes())),
+        }
     }
 
     pub fn status(&self, id: B256) -> Result<Option<Status>> {

@@ -1,5 +1,6 @@
 //! Client for the ZecSwap settlement contract, on whichever EVM chain it is deployed.
 
+mod canonical;
 mod events;
 pub mod funding;
 pub mod railgun;
@@ -914,24 +915,29 @@ impl Settlement {
             return Err(Error::Config("a read-only connection cannot send".into()));
         };
         let call = call.from(account);
-        let _sending = self.sending.lock().await;
         let mut attempts = 1;
         loop {
-            match call.send().await {
-                Ok(pending) => return confirmed(pending).await,
-                // Usually an estimate made on a node that hasn't seen the transaction this one
-                // depends on. If an earlier attempt did reach the network, the repeat is
-                // harmless: swap moves revert, and token moves stay within this account's own.
-                Err(e) if attempts < SEND_ATTEMPTS => {
-                    warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %e, "RPC rejected transaction submission");
-                    attempts += 1;
-                    tokio::time::sleep(SEND_RETRY_DELAY).await;
+            // Simulated before its turn, so a call that would fail never holds the line up.
+            let failed = match call.estimate_gas().await {
+                Ok(_) => {
+                    let _sending = self.sending.lock().await;
+                    match call.send().await {
+                        Ok(pending) => return confirmed(pending).await,
+                        Err(e) => e,
+                    }
                 }
-                Err(e) => {
-                    warn!(attempt = attempts, outcome = "send_failed", error = %e, "transaction submission failed");
-                    return Err(Error::contract(e));
-                }
+                Err(e) => e,
+            };
+            // Usually an estimate made on a node that hasn't seen the transaction this one
+            // depends on. If an earlier attempt did reach the network, the repeat is
+            // harmless: swap moves revert, and token moves stay within this account's own.
+            if attempts == SEND_ATTEMPTS {
+                warn!(attempt = attempts, outcome = "send_failed", error = %failed, "transaction submission failed");
+                return Err(Error::contract(failed));
             }
+            warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %failed, "RPC rejected transaction submission");
+            attempts += 1;
+            tokio::time::sleep(SEND_RETRY_DELAY).await;
         }
     }
 }
@@ -1088,10 +1094,87 @@ fn on_chain(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use alloy::node_bindings::Anvil;
     use alloy::primitives::address;
     use alloy::rpc::types::Log;
+    use zecswap_core::derive_maker_share;
 
     use super::*;
+
+    pub(super) fn creation(artifacts: &Path, name: &str) -> Vec<u8> {
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(artifacts.join(format!("{name}.sol/{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        alloy::primitives::hex::decode(json["bytecode"]["object"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_call_that_would_fail_never_waits_for_the_line() {
+        let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
+            eprintln!("skipped: anvil is not installed");
+            return;
+        };
+        let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+        if !artifacts.join("TestToken.sol").exists() {
+            eprintln!("skipped: run `forge build` in contracts/");
+            return;
+        }
+        let url = anvil.endpoint();
+        let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+        let account = key.address();
+        let token = deploy(&url, key.clone(), creation(&artifacts, "TestToken"))
+            .await
+            .unwrap();
+        let mut code = creation(&artifacts, "ZecSwap");
+        code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+        code.extend_from_slice(Address::repeat_byte(0x42).into_word().as_slice());
+        let contract = deploy(&url, key.clone(), code).await.unwrap();
+        let settlement = Settlement::connect(&url, contract, key).unwrap();
+        let sent = async || {
+            settlement
+                .provider
+                .get_transaction_count(account)
+                .pending()
+                .await
+                .unwrap()
+        };
+        let before = sent().await;
+        let share = |index| derive_maker_share(&[9; 32], index).unwrap();
+        // No swap has these terms.
+        let terms = Terms {
+            maker: account.into(),
+            token: token.into(),
+            amount: 1,
+            maker_share: share(0).public(),
+            user_share: share(1).public(),
+            user: account.into(),
+            t0: 0,
+            t1: 1,
+            payout_note: [0; 32],
+        };
+
+        let line = settlement.sending.lock().await;
+        let refused = tokio::time::timeout(
+            Duration::from_secs(30),
+            settlement.claim(B256::ZERO, &terms, &share(1)),
+        )
+        .await;
+        assert!(matches!(refused, Ok(Err(_))), "it waited for the line");
+        let mint = settlement.mint_test_token(token, account, 1);
+        tokio::pin!(mint);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut mint)
+                .await
+                .is_err(),
+            "it sent out of turn"
+        );
+        drop(line);
+        mint.await.unwrap();
+        assert_eq!(sent().await, before + 1);
+    }
 
     fn log(address: Address, event: &impl SolEvent) -> Log {
         Log {

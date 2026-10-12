@@ -12,6 +12,8 @@
     "head_sampling_rate": 1,
     "logs": { "invocation_logs": false }
   },
+  // The maker's MAKER_TICKET_SECRET, set with `wrangler secret put TICKET_SECRET`.
+  "secrets": { "required": ["TICKET_SECRET"] },
   "vpc_services": [
     { "binding": "ORIGIN", "service_id": "01a0ea18-dbba-7ee3-bcd9-c906d60afcea" }
   ]

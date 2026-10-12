@@ -8,6 +8,9 @@
 pub mod api;
 #[cfg(test)]
 mod funding_tests;
+mod lanes;
+#[cfg(test)]
+mod lanes_tests;
 #[cfg(test)]
 mod logging_tests;
 mod monitor;
@@ -18,16 +21,20 @@ mod reverse;
 mod sends;
 #[cfg(test)]
 mod terms_tests;
+#[cfg(test)]
+mod turns_tests;
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, ensure};
 use serde::Deserialize;
 use tracing::{info, warn};
+use zecswap_api::Network;
 use zecswap_api::relayer::{Claim, LockClaim, Payout, Sent, Terms};
 use zecswap_api::server::MonitorToken;
 use zecswap_chain::evm::funding::FundingPolicy;
@@ -38,11 +45,14 @@ use zecswap_railgun::{Keys, ShieldNote};
 
 pub use sends::{Sending, SendsSnapshot};
 
+use crate::lanes::Lanes;
 use crate::pricing::SwapFee;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Testnet or mainnet: the chains, Railgun and token the relayer takes.
+    pub network: Network,
     pub evm_rpc: String,
     /// The ZecSwap settlement contract.
     pub contract: Address,
@@ -71,7 +81,10 @@ pub struct Config {
     /// claim could land after the lock lapses, handing the maker the next turn knowing both
     /// halves.
     pub claim_margin: u64,
-    /// Opt-in sponsorship of initial Railgun funding on Sepolia.
+    /// How many of its largest transactions each lane's account keeps ETH for.
+    #[serde(default = "default_top_up_transactions")]
+    pub top_up_transactions: u64,
+    /// Opt-in sponsorship of reverse swaps' escrow funding from Railgun.
     #[serde(default)]
     pub reverse_funding: Option<ReverseFundingConfig>,
     /// Opt-in sending of wallets' own Railgun transactions, private sends and withdrawals, as
@@ -83,7 +96,10 @@ pub struct Config {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReverseFundingConfig {
-    pub relay_adapt: Address,
+    /// Railgun's own Relay Adapt on the chain unless given; one given must be it, where the
+    /// network has Railgun's own deployment.
+    #[serde(default)]
+    pub relay_adapt: Option<Address>,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u64,
     /// Escrow-token base units each funding pays this relayer for its gas at least.
@@ -105,6 +121,10 @@ pub struct RailgunSendsConfig {
     pub journal: PathBuf,
 }
 
+fn default_top_up_transactions() -> u64 {
+    8
+}
+
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text =
@@ -112,17 +132,38 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    /// The funding sponsorship's policy, if enabled, for the relayer's own token and maker.
-    fn funding_policy(&self, account: Address) -> Option<FundingPolicy> {
-        self.reverse_funding.as_ref().map(|funding| FundingPolicy {
-            relay_adapt: funding.relay_adapt,
+    /// The funding sponsorship's policy, if enabled, for the relayer's own token and maker,
+    /// through Relay Adapt on `chain_id`.
+    fn funding_policy(
+        &self,
+        account: Address,
+        chain_id: u64,
+    ) -> anyhow::Result<Option<FundingPolicy>> {
+        let Some(funding) = &self.reverse_funding else {
+            return Ok(None);
+        };
+        let network = self.network;
+        let relay_adapt = match (funding.relay_adapt, network.relay_adapt(chain_id)) {
+            (Some(given), Some(railguns)) => {
+                ensure!(
+                    given == railguns,
+                    "relay_adapt {given} is not Railgun's {railguns} on {network}"
+                );
+                given
+            }
+            (given, railguns) => given.or(railguns).with_context(|| {
+                format!("name relay_adapt: {network} has no Railgun of its own on chain {chain_id}")
+            })?,
+        };
+        Ok(Some(FundingPolicy {
+            relay_adapt,
             token: self.token,
             maker: self.maker,
             max_gas_limit: funding.max_gas_limit,
             max_gas_price_wei: funding.max_gas_price_wei.into(),
             fee: funding.fee.into(),
             fee_recipient: account,
-        })
+        }))
     }
 }
 
@@ -137,10 +178,16 @@ pub enum RelayerError {
     /// A send was attempted and its outcome is unknown: the same request is to be posted again.
     #[error("{0}")]
     Unsettled(&'static str),
+    /// A send of these notes reverted lately: the same request is to be posted again in this
+    /// many seconds.
+    #[error("a send of these notes reverted lately; post the same request again in {0} seconds")]
+    Reverted(u64),
     /// Sends are priced by gas, and gas can't be priced now: the same request is to be posted
     /// again later.
     #[error("the relayer can't price gas right now; post the same request again later")]
     Unpriced,
+    #[error("another request for this swap is running; post again once it has answered")]
+    Busy,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -161,7 +208,10 @@ impl RelayerError {
     /// What kind of failure this is, for the monitor; none for a refusal.
     fn failure_kind(&self) -> Option<&'static str> {
         match self {
-            RelayerError::Rejected(_) | RelayerError::Spent(_) => None,
+            RelayerError::Rejected(_)
+            | RelayerError::Spent(_)
+            | RelayerError::Reverted(_)
+            | RelayerError::Busy => None,
             RelayerError::Unsettled(_) => Some("unconfirmed"),
             RelayerError::Unpriced => Some("internal"),
             RelayerError::Internal(error) => Some(
@@ -175,13 +225,39 @@ impl RelayerError {
 
 type Result<T> = std::result::Result<T, RelayerError>;
 
+#[derive(Default)]
+struct InFlight(Mutex<HashSet<B256>>);
+
+impl InFlight {
+    fn start(&self, swap_id: B256) -> Option<Running<'_>> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(swap_id)
+            .then(|| Running(self, swap_id))
+    }
+}
+
+struct Running<'a>(&'a InFlight, B256);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.0.lock().unwrap().remove(&self.1);
+    }
+}
+
 pub struct Relayer {
     config: Config,
     account: Address,
     domain: Domain,
     settlement: Settlement,
+    lanes: Lanes,
+    lock_duration: u64,
+    in_flight: InFlight,
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
+    /// With `reverse_funding`: what a funding must be, its fee the floor.
+    funding: Option<FundingPolicy>,
     /// With `providers`: every fee priced by gas.
     pricing: Option<pricing::GasPricing>,
     /// Alchemy's price history, from `ALCHEMY_API_KEY`: it values what each send cost and
@@ -198,13 +274,25 @@ impl Relayer {
         railgun: Option<Keys>,
     ) -> anyhow::Result<Self> {
         let account = key.address();
+        ensure!(
+            config.top_up_transactions > 0,
+            "top_up_transactions must be positive"
+        );
+        let lanes = Lanes::connect(&config.evm_rpc, config.contract, &key)?;
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
         let domain = Domain {
             chain_id: settlement.chain_id().await?,
             contract: config.contract.into(),
         };
-        if let Some(policy) = config.funding_policy(account) {
-            policy.validate_config(domain.chain_id, account)?;
+        let network = config.network;
+        let proxy = settlement.railgun().await?;
+        network
+            .check(domain.chain_id, proxy, config.token)
+            .with_context(|| format!("the relayer's config names {network}"))?;
+        let lock_duration = settlement.lock_duration().await?;
+        let funding = config.funding_policy(account, domain.chain_id)?;
+        if let Some(policy) = &funding {
+            policy.validate_config(account)?;
             settlement.check_funding_adapter(policy.relay_adapt).await?;
         }
         let sends = match (&config.railgun_sends, railgun) {
@@ -219,16 +307,15 @@ impl Relayer {
                     sends.max_gas_limit > 0 && sends.max_gas_price_wei > 0,
                     "railgun_sends gas caps must be positive"
                 );
-                let railgun = settlement.railgun().await?;
-                ensure!(!railgun.is_zero(), "the contract pays into no Railgun");
+                ensure!(!proxy.is_zero(), "the contract pays into no Railgun");
                 let policy = SendPolicy {
-                    railgun,
+                    railgun: proxy,
                     token: config.token,
                     fee: sends.fee.into(),
                     max_gas_limit: sends.max_gas_limit,
                     max_gas_price_wei: sends.max_gas_price_wei.into(),
                 };
-                info!(railgun = %keys.address(), proxy = %railgun, "sending Railgun transactions");
+                info!(railgun = %keys.address(), %proxy, "sending Railgun transactions");
                 Some(sends::Sends::open(policy, keys, &sends.journal)?)
             }
         };
@@ -250,16 +337,22 @@ impl Relayer {
         if sends.is_some() && history.is_none() {
             warn!("ALCHEMY_API_KEY is not set: send costs are recorded without USD values");
         }
-        Ok(Self {
+        let relayer = Self {
             config,
             account,
             domain,
             settlement,
+            lanes,
+            lock_duration,
+            in_flight: InFlight::default(),
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
+            funding,
             pricing,
             history,
-        })
+        };
+        info!(relayer = %account, lanes = ?relayer.lane_accounts(), "sending accounts");
+        Ok(relayer)
     }
 
     pub fn listen(&self) -> SocketAddr {
@@ -297,9 +390,20 @@ impl Relayer {
         result
     }
 
+    /// Turns `request` away while another for the same swap runs.
+    pub(crate) async fn alone<T>(
+        &self,
+        swap_id: B256,
+        request: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let _running = self.in_flight.start(swap_id).ok_or(RelayerError::Busy)?;
+        request.await
+    }
+
     pub fn monitor_snapshot(&self) -> monitor::MonitorSnapshot {
         self.monitor.snapshot(monitor::Deployment {
             relayer: self.account,
+            accounts: self.lane_accounts(),
             chain_id: self.domain.chain_id,
             contract: self.config.contract,
             token: self.config.token,
@@ -340,17 +444,21 @@ impl Relayer {
             contract: self.config.contract,
             fee,
             fee_expires_at: swap_fees_priced.then_some(now + pricing::SWAP_FEE_VALIDITY),
-            reverse_funding: self.config.reverse_funding.as_ref().zip(funding).map(
-                |(config, (fee, _))| zecswap_api::relayer::ReverseFundingTerms {
-                    relay_adapt: config.relay_adapt,
-                    token: self.config.token,
-                    maker: self.config.maker,
-                    max_gas_limit: config.max_gas_limit,
-                    max_gas_price_wei: config.max_gas_price_wei.into(),
-                    max_calldata_bytes: MAX_CALLDATA_BYTES,
-                    fee,
-                },
-            ),
+            reverse_funding: self
+                .funding
+                .as_ref()
+                .zip(funding)
+                .map(
+                    |(policy, (fee, _))| zecswap_api::relayer::ReverseFundingTerms {
+                        relay_adapt: policy.relay_adapt,
+                        token: policy.token,
+                        maker: policy.maker,
+                        max_gas_limit: policy.max_gas_limit,
+                        max_gas_price_wei: policy.max_gas_price_wei,
+                        max_calldata_bytes: MAX_CALLDATA_BYTES,
+                        fee,
+                    },
+                ),
             railgun_sends: self.sends.as_ref().map(|sends| {
                 zecswap_api::relayer::RailgunSendTerms {
                     railgun_address: sends.keys.address(),
@@ -426,8 +534,33 @@ impl Relayer {
         let (swap, terms) = self.railgun_swap(request.swap_id, &request.terms).await?;
         let digest = self.domain.lock_claim(&request.swap_id, request.deadline);
         self.check_signed(&swap, &digest, &request.signature.0)?;
+        let now = self.settlement.now().await?;
+        // A repeat sends nothing.
+        if swap.stage == Stage::Claimed
+            || swap.claim_lock_until > now.saturating_add(self.config.claim_margin)
+        {
+            return Ok(Sent {
+                transactions: vec![],
+            });
+        }
+        match swap.stage {
+            Stage::Refunded => return Err(RelayerError::Rejected("the swap was refunded".into())),
+            Stage::Open if now < swap.t0 => {
+                return Err(RelayerError::Rejected(
+                    "the swap can be claimed once ready, or from t0".into(),
+                ));
+            }
+            _ => {}
+        }
+        self.check_lock(
+            request.deadline,
+            swap.claim_lock_until,
+            swap.refund_lock_until,
+            now,
+        )?;
         let tx = self
-            .settlement
+            .lanes
+            .locks
             .lock_claim_with_sig(
                 request.swap_id,
                 &terms,
@@ -457,6 +590,11 @@ impl Relayer {
                 swap.stage
             )));
         }
+        let secret = SecretShare::from_be_bytes(&request.secret.0)
+            .map_err(|e| RelayerError::Rejected(e.to_string()))?;
+        if secret.public() != swap.user_share {
+            return Err(RelayerError::Rejected("the share is not the swap's".into()));
+        }
         let note = self.check_payout(&swap, &request.payout).await?;
         let now = self.settlement.now().await?;
         if swap.claim_lock_until < now + self.config.claim_margin {
@@ -469,10 +607,9 @@ impl Relayer {
                 "Railgun is not accepting payouts now".into(),
             ));
         }
-        let secret = SecretShare::from_be_bytes(&request.secret.0)
-            .map_err(|e| RelayerError::Rejected(e.to_string()))?;
         let claim = self
-            .settlement
+            .lanes
+            .claims
             .claim(request.swap_id, &terms, &secret)
             .await?;
         info!(id = %request.swap_id, tx = %claim, "claimed");
@@ -610,6 +747,27 @@ impl Relayer {
             return Err(RelayerError::Rejected(
                 "not signed by the swap's user".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// Refuses what the contract would of a lock signed until `deadline`: `own` is when the
+    /// user's last lock ran out, `other` the maker's.
+    fn check_lock(&self, deadline: u64, own: u64, other: u64, now: u64) -> Result<()> {
+        let refused = |reason: String| Err(RelayerError::Rejected(reason));
+        if now > deadline {
+            return refused("the signature has expired".into());
+        }
+        if deadline >= now.saturating_add(self.lock_duration) {
+            return refused("the signature's deadline is too far off".into());
+        }
+        let held = own.max(other);
+        if now < held {
+            return refused(format!("a lock is held until {held}"));
+        }
+        let turn = own.saturating_add(self.lock_duration);
+        if own > other && now < turn {
+            return refused(format!("the maker has the next turn, until {turn}"));
         }
         Ok(())
     }

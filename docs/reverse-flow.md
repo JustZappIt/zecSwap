@@ -58,10 +58,10 @@ Refund settlement reveals the user's share without making token calls; the maker
 its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
 Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
 Ready and lock submissions currently use sponsored relayer gas; refund payout uses its configured
-fee. Initial funding can also use the opt-in Sepolia sponsorship below, which the funding
-transaction itself pays for with a relayer fee in the escrow token.
+fee. Initial funding can also use the opt-in sponsorship below, which the funding transaction
+itself pays for with a relayer fee in the escrow token.
 
-## Sponsored initial funding (Sepolia)
+## Sponsored initial funding
 
 The relayer accepts `POST /v1/reverse/fund` when its `[reverse_funding]` configuration
 is present. `GET /v1/terms` then includes `reverseFunding` with `relayAdapt`, `token`,
@@ -102,7 +102,7 @@ The phone keeps its Railgun spending keys and generates the proof locally:
 The endpoint accepts no spending key, sender, nonce, or caller-selected gas settings.
 It validates the full call tree, EIP-712 authorization, proof-to-action binding, token,
 maker, chain, zero ETH value, and deadline. It simulates the complete transaction from
-the relayer account against pending state before submission, including on-chain Railgun
+the relayer's funding account against pending state before submission, including on-chain Railgun
 proof checks, and caps the gas limit and gas price. It submits the original calldata
 without modifying any proof-bound field. Calldata is limited to 64 KiB and the HTTP
 body to 132 KiB; the nginx route has the matching limit.
@@ -118,9 +118,11 @@ can consume additional relayer gas. Railgun nullifiers and the unique escrow ID 
 funding twice. The client must retain its pending action and must not treat an error as proof
 that no transaction was submitted.
 
-Enable the example relayer configuration with a verified adapter and fund its existing
-`RELAYER_PRIVATE_KEY` account with Sepolia ETH. Startup rejects other chains, the maker's
-own gas account, and adapters whose `railgun()` differs from settlement's `RAILGUN()`.
+Enable it in the relayer's configuration and fund its `RELAYER_PRIVATE_KEY` account with ETH,
+which tops its funding account up. Fundings go through Railgun's own Relay Adapt on the chain of
+the relayer's `network`. Startup rejects a chain, Railgun or token of another network, a
+`relay_adapt` other than Railgun's own there, the maker's own gas account, and adapters whose
+`railgun()` differs from settlement's `RAILGUN()`. There is no aggregate sponsorship budget.
 Operators opt in through configuration; the hosted Sepolia service is enabled as recorded
 in [deployment.md](deployment.md#october-2-initial-funding-sponsorship). Mainnet
 Railgun broadcaster submission (a private fee note with `requireSuccess=false`) remains

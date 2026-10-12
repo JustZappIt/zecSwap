@@ -14,7 +14,6 @@ use zecswap_chain::evm::{Address, Settlement, Stage};
 use zecswap_chain::zcash::{Network, Prover, TxId, Wallet, connect};
 use zecswap_client::reverse::{ReverseSwap, ReverseUser};
 use zecswap_client::{MakerApi, RelayerApi};
-use zecswap_core::NetworkType;
 use zeroize::Zeroizing;
 
 #[derive(Deserialize)]
@@ -81,7 +80,7 @@ async fn main() -> Result<()> {
     let user = ReverseUser::new(
         &seed,
         &seed,
-        NetworkType::Test,
+        zecswap_api::Network::Testnet,
         settlement,
         maker.clone(),
         RelayerApi::new(std::env::var("ZECSWAP_RELAYER_URL")?)?,
@@ -104,7 +103,8 @@ async fn main() -> Result<()> {
         .with_confirmations(NonZeroU32::new(3).unwrap());
     let mut client = connect("https://testnet.zec.rocks:443").await?;
     if operation == "prepare" {
-        user.accept(&state.swap).await?;
+        user.accept(&mut state.swap).await?;
+        save(&state_path, &state)?;
     }
     let account = user
         .watch_deposit(&state.swap, &mut wallet, &mut client)

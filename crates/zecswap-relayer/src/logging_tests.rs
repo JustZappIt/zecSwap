@@ -28,6 +28,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
     let contract = Address::repeat_byte(1);
     let relayer = Relayer {
         config: Config {
+            network: zecswap_api::Network::Testnet,
             evm_rpc: "http://127.0.0.1:1".into(),
             contract,
             token: Address::repeat_byte(4),
@@ -38,6 +39,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
         },
@@ -47,8 +49,17 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             contract: contract.into(),
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
+        lanes: crate::lanes::Lanes::connect(
+            "http://127.0.0.1:1",
+            contract,
+            &PrivateKeySigner::random(),
+        )
+        .unwrap(),
+        lock_duration: 600,
+        in_flight: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
+        funding: None,
         pricing: None,
         history: None,
     };

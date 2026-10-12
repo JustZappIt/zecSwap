@@ -1,6 +1,8 @@
 # Secrets are read from the environment, never from this file:
 #   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
+#   MAKER_TICKET_SECRET 32 bytes of hex, apart from every other secret; keys the ticket each
+#                       accept answers with, and the gateway holds it too, as TICKET_SECRET
 #   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
 #   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor,
 #                       /v1/monitor/swaps/{id} and /v1/monitor/economics
@@ -10,6 +12,9 @@
 #                       and ends, when Railgun returns a payout, when [gas_alerts] runs low,
 #                       and when an error lasts five minutes
 
+# "testnet" or "mainnet": the Zcash network, and the chains, Railgun and token (USDC on mainnet)
+# the maker takes; it refuses to start on any other. `lightwalletd` defaults to the network's
+# (testnet.zec.rocks or zec.rocks).
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
 evm_rpc = "https://sepolia.base.org"

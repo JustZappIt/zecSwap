@@ -6,33 +6,46 @@ use tower::ServiceExt;
 
 pub(crate) fn relayer(enabled: bool) -> Relayer {
     let contract = Address::repeat_byte(1);
-    Relayer {
-        config: Config {
-            evm_rpc: "http://127.0.0.1:1".into(),
-            contract,
-            token: Address::repeat_byte(3),
-            maker: Address::repeat_byte(4),
-            listen: "127.0.0.1:0".parse().unwrap(),
-            fee: 1,
+    let account = Address::repeat_byte(5);
+    let config = Config {
+        network: Network::Testnet,
+        evm_rpc: "http://127.0.0.1:1".into(),
+        contract,
+        token: Address::repeat_byte(3),
+        maker: Address::repeat_byte(4),
+        listen: "127.0.0.1:0".parse().unwrap(),
+        fee: 1,
+        fee_gas: 0,
+        providers: vec![],
+        fee_margin_bps: 0,
+        claim_margin: 30,
+        top_up_transactions: 8,
+        reverse_funding: enabled.then_some(ReverseFundingConfig {
+            relay_adapt: None,
+            max_gas_limit: 4_000_000,
+            max_gas_price_wei: 20_000_000_000,
+            fee: 250_000,
             fee_gas: 0,
-            providers: vec![],
-            fee_margin_bps: 0,
-            claim_margin: 30,
-            reverse_funding: enabled.then_some(ReverseFundingConfig {
-                relay_adapt: Address::repeat_byte(2),
-                max_gas_limit: 4_000_000,
-                max_gas_price_wei: 20_000_000_000,
-                fee: 250_000,
-                fee_gas: 0,
-            }),
-            railgun_sends: None,
-        },
-        account: Address::repeat_byte(5),
+        }),
+        railgun_sends: None,
+    };
+    Relayer {
+        funding: config.funding_policy(account, 11_155_111).unwrap(),
+        config,
+        account,
         domain: Domain {
             chain_id: 11_155_111,
             contract: contract.into(),
         },
         settlement: Settlement::read_only("http://127.0.0.1:1", contract).unwrap(),
+        lanes: crate::lanes::Lanes::connect(
+            "http://127.0.0.1:1",
+            contract,
+            &PrivateKeySigner::random(),
+        )
+        .unwrap(),
+        lock_duration: 600,
+        in_flight: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         pricing: None,
@@ -59,7 +72,7 @@ async fn post(enabled: bool, body: String) -> (StatusCode, serde_json::Value) {
 fn request() -> serde_json::Value {
     serde_json::json!({
         "swapId": B256::repeat_byte(6), "chainId": 11155111,
-        "to": Address::repeat_byte(2), "data": "0x01020304", "value": "0",
+        "to": Network::Testnet.relay_adapt(11_155_111), "data": "0x01020304", "value": "0",
     })
 }
 
@@ -100,4 +113,36 @@ async fn funding_capability_is_opt_in_and_old_config_still_loads() {
     assert_eq!(enabled["reverseFunding"]["maxGasPriceWei"], "20000000000");
     assert_eq!(enabled["reverseFunding"]["maxCalldataBytes"], 65536);
     assert_eq!(enabled["reverseFunding"]["fee"], "250000");
+}
+
+#[test]
+fn fundings_go_through_railguns_own_relay_adapt_on_the_networks_chain() {
+    let account = Address::repeat_byte(5);
+    let mut config = relayer(true).config;
+    let relay_adapt = |config: &Config, chain_id| {
+        config
+            .funding_policy(account, chain_id)
+            .map(|policy| policy.unwrap().relay_adapt)
+    };
+    let railguns = Network::Testnet.relay_adapt(11_155_111).unwrap();
+    assert_eq!(relay_adapt(&config, 11_155_111).unwrap(), railguns);
+    let named = |config: &mut Config, address| {
+        config.reverse_funding.as_mut().unwrap().relay_adapt = address;
+    };
+    named(&mut config, Some(railguns));
+    assert_eq!(relay_adapt(&config, 11_155_111).unwrap(), railguns);
+    let other = Address::repeat_byte(2);
+    named(&mut config, Some(other));
+    assert!(relay_adapt(&config, 11_155_111).is_err());
+    // A local chain has no Railgun of its own: its Relay Adapt must be named.
+    assert_eq!(relay_adapt(&config, 31_337).unwrap(), other);
+    named(&mut config, None);
+    assert!(relay_adapt(&config, 31_337).is_err());
+    config.reverse_funding = None;
+    assert!(
+        config
+            .funding_policy(account, 11_155_111)
+            .unwrap()
+            .is_none()
+    );
 }
