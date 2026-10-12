@@ -30,7 +30,9 @@ swap's relayer requests can carry its ticket for an allowance of their own
 Telegram message for each private send and unshield, and the maker one when its account or the
 relayer's runs low on ETH ([October 12 alerts](#october-12-relayer-and-gas-alerts)). Since 08:03
 UTC their sends pay the gas price quotes and fees charge
-([October 12 gas](#october-12-sends-at-the-quoted-gas-price)).
+([October 12 gas](#october-12-sends-at-the-quoted-gas-price)), and since 08:31 UTC each watches
+its own account's ETH, read when one of its sends ends and on a timer only while it is low
+([October 12 gas alerts](#october-12-gas-alerts-on-sends)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -509,6 +511,30 @@ the checksums.
 Rollback files are in `/var/backups/zecswap/20261012-node-tip-86651c2` (root-only):
 `maker.sqlite`, `railgun-sends.sqlite` and `previous-current`. Point `/opt/zecswap/current` back at
 the previous release and restart the maker and relayer; the stores didn't change, so they stay.
+
+## October 12 gas alerts on sends
+
+At 08:31 UTC the maker and relayer restarted on builds of `c1b865c` in
+`/opt/zecswap/releases/20261012-gas-on-sends-c1b865c`, now `/opt/zecswap/current`; the issuer is
+`0d4cdb3`'s, byte for byte, and did not restart. Gas alerts no longer read balances every five
+minutes. Each service watches the account it sends from, read when it starts and each time one of
+that account's sends ends, mined or failed, and every 300 s only while it is under 0.005 ETH, until
+a top-up brings it back to 0.01. The maker's `[gas_alerts]` kept its thresholds and lost its
+account list, and the relayer's config gained the same section, whose messages queue in its
+Railgun sends journal. zapp-dashboard `43fb091`, deployed to Vercel production first, reads the
+relayer's gas alerts from the relayer's own monitor.
+
+The deploy checked that the Droplet ran `20261012-node-tip-86651c2` and the staged checksums,
+backed up both configs, `maker.sqlite` and the relayer's journal, and after the restart saw the
+maker's info and the relayer's terms through nginx, and each monitor name its own account alone
+for gas alerts. The maker held 0.0579 ETH and the relayer 0.0831, so the first readings queued
+nothing; none failed, neither journal logged an error, and the dashboard shows no alert.
+[sepolia-gas-on-sends.json](../deployments/sepolia-gas-on-sends.json) records the checksums.
+
+Rollback files are in `/var/backups/zecswap/20261012-gas-on-sends-c1b865c` (root-only):
+`maker-config.toml`, `relayer-config.toml`, `maker.sqlite`, `railgun-sends.sqlite` and
+`previous-current`. Restore both configs, since the older binaries refuse the new `[gas_alerts]`,
+point `/opt/zecswap/current` back at the previous release, and restart the maker and relayer.
 
 ## Deployment sequence
 
