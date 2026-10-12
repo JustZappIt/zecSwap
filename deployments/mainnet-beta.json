@@ -31,9 +31,9 @@
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "<workers vpc service id>",
   "worker": "zecswap-mainnet",
-  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-beta-7cc2ffd",
-  "makerSha256": "7accaeedf87b4967400bec1169cd9c8422f18ff9bb3359252d44f4f10a80bd90",
-  "relayerSha256": "b051ef060611d69e0bf838aef2cd2042f8ff882dfbf146bbffaf78a8adee223f",
+  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-tip-0d65f96",
+  "makerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
+  "relayerSha256": "09e699967d90eefbbc9eca0b4a5d04a4e9d0455219d48fe770d6aa87efda64e0",
   "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
   "inventory": "49932010",
   "inventoryTransactions": [
@@ -76,5 +76,8 @@
       "sweep": "e97a17d01a46ebb129eae8fae54a426c84e348ac98111b4f2aebc3d56632c464"
     }
   },
-  "zcashConfirmations": 2
+  "zcashConfirmations": 2,
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-beta-7cc2ffd",
+  "minTipGwei": 0.02,
+  "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout"
 }
