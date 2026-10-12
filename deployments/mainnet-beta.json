@@ -11,5 +11,57 @@
   "deployer": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
   "sourceCommit": "980a31d95fcbdf59282286b79f97a54ca0f4ecfd",
   "deployedAt": "2026-10-12",
-  "status": "beta"
+  "status": "beta",
+  "makerUrl": "https://zecswap-mainnet.pepeman931.workers.dev/maker",
+  "relayerUrl": "https://zecswap-mainnet.pepeman931.workers.dev/relayer",
+  "issuerUrl": "https://zecswap-mainnet.pepeman931.workers.dev/issuer",
+  "maker": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "relayer": "0xcBcb5f57C79C88a0E4BB450289dE2088958A017F",
+  "relayerRailgunAddress": "0zk1qy860uut20m8gd6fnhzvr0zqeyhs0ya5247x7h2eyedxsazx43w5nrv7j6fe3z53l78hn78kmslky2206lm75mclrv7dawd756m2suy7l4zud2m4yhg6kcsn7ed",
+  "makerZecInventory": "u1uvl8efwnrxa2kjc0gjl76jx8su6wx6zdxmtdf88jh0xvrze8tffsq48pl74v5nj3tpnk4v6rpsy87cnct9slp2n26dwgmzjcdgte9qzy",
+  "sweepTo": "the maker's own ZEC inventory, until the owner names a wallet of their own",
+  "relayAdapt": "0xAc9f360Ae85469B27aEDdEaFC579Ef2d052aD405",
+  "vaultLogic": "0x8156F44d3bab244d3d3FDc4ac24e9e97D1E1Ec48",
+  "issuer": {
+    "name": "zecswap-mainnet-issuer",
+    "tokenKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEAuA8Rq3Fo644QG48Kmxsyg1UFAKd-kfsS9t7BgPVwJqXHIEmlH4gS1UaxDBdu7awf0n9lv7yYozNTE5PysBh01LBhGbcIMWyTSNXkF2l1Mi0AOVVhVJZr-KTyr0u6ZFI2EGRVxT1BF2B4QgzQgJ64xqj-tzX_ctpwYQiE1Gf74zG4Yd0mdEbDjTYhgzoaR0lV5uHHSnVN2fmnlskAkZl6mfrJKfcfivp-UQ8qgBEs-7ke67lMhMyC3BxoDG7qoY0B4eIQRQ_-fu3eYT1RifuO5LgvMYkzRe58X63emOvYls19En0Vbkeq2Y73kMRA2AOYMp5gD3DyF4t5LM535p4-GQIDAQAB",
+    "returnKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEArte6ewR0iOfbhxrByZ1vj_MMkKiQLQ-2R3OdCyHeKr_G4FrsCHvLhJ0uuu5r-papDogiMb_btM5-nPaOWzC1olxbmEUypJWgz-yCXD3K4wp_jgeqlP7EnlJE3IT5iTwv_S1hK5yV4Fka5mRoyhvZlhvDW3eCWoMix15Fp-TD3AGm7GttqzW4QyLXV_mQcnqlWPwuCacmTYch93eMZ7CaTHHRMmsfqR7_kZdskZh_JM55_lw_puDvvdRtu4vYItvo5wMI5mkwmSEwi6UahZDx_OI8IAF2JpeqRIKwbhT6FVGwahDeu6PRTww71C0i13EOwC3GQ85pxDRIAzF01W14wQIDAQAB",
+    "status": "keys made; serves once the app's signing digest is in its config"
+  },
+  "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
+  "vpcService": "01a131a5-5a4f-7091-983f-e9265396c33a",
+  "worker": "zecswap-mainnet",
+  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-beta-7cc2ffd",
+  "makerSha256": "7accaeedf87b4967400bec1169cd9c8422f18ff9bb3359252d44f4f10a80bd90",
+  "relayerSha256": "b051ef060611d69e0bf838aef2cd2042f8ff882dfbf146bbffaf78a8adee223f",
+  "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
+  "inventory": "49932010",
+  "inventoryTransactions": [
+    {
+      "approve": "0xab7f2ac97f6f230453f41c5aa3e576d1ea69195eaf15ec2b0c648f5a47d91abd",
+      "block": 26178693
+    },
+    {
+      "deposit": "0x546ce8b024d37079160b8d75b39d566681713ae259308da5bdd948cbfcaec6bd",
+      "block": 26178696
+    }
+  ],
+  "limits": {
+    "maxSwapUsdc": 50,
+    "maxAwaitingDeposit": 20,
+    "spreadBps": 100,
+    "tokens": "off until the app spends them"
+  },
+  "validation": {
+    "runtimeCodeMatchesForkRehearsal": true,
+    "deploymentInputMatchesForkRehearsal": true,
+    "railgunReadBack": true,
+    "lockDurationReadBack": true,
+    "makerHealth": 204,
+    "makerInfo": "mainnet, chain 1, this contract, USDC, reverse on",
+    "relayerTerms": "chain 1, this contract, fee floor 500000, Railgun proxy and Relay Adapt",
+    "publicGateway": "maker health, info and relayer terms through the Worker",
+    "quote": "5 USDC for 0.00432424 ZEC with a network cost of 318015",
+    "liveSwap": false
+  }
 }
