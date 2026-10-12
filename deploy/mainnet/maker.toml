@@ -1,6 +1,6 @@
 # The mainnet beta's maker: payouts into Railgun on Ethereum, swaps of up to $50. Its secrets come
-# from /etc/zecswap-maker/secrets.env (scripts/mainnet-secrets.sh). Replace every <...>, then
-# install as /etc/zecswap-maker/config.toml, root:zecswap-maker, 0640.
+# from /etc/zecswap-mainnet-maker/secrets.env (scripts/mainnet-secrets.sh). Replace every <...>, then
+# install as /etc/zecswap-mainnet-maker/config.toml, root:zecswap-mainnet-maker, 0640.
 network = "mainnet"
 evm_rpc = "<the mainnet Alchemy app's URL>"
 contract = "<deployments/mainnet-beta.json's contract>"
@@ -8,8 +8,8 @@ token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 # A u1 address of a wallet you hold off this host: every forward swap's ZEC is swept to it.
 sweep_to = "<u1...>"
 evm_confirmations = 12
-data_dir = "/var/lib/zecswap-maker"
-listen = "127.0.0.1:8787"
+data_dir = "/var/lib/zecswap-mainnet-maker"
+listen = "127.0.0.1:8797"
 # Testnet's: the inventory bounds what unpaid swaps can hold anyway. 0 refuses every new swap
 # while the watchtower keeps settling the open ones: the kill switch.
 max_awaiting_deposit = 20
@@ -58,10 +58,10 @@ recovery_wei = 10000000000000000
 interval_seconds = 300
 
 # Spam tokens, from deploy/mainnet/issuer.toml's issuer: on before the app ships. The CLI gets
-# none, so a CLI smoke test runs before this is on. bootstrap.sh prints the issuer key's half.
+# none, so a CLI smoke test runs before this is on. install.sh prints the issuer key's half.
 # [tokens]
 # issuer = "zecswap-mainnet-issuer"
 # origin = "maker"
 # keys = ["<the issuer key's public half>"]
-# return_key = "/etc/zecswap-maker/return-key.pem"
-# spent = "/var/lib/zecswap-maker/spent-tokens.sqlite"
+# return_key = "/etc/zecswap-mainnet-maker/return-key.pem"
+# spent = "/var/lib/zecswap-mainnet-maker/spent-tokens.sqlite"

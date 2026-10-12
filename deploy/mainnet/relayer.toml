@@ -1,12 +1,12 @@
-# The mainnet beta's relayer. Its secrets come from /etc/zecswap-relayer/secrets.env
+# The mainnet beta's relayer. Its secrets come from /etc/zecswap-mainnet-relayer/secrets.env
 # (scripts/mainnet-secrets.sh). Replace every <...>, then install as
-# /etc/zecswap-relayer/config.toml, root:zecswap-relayer, 0640.
+# /etc/zecswap-mainnet-relayer/config.toml, root:zecswap-mainnet-relayer, 0640.
 network = "mainnet"
 evm_rpc = "<the mainnet Alchemy app's URL>"
 contract = "<deployments/mainnet-beta.json's contract>"
 token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 maker = "<the maker's address>"
-listen = "127.0.0.1:8788"
+listen = "127.0.0.1:8798"
 # Every fee is the larger of its floor ($0.50) and its gas at the price now, 10% on top.
 fee = 500000
 # Measured on a mainnet fork on 2026-10-12: claim lock 48k, claim 237k, payout into Railgun 875k.
@@ -27,7 +27,7 @@ fee_gas = 2300000
 fee = 500000
 max_gas_limit = 3000000
 max_gas_price_wei = 20000000000
-journal = "/var/lib/zecswap-relayer/railgun-sends.sqlite"
+journal = "/var/lib/zecswap-mainnet-relayer/railgun-sends.sqlite"
 
 [gas_alerts]
 low_wei = 5000000000000000
