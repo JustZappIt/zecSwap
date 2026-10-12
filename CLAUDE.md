@@ -107,6 +107,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   20th-percentile tips: Sepolia's bots tip a flat gwei, so it flipped between 0.001 and 1 gwei
   (1 gwei half the time), and swaps whose quotes charged $0.001 of gas paid up to $0.95 for an
   open and $3.09 for a refund payout. Railgun sends and fundings already paid `eth_gasPrice`.
+  The maker's ledger credits a sponsored funding's fee to whichever relayer account sent it
+  (`evm::paid_to`: the fee goes to the relayer's own account, the funding lane sends it), and
+  zapp-dashboard counts the accounts the relayer's monitor names as the relayer's.
 - Review fixes and the network switch (2026-10-11): calldata wallets post (`railgun/transact`,
   `reverse/fund` and its inner calls) must be its call's canonical ABI encoding, lengths capped,
   before anything is decoded (`evm/canonical.rs`): alloy follows offsets anywhere, so shared
