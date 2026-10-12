@@ -1,10 +1,20 @@
 # Secrets are read from the environment, never from this file:
 #   MAKER_PRIVATE_KEY   the account that opens swaps and holds inventory on the settlement chain
 #   MAKER_ROOT_SECRET   32 bytes of hex; every maker share derives from it
+#   MAKER_TICKET_SECRET 32 bytes of hex, apart from every other secret; keys the ticket each
+#                       accept answers with, and the gateway holds it too, as TICKET_SECRET
 #   MAKER_ZCASH_SEED    hex wallet seed, required only when reverse swaps are enabled
-#   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor
-#   ZCASH_CMC_KEY       required when [pricing.market] is enabled; server-side only
+#   MAKER_MONITOR_TOKEN optional, at least 32 characters; authorizes GET /v1/monitor,
+#                       /v1/monitor/swaps/{id} and /v1/monitor/economics
+#   ZCASH_CMC_KEY       required when [pricing.market] lists coinmarketcap; server-side only
+#   ALCHEMY_API_KEY     required when [pricing.market] lists alchemy; server-side only
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  optional, both or neither: alerts when a swap starts
+#                       and ends, when Railgun returns a payout, when [gas_alerts] runs low,
+#                       and when an error lasts five minutes
 
+# "testnet" or "mainnet": the Zcash network, and the chains, Railgun and token (USDC on mainnet)
+# the maker takes; it refuses to start on any other. `lightwalletd` defaults to the network's
+# (testnet.zec.rocks or zec.rocks).
 network = "testnet"
 lightwalletd = "https://testnet.zec.rocks:443"
 evm_rpc = "https://sepolia.base.org"
@@ -19,6 +29,8 @@ sweep_to = "utest1..."
 evm_confirmations = 12
 data_dir = "maker-data"
 listen = "127.0.0.1:8787"
+# Accepts are refused while this many swaps, of both directions, wait on their users to pay in.
+# max_awaiting_deposit = 20
 
 [pricing]
 # Token base units (6 decimals for USDC) per whole ZEC, before the spread.
@@ -29,11 +41,25 @@ max_units = 20
 
 # Enable live USD quotes for a six-decimal USDC token. This ignores price_per_zec.
 # Prices are fetched on quote/dashboard requests, with a shared cache; no cron or polling.
-# Never fall back to the fixed price if the provider fails or a price becomes stale.
+# Each refresh asks the providers in order and keeps the first answer, so quotes pause only
+# while every one fails. Never fall back to the fixed price once the last price is too old.
+# Alchemy also keeps history: listed, it values swap costs the maker saw after the fact.
 # [pricing.market]
 # token_decimals = 6
 # refresh_seconds = 60
 # max_age_seconds = 300
+# providers = ["coinmarketcap", "alchemy"]
+
+# Charge each swap the maker's own gas and Zcash fee, on top of the spread, at the chain's gas
+# price and the market prices of its quote: a ZEC to USDC swap deposits that much more ZEC, a
+# USDC to ZEC swap is paid that much less. Needs [pricing.market]. Measured on Sepolia, where new
+# state is repriced: an open and a ready burn 412k gas, a claim lock and a claim 362k, and a
+# sweep or a reverse deposit pays 10,000 zatoshis.
+# [pricing.costs]
+# forward_gas = 450000
+# reverse_gas = 400000
+# zcash_fee_zat = 15000
+# margin_bps = 2000
 
 [timing]
 quote_ttl = 120
@@ -55,3 +81,26 @@ tick = 15
 # refund_after = 10800
 # deposit_margin = 1800
 # fee_reserve_zat = 20000
+
+# A Privacy Pass token per accept, from the issuer `zecswap-issuer` runs, handed back once the
+# user pays in: a device walks away from only as many swaps a day as it has tokens, and the
+# maker never learns which device asked. `keys` lists the issuer's public keys (base64url SPKI,
+# as `zecswap-issuer keygen` prints), the current one first. `return_key` is the maker's own
+# key for handing tokens back, a second `zecswap-issuer keygen`; the app pins its public half,
+# which /v1/info shows. Turn it on only once the app spends tokens.
+# [tokens]
+# issuer = "zecswap-issuer"
+# origin = "maker"
+# keys = ["..."]
+# return_key = "/etc/zecswap-maker/return-key.pem"
+# spent = "maker-data/spent-tokens.sqlite"
+
+# Telegram messages when the maker's own account has under `low_wei` of ETH on the settlement
+# chain, and again once a top-up brings it to `recovery_wei`. Only its own sends spend it, so it
+# is read when the maker starts and after each send, and while it is low every
+# `interval_seconds` (60 to 3600) until it is topped up. The relayer watches its own account
+# with the same section in its config.
+# [gas_alerts]
+# low_wei = 20000000000000000       # 0.02 ETH
+# recovery_wei = 50000000000000000  # 0.05 ETH
+# interval_seconds = 300

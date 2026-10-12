@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use zecswap_api::Network;
 use zecswap_chain::evm::{Address, PrivateKeySigner};
-use zecswap_chain::zcash::Network;
 use zeroize::Zeroizing;
 
 use crate::policy::Timing;
@@ -14,8 +14,11 @@ use crate::pricing::Pricing;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub network: Chain,
-    pub lightwalletd: String,
+    /// Testnet or mainnet: the Zcash network, the chains, Railgun and token the maker takes, and
+    /// the lightwalletd it uses unless `lightwalletd` names another.
+    pub network: Network,
+    #[serde(default)]
+    pub lightwalletd: Option<String>,
     /// The EVM chain the settlement contract is on.
     #[serde(alias = "base_rpc")]
     pub evm_rpc: String,
@@ -39,59 +42,17 @@ pub struct Config {
     pub timing: Timing,
     #[serde(default)]
     pub reverse: Option<ReverseConfig>,
-    /// Optional native-gas alerts using the existing Telegram delivery queue.
+    /// Telegram messages when the maker's own account runs low on ETH and once it is topped up.
     #[serde(default)]
-    pub gas_alerts: Option<GasAlerts>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GasAlerts {
-    pub interval_seconds: u64,
-    pub accounts: Vec<GasAlertAccount>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GasAlertAccount {
-    pub label: String,
-    pub address: Address,
-    pub low_wei: u64,
-    pub recovery_wei: u64,
-}
-
-impl GasAlerts {
-    pub fn check(&self) -> Result<()> {
-        anyhow::ensure!(
-            (60..=3600).contains(&self.interval_seconds),
-            "gas alert interval must be 60..3600 seconds"
-        );
-        anyhow::ensure!(
-            !self.accounts.is_empty() && self.accounts.len() <= 8,
-            "gas alerts require 1..8 accounts"
-        );
-        let mut seen = std::collections::HashSet::new();
-        for account in &self.accounts {
-            anyhow::ensure!(
-                !account.label.is_empty()
-                    && account.label.len() <= 40
-                    && account
-                        .label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b" -_".contains(&b)),
-                "invalid gas alert account label"
-            );
-            anyhow::ensure!(
-                !account.address.is_zero() && seen.insert(account.address),
-                "gas alert addresses must be nonzero and unique"
-            );
-            anyhow::ensure!(
-                account.low_wei > 0 && account.recovery_wei > account.low_wei,
-                "gas recovery threshold must exceed a positive low threshold"
-            );
-        }
-        Ok(())
-    }
+    pub gas_alerts: Option<zecswap_alerts::GasAlerts>,
+    /// The most swaps, of both directions, waiting on their users to pay in at once: past it,
+    /// accepts are refused, so spam can tie up only so much inventory and gas. No limit if absent.
+    #[serde(default)]
+    pub max_awaiting_deposit: Option<usize>,
+    /// A Privacy Pass token each accept spends, so a device does only as many swaps a day as
+    /// the issuer gives it tokens, without the maker learning which device asked.
+    #[serde(default)]
+    pub tokens: Option<zecswap_tokens::server::Config>,
 }
 
 fn default_evm_confirmations() -> NonZeroU32 {
@@ -133,13 +94,6 @@ impl ReverseConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Chain {
-    Mainnet,
-    Testnet,
-}
-
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text =
@@ -147,11 +101,10 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    pub fn network(&self) -> Network {
-        match self.network {
-            Chain::Mainnet => Network::MainNetwork,
-            Chain::Testnet => Network::TestNetwork,
-        }
+    pub fn lightwalletd(&self) -> &str {
+        self.lightwalletd
+            .as_deref()
+            .unwrap_or(self.network.lightwalletd())
     }
 }
 
@@ -162,6 +115,9 @@ pub struct Secrets {
     pub evm_key: PrivateKeySigner,
     /// Every maker share derives from this and a quote nonce (`MAKER_ROOT_SECRET`, 32 bytes hex).
     pub root: Zeroizing<[u8; 32]>,
+    /// Keys each swap's ticket (`MAKER_TICKET_SECRET`, 32 bytes hex). The gateway holds it too,
+    /// so it must lead to nothing else of the maker's.
+    pub ticket_key: Zeroizing<[u8; 32]>,
     pub zcash_seed: Option<Zeroizing<Vec<u8>>>,
 }
 
@@ -170,14 +126,10 @@ impl Secrets {
         let evm_key = env("MAKER_PRIVATE_KEY")?
             .parse()
             .context("MAKER_PRIVATE_KEY")?;
-        let root_hex = env("MAKER_ROOT_SECRET")?;
-        let root = hex::decode(root_hex.trim_start_matches("0x"))
-            .ok()
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .context("MAKER_ROOT_SECRET must be 32 bytes of hex")?;
         Ok(Self {
             evm_key,
-            root: Zeroizing::new(root),
+            root: secret("MAKER_ROOT_SECRET")?,
+            ticket_key: secret("MAKER_TICKET_SECRET")?,
             zcash_seed: match std::env::var("MAKER_ZCASH_SEED") {
                 Ok(value) => {
                     let value = Zeroizing::new(value);
@@ -195,6 +147,14 @@ impl Secrets {
             },
         })
     }
+}
+
+fn secret(name: &str) -> Result<Zeroizing<[u8; 32]>> {
+    hex::decode(env(name)?.trim_start_matches("0x"))
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(Zeroizing::new)
+        .with_context(|| format!("{name} must be 32 bytes of hex"))
 }
 
 fn env(name: &str) -> Result<Zeroizing<String>> {

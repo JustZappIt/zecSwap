@@ -1,0 +1,52 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "servicesSince": "2026-10-08T14:55:40Z",
+  "servicesSourceCommit": "991e16f",
+  "release": "/opt/zecswap/releases/20261008-monitoring-991e16f",
+  "previousRelease": "/opt/zecswap/releases/20261007-attestation-490eff4",
+  "backup": "/var/backups/zecswap/20261008-monitoring-991e16f",
+  "makerSha256": "e9aaa24a026a38c14559392ebc2516b9ec9125f4ad262714bb48e9edfbb14e9e",
+  "relayerSha256": "94ef2ea8363acf45a6991bfd478c82a92db6d23114713a0ad6fd557986fb1ddd",
+  "issuerSha256": "84bedcddeb9903a3524a115c4af34362cbe8e1c0ac3386de93fed5d677d51018",
+  "nginxSiteSha256": "754639e6b3d7c60be69b62d95451fa07907df6c2bc7293498f364ca09f4e0868",
+  "alloyConfigSha256": "1e4dd178851f02680c241e29c39dfad9a37a86857c719e26e0a711a924461062",
+  "monitors": {
+    "maker": "GET /maker/v1/monitor and /maker/v1/monitor/swaps/{id}, schema 2, MAKER_MONITOR_TOKEN (unchanged)",
+    "relayer": "GET /relayer/v1/monitor, RELAYER_MONITOR_TOKEN appended to /etc/zecswap-relayer/secrets.env",
+    "issuer": "GET /issuer/v1/monitor, ISSUER_MONITOR_TOKEN in /etc/zecswap-issuer/secrets.env, loaded by an added EnvironmentFile line",
+    "gatewayAllowance": "monitor class, 1 r/s, burst 10, apart from the apps' reads"
+  },
+  "dashboard": {
+    "repository": "zapp-dashboard",
+    "sourceCommit": "4165055",
+    "deployment": "zapp-dashboard-h4duq0c49-plasmapays-projects.vercel.app",
+    "url": "https://zapp-dashboard-seven.vercel.app/bridge",
+    "rpc": "BRIDGE_TESTNET_RPC_URL, an Alchemy key of the dashboard's own, apart from the maker's",
+    "contract": "BRIDGE_TESTNET_CONTRACT updated to 0xd75efc6a157cc0a95f66962da86ddf35d9f2617c"
+  },
+  "validation": {
+    "firstRunStoppedAtSilentChecksChangingNothing": true,
+    "preconditionsHeld": true,
+    "monitorsRefuseWithoutTokens": 401,
+    "makerMonitor": "schema 2, 5 swaps, 0 awaiting deposit, tokens on, ETH priced",
+    "relayerMonitor": "fees 100000 payout, 250000 funding",
+    "issuerMonitor": "2 devices, 6 tokens, 2 at their limit, status list 1759 entries 2.8 h old",
+    "throughNginx": {
+      "makerHealth": 204,
+      "makerInfo": 200,
+      "relayerTerms": 200,
+      "issuerTokenKey": 200,
+      "makerMonitorWithToken": 200,
+      "fifteenUnauthenticatedMonitorReads": {
+        "answered401": 11,
+        "refused503": 4
+      }
+    },
+    "redactionTest": "33 fixtures passed against the new config.alloy",
+    "alloyRestarted": true,
+    "dashboardMonitorsHealthy": true,
+    "dashboardAlert": "Telegram low-gas alerts are off: the maker has no [gas_alerts]",
+    "forkSuite": "all nine scenarios passed on an anvil fork of Ethereum Sepolia with the live Zcash testnet in 26.7 min (.testnet/e2e-monitoring-fork.log)"
+  }
+}

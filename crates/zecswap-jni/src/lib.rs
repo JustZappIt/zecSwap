@@ -1,9 +1,11 @@
 //! JNI bindings for `xyz.justzappit.atomicswap.AtomicSwapNative`, in the `android` module. Each
 //! takes the wallet's 64-byte BIP-39 seed, the network and the swap's index, plus the 64-byte seed
-//! of the Railgun wallet a note pays where it builds one, and computes what `ops` does; errors and
-//! panics surface as `AtomicSwapException` instead of crossing into the JVM.
+//! of the Railgun wallet a note pays where it builds one, and computes what `ops` does; the token
+//! bindings compute what `tokens` does. Errors and panics surface as `AtomicSwapException` instead
+//! of crossing into the JVM.
 
 pub mod ops;
+pub mod tokens;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -458,6 +460,84 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_signRever
         let signature =
             swap(&seed, mainnet, index)?.sign_reverse_open(&railgun_seed, domain, &terms)?;
         byte_array(env, &signature)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_readTokenChallenge<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    header: JString<'local>,
+) -> jobjectArray {
+    run(&mut env, |env| {
+        let header: String = env.get_string(&header).map_err(jni_error)?.into();
+        let parts = tokens::read_challenge(&header)?;
+        let array = env
+            .new_object_array(3, "[B", JObject::null())
+            .map_err(jni_error)?;
+        for (i, part) in (0..).zip(parts) {
+            let bytes = env.byte_array_from_slice(&part).map_err(jni_error)?;
+            env.set_object_array_element(&array, i, bytes)
+                .map_err(jni_error)?;
+        }
+        Ok(array.into_raw())
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_blindToken<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    token_key: JByteArray<'local>,
+    challenge: JByteArray<'local>,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let token_key = env.convert_byte_array(&token_key).map_err(jni_error)?;
+        let challenge = env.convert_byte_array(&challenge).map_err(jni_error)?;
+        let request = tokens::blind(&token_key, &challenge)?;
+        byte_array(env, &request)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_finalizeToken<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    pending: JByteArray<'local>,
+    token_key: JByteArray<'local>,
+    blind_signature: JByteArray<'local>,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let pending = Zeroizing::new(env.convert_byte_array(&pending).map_err(jni_error)?);
+        let token_key = env.convert_byte_array(&token_key).map_err(jni_error)?;
+        let blind_signature = env
+            .convert_byte_array(&blind_signature)
+            .map_err(jni_error)?;
+        let token = tokens::finalize(&pending, &token_key, &blind_signature)?;
+        byte_array(env, &token)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_tokenAuthorization<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    token: JByteArray<'local>,
+) -> jstring {
+    run(&mut env, |env| {
+        let token = env.convert_byte_array(&token).map_err(jni_error)?;
+        let authorization = tokens::authorization(&token)?;
+        env.new_string(authorization)
+            .map(JString::into_raw)
+            .map_err(jni_error)
     })
     .unwrap_or(std::ptr::null_mut())
 }

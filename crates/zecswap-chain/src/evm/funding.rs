@@ -5,57 +5,36 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_core::{Domain, ReverseOpen, signer};
 
-use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, share_from_words, swap_id};
+use super::canonical::{self, Malformed, Shape};
+use super::railgun::{IRelayAdapt, MAX_CALLDATA_BYTES, MAX_TRANSACTIONS, TRANSACTION, erc20};
+use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, reverse_swap_id, share_from_words};
 use crate::Error;
 
-pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
-pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
-
-sol! {
-    #[sol(rpc)]
-    interface IRelayAdapt {
-        struct G1Point { uint256 x; uint256 y; }
-        struct G2Point { uint256[2] x; uint256[2] y; }
-        struct SnarkProof { G1Point a; G2Point b; G1Point c; }
-        struct CommitmentCiphertext {
-            bytes32[4] ciphertext;
-            bytes32 blindedSenderViewingKey;
-            bytes32 blindedReceiverViewingKey;
-            bytes annotationData;
-            bytes memo;
-        }
-        struct BoundParams {
-            uint16 treeNumber;
-            uint72 minGasPrice;
-            uint8 unshield;
-            uint64 chainID;
-            address adaptContract;
-            bytes32 adaptParams;
-            CommitmentCiphertext[] commitmentCiphertext;
-        }
-        struct TokenData { uint8 tokenType; address tokenAddress; uint256 tokenSubID; }
-        struct Preimage { bytes32 npk; TokenData token; uint120 value; }
-        struct Transaction {
-            SnarkProof proof;
-            bytes32 merkleRoot;
-            bytes32[] nullifiers;
-            bytes32[] commitments;
-            BoundParams boundParams;
-            Preimage unshieldPreimage;
-        }
-        struct Call { address to; bytes data; uint256 value; }
-        struct ActionData { bytes31 random; bool requireSuccess; uint256 minGasLimit; Call[] calls; }
-        struct Ciphertext { bytes32[3] encryptedBundle; bytes32 shieldKey; }
-        struct ShieldRequest { Preimage preimage; Ciphertext ciphertext; }
-        function relay(Transaction[] _transactions, ActionData _actionData) external payable;
-        function shield(ShieldRequest[] _shieldRequests) external;
-        function railgun() external view returns (address);
-    }
-}
+/// `openReverse`, the longest call a funding makes, is 548 bytes.
+const MAX_CALL_BYTES: usize = 1024;
+const CALL: Shape = Shape::Tuple(&[
+    Shape::Words(1),
+    Shape::Bytes(MAX_CALL_BYTES),
+    Shape::Words(1),
+]);
+const RELAY: &[Shape] = &[
+    Shape::Array(&TRANSACTION, MAX_TRANSACTIONS),
+    // ActionData: random, requireSuccess, minGasLimit, calls
+    Shape::Tuple(&[
+        Shape::Words(1),
+        Shape::Bool,
+        Shape::Words(1),
+        Shape::Array(&CALL, 4),
+    ]),
+];
+/// `approve` and `transfer`: an address and an amount.
+const TOKEN_CALL: &[Shape] = &[Shape::Words(2)];
+const OPEN_REVERSE: &[Shape] = &[Shape::Words(12), Shape::Bytes(65)];
+/// One `ShieldRequest`, nine words.
+const SHIELD: &[Shape] = &[Shape::Array(&Shape::Words(9), 1)];
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FundingPolicy {
@@ -82,6 +61,7 @@ type Result<T> = std::result::Result<T, FundingError>;
 /// Only validation can construct one. Submission uses the original, proof-bound bytes.
 pub struct ValidatedFunding {
     id: B256,
+    chain_id: u64,
     contract: Address,
     data: Bytes,
     terms: ReverseOpen,
@@ -90,11 +70,7 @@ pub struct ValidatedFunding {
 }
 
 impl FundingPolicy {
-    pub fn validate_config(&self, chain_id: u64, account: Address) -> Result<()> {
-        require(
-            chain_id == SEPOLIA_CHAIN_ID,
-            "funding sponsorship is Sepolia-only",
-        )?;
+    pub fn validate_config(&self, account: Address) -> Result<()> {
         require(
             !self.relay_adapt.is_zero() && !self.token.is_zero() && !self.maker.is_zero(),
             "funding addresses must be configured",
@@ -105,7 +81,7 @@ impl FundingPolicy {
         )?;
         require(
             self.fee_recipient == account,
-            "the funding fee must pay the submitting relayer",
+            "the funding fee must pay the relayer",
         )?;
         require(
             self.max_gas_limit > 0 && self.max_gas_price_wei > 0,
@@ -124,10 +100,6 @@ impl FundingPolicy {
         data: Bytes,
     ) -> Result<ValidatedFunding> {
         require(
-            domain.chain_id == SEPOLIA_CHAIN_ID,
-            "funding sponsorship is Sepolia-only",
-        )?;
-        require(
             to == self.relay_adapt && value == 0,
             "wrong funding destination or ETH value",
         )?;
@@ -135,12 +107,14 @@ impl FundingPolicy {
             data.len() <= MAX_CALLDATA_BYTES,
             "funding calldata is too large",
         )?;
-        let relay = IRelayAdapt::relayCall::abi_decode_validate(&data)
-            .map_err(|_| FundingError::Rejected("invalid V2 Relay Adapt calldata"))?;
-        require(
-            relay.abi_encode() == data,
-            "noncanonical Relay Adapt calldata",
-        )?;
+        let relay =
+            canonical::decode::<IRelayAdapt::relayCall>(&data, RELAY).map_err(|malformed| {
+                FundingError::Rejected(match malformed {
+                    Malformed::NotTheCall => "invalid V2 Relay Adapt calldata",
+                    Malformed::Noncanonical => "noncanonical Relay Adapt calldata",
+                    Malformed::TooLong => "the funding calldata holds more than the relayer takes",
+                })
+            })?;
         let action = &relay._actionData;
         require(
             action.requireSuccess,
@@ -169,21 +143,12 @@ impl FundingPolicy {
                 && shield_call.to == self.relay_adapt,
             "unexpected funding call target",
         )?;
-        let approve = IErc20::approveCall::abi_decode_validate(&approve_call.data)
-            .map_err(|_| FundingError::Rejected("invalid token approval"))?;
-        let open = IZecSwap::openReverseCall::abi_decode_validate(&open_call.data)
-            .map_err(|_| FundingError::Rejected("invalid escrow open"))?;
-        let payment = IErc20::transferCall::abi_decode_validate(&fee_call.data)
-            .map_err(|_| FundingError::Rejected("invalid relayer fee"))?;
-        let shield = IRelayAdapt::shieldCall::abi_decode_validate(&shield_call.data)
-            .map_err(|_| FundingError::Rejected("invalid dust shield"))?;
-        require(
-            approve.abi_encode() == approve_call.data
-                && open.abi_encode() == open_call.data
-                && payment.abi_encode() == fee_call.data
-                && shield.abi_encode() == shield_call.data,
-            "noncanonical funding call",
-        )?;
+        let approve: IErc20::approveCall =
+            inner(approve_call, TOKEN_CALL, "invalid token approval")?;
+        let open: IZecSwap::openReverseCall =
+            inner(open_call, OPEN_REVERSE, "invalid escrow open")?;
+        let payment: IErc20::transferCall = inner(fee_call, TOKEN_CALL, "invalid relayer fee")?;
+        let shield: IRelayAdapt::shieldCall = inner(shield_call, SHIELD, "invalid dust shield")?;
         require(
             payment.to == self.fee_recipient && payment.amount >= U256::from(self.fee),
             "funding must pay the relayer its advertised fee",
@@ -229,7 +194,7 @@ impl FundingPolicy {
             deadline: words.deadline,
         };
         require(
-            id == swap_id(words.user, &terms.maker_share),
+            id == reverse_swap_id(words.user, &terms.maker_share),
             "wrong reverse swap ID",
         )?;
         let signature = open
@@ -242,8 +207,8 @@ impl FundingPolicy {
             "escrow is not authorized by its user",
         )?;
         require(
-            !relay._transactions.is_empty() && relay._transactions.len() <= 16,
-            "expected between one and sixteen Railgun transactions",
+            !relay._transactions.is_empty(),
+            "expected at least one Railgun transaction",
         )?;
         let nullifiers: Vec<Vec<B256>> = relay
             ._transactions
@@ -295,6 +260,7 @@ impl FundingPolicy {
         require(unshields > 0, "funding must unshield from Railgun")?;
         Ok(ValidatedFunding {
             id,
+            chain_id: domain.chain_id,
             contract: domain.contract.into(),
             data,
             terms,
@@ -337,24 +303,20 @@ impl Settlement {
         let account = self
             .account
             .ok_or_else(|| Error::Config("read-only funding connection".into()))?;
-        let _sending = self.sending.lock().await;
         let terms = &request.terms;
-        if let Some(swap) = self.swap(request.id).await? {
-            let funding = self.reverse_funding(request.id).await?;
-            require(
-                swap.maker == Address::from(terms.user)
-                    && swap.user == Address::from(terms.maker)
-                    && swap.token == Address::from(terms.token)
-                    && swap.amount == terms.amount
-                    && swap.maker_share == terms.user_share
-                    && swap.user_share == terms.maker_share
-                    && swap.t0 == terms.t0
-                    && swap.t1 == terms.t1
-                    && swap.payout_note.is_none()
-                    && funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
-                "existing escrow does not match funding authorization",
-            )?;
-            return Ok(None);
+        let mismatch = "existing escrow does not match funding authorization";
+        match self.swap(request.id, &terms.terms()).await {
+            Ok(Some(_)) => {
+                let funding = self.reverse_funding(request.id).await?;
+                require(
+                    funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
+                    mismatch,
+                )?;
+                return Ok(None);
+            }
+            Ok(None) => {}
+            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),
+            Err(e) => return Err(e.into()),
         }
         require(
             self.now().await? < terms.deadline,
@@ -375,7 +337,7 @@ impl Settlement {
             .with_to(policy.relay_adapt)
             .with_value(U256::ZERO)
             .with_input(request.data.clone())
-            .with_chain_id(SEPOLIA_CHAIN_ID)
+            .with_chain_id(request.chain_id)
             .with_gas_limit(policy.max_gas_limit)
             .with_gas_price(gas_price);
         // Pending-state simulation runs real proof, nullifier, signature and token checks.
@@ -394,6 +356,7 @@ impl Settlement {
                 .saturating_add(estimate / 5)
                 .min(policy.max_gas_limit),
         );
+        let _sending = self.sending.turn().await;
         let pending = self.provider.send_transaction(tx).await
             .map_err(|_| Error::Contract("funding submission outcome unknown; reconcile escrow before retrying the same proof".into()))?;
         let hash = *pending.tx_hash();
@@ -402,8 +365,14 @@ impl Settlement {
     }
 }
 
-fn erc20(token: &IRelayAdapt::TokenData, address: Address) -> bool {
-    token.tokenType == 0 && token.tokenAddress == address && token.tokenSubID.is_zero()
+/// One of a funding's calls, decoded.
+fn inner<C: SolCall>(call: &IRelayAdapt::Call, args: &[Shape], invalid: &'static str) -> Result<C> {
+    canonical::decode(&call.data, args).map_err(|malformed| {
+        FundingError::Rejected(match malformed {
+            Malformed::NotTheCall => invalid,
+            Malformed::Noncanonical | Malformed::TooLong => "noncanonical funding call",
+        })
+    })
 }
 
 fn require(condition: bool, reason: &'static str) -> Result<()> {

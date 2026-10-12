@@ -23,7 +23,7 @@ def protected_write(path, value):
 
 def known_secrets():
     secrets = set()
-    for directory in ("/etc/zecswap-maker", "/etc/zecswap-relayer"):
+    for directory in ("/etc/zecswap-maker", "/etc/zecswap-relayer", "/etc/zecswap-issuer"):
         for path in Path(directory).glob("*.env"):
             for line in path.read_text().splitlines():
                 if "=" not in line or line.lstrip().startswith("#"):

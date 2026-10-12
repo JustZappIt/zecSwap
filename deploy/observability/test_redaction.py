@@ -44,6 +44,8 @@ def run(config, alloy):
         ('seed=1234567890abcdef1234567890abcdef', '1234567890abcdef1234567890abcdef'),
         ('{"seed": "SYNTHETIC_QUOTED_SEED with spaces"}', 'SYNTHETIC_QUOTED_SEED'),
         ('TELEGRAM_CHAT_ID=-1001234567890', '-1001234567890'),
+        ('ISSUER_MONITOR_TOKEN=SYNTHETIC_ISSUER_MONITOR_TOKEN', 'SYNTHETIC_ISSUER_MONITOR_TOKEN'),
+        ('RELAYER_MONITOR_TOKEN=SYNTHETIC_RELAYER_MONITOR_TOKEN', 'SYNTHETIC_RELAYER_MONITOR_TOKEN'),
     ]
     with tempfile.TemporaryDirectory(prefix="alloy-redaction-", dir="/run") as temp:
         d = Path(temp)

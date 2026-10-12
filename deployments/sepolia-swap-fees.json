@@ -1,0 +1,25 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-09T04:40:51Z",
+  "sourceCommit": "546faa8",
+  "release": "/opt/zecswap/releases/20261009-swap-fees-546faa8",
+  "previousRelease": "/opt/zecswap/releases/20261009-profitability-8c81c9a",
+  "backup": "/var/backups/zecswap/20261009-swap-fees-546faa8",
+  "makerSha256": "fd200468672149fbc7505f146f510ed635756388beff36513f49d22dc9a51c75",
+  "relayerSha256": "a0e9d9e3be3e28607745ae6044864c1169079f81121aac68c2c49efd1b8cb49b",
+  "issuerSha256": "84bedcddeb9903a3524a115c4af34362cbe8e1c0ac3386de93fed5d677d51018",
+  "changes": {
+    "makerConfig": "[pricing.costs] forward_gas 450000, reverse_gas 400000, zcash_fee_zat 15000, margin_bps 2000",
+    "relayerConfig": "providers and fee_margin_bps moved from [railgun_sends] to the top level; fee_gas 1800000; [reverse_funding] fee_gas 2300000",
+    "makerLedger": "26 relayer transactions read as paying nothing forgotten and read again; 8 payouts now carry the 0.10 fee"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "relayerTerms": "payout fee 100000 and funding fee 250000 (floors at Sepolia's gas), feeExpiresAt an hour on; sends 500000 at 2740255162 an ETH of gas; directly and through nginx",
+    "makerQuote": "one unit for 18294 zat, networkCost 221484",
+    "makerMonitor": "costs as configured; pricing coinmarketcap, fresh",
+    "exportsThroughNginx": "200 for /maker/v1/monitor/economics and /relayer/v1/monitor/sends",
+    "publicGateway": "terms quote the fees with an hour to run; the dashboard reads the costs and the expiry"
+  }
+}

@@ -7,11 +7,15 @@ rust-version.workspace = true
 publish = false
 
 [features]
-server = ["dep:axum"]
+server = ["dep:anyhow", "dep:axum", "dep:blake2b_simd", "dep:zeroize"]
 
 [dependencies]
+anyhow = { version = "1", optional = true }
 axum = { version = "0.8", optional = true }
+blake2b_simd = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 alloy-primitives = { version = "~1.5", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+zcash_protocol.workspace = true
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }

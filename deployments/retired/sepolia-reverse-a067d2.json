@@ -14,7 +14,9 @@
   "sourceCommit": "bcc362f9a820d1c97a90af67e7c858a156f56acf",
   "rescueAuthorization": "nonce-and-deadline",
   "deployedAt": "2026-10-02",
-  "status": "active",
+  "status": "retired",
+  "retiredAt": "2026-10-07",
+  "replacedBy": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
   "replaces": "0xbd9a37f47a988aefc4d80395727f41feb698e225",
   "inventoryMigrationTransactions": [
     {

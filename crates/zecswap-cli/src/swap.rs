@@ -25,6 +25,7 @@ pub(crate) struct SwapArgs {
     pub(crate) token: Address,
     pub(crate) units: u32,
     pub(crate) payee: Payee,
+    pub(crate) tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
 }
 
 /// Where the swap pays.
@@ -44,6 +45,10 @@ struct Run {
 }
 
 pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
+    let spending = |api: MakerApi| match &args.tokens {
+        Some(tokens) => api.with_tokens(tokens.clone()),
+        None => api,
+    };
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -57,10 +62,17 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
             },
         ),
     };
-    let network = ctx.wallet.network().network_type();
-    let maker = MakerApi::new(args.maker)?;
+    let maker = spending(MakerApi::new(args.maker)?);
     let seed = ctx.store.seed()?;
-    let user = User::new(&seed, &seed, network, settlement, maker, args.token, route);
+    let user = User::new(
+        &seed,
+        &seed,
+        ctx.network,
+        settlement,
+        maker,
+        args.token,
+        route,
+    );
 
     let mut run = match ctx.store.load::<Run>(STATE)? {
         Some(mut run) if !run.finished => {
@@ -141,14 +153,15 @@ async fn deposit(ctx: &mut Session, run: &mut Run, joint: &JointAccount) -> Resu
 
 async fn claim(ctx: &mut Session, user: &User, run: &mut Run) -> Result<()> {
     let paid = user.claim(&run.swap).await?;
-    match (paid.tx, user.settlement().account()) {
-        (None, _) => println!("claimed; nothing was left to pay"),
-        (Some(tx), Some(account)) => println!("claimed; paid {} to {account} in {tx}", paid.amount),
-        (Some(tx), None) => println!(
-            "claimed; shielded {} into {} in {tx}",
-            paid.amount,
-            user.railgun().address()
-        ),
+    let to = match user.settlement().account() {
+        Some(account) => format!("paid {} to {account}", paid.amount),
+        None => format!("shielded {} into {}", paid.amount, user.railgun().address()),
+    };
+    // A request that timed out may have paid, in a transaction no answer named.
+    match (paid.amount, paid.tx) {
+        (0, _) => println!("claimed; nothing was left to pay"),
+        (_, Some(tx)) => println!("claimed; {to} in {tx}"),
+        (_, None) => println!("claimed; {to}"),
     }
     finish(ctx, run)
 }

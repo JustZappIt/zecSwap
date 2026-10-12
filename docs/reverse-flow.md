@@ -28,11 +28,16 @@ a funding notification nor a reported ZEC transaction is proof that the other si
    The app reads and verifies that share, combines it with its own, and sweeps ZEC home.
    `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
 
-The contract retains its original storage roles: `Swap.maker` is the USDC side and
-`Swap.user` is the ZEC side. For reverse swaps these are the user's auth address and the
-maker's address respectively; the stored shares are likewise reversed. The reverse quote
-keeps the ordinary business meanings of maker and user. Its ID is
-`keccak256(abi.encode(userAuthAddress, makerShare))`.
+The escrow's terms keep the contract's original roles: `Terms.maker` is the USDC side and
+`Terms.user` is the ZEC side. For reverse swaps these are the user's auth address and the
+maker's address respectively; the shares are likewise reversed, and `payoutNote` is zero.
+`Quote::open(userShare).terms()` builds them. The reverse quote keeps the ordinary business
+meanings of maker and user. Its ID is `reverseSwapId`,
+`keccak256(abi.encode(userAuthAddress, makerShare, true))`, which is never a forward swap's
+`keccak256(abi.encode(maker, userShare))`: a maker can't open the forward swap a user verified
+as a reverse escrow, where that user would have no claim after `t0`. The contract stores only
+`hashTerms(terms)`, so every relayer request on the escrow carries `terms` (see
+[Terms hash](#terms-hash-2026-10-06)).
 
 ## Waiting, cancellation, and recovery
 
@@ -53,10 +58,10 @@ Refund settlement reveals the user's share without making token calls; the maker
 its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
 Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
 Ready and lock submissions currently use sponsored relayer gas; refund payout uses its configured
-fee. Initial funding can also use the opt-in Sepolia sponsorship below, which the funding
-transaction itself pays for with a relayer fee in the escrow token.
+fee. Initial funding can also use the opt-in sponsorship below, which the funding transaction
+itself pays for with a relayer fee in the escrow token.
 
-## Sponsored initial funding (Sepolia)
+## Sponsored initial funding
 
 The relayer accepts `POST /v1/reverse/fund` when its `[reverse_funding]` configuration
 is present. `GET /v1/terms` then includes `reverseFunding` with `relayAdapt`, `token`,
@@ -97,7 +102,7 @@ The phone keeps its Railgun spending keys and generates the proof locally:
 The endpoint accepts no spending key, sender, nonce, or caller-selected gas settings.
 It validates the full call tree, EIP-712 authorization, proof-to-action binding, token,
 maker, chain, zero ETH value, and deadline. It simulates the complete transaction from
-the relayer account against pending state before submission, including on-chain Railgun
+the relayer's funding account against pending state before submission, including on-chain Railgun
 proof checks, and caps the gas limit and gas price. It submits the original calldata
 without modifying any proof-bound field. Calldata is limited to 64 KiB and the HTTP
 body to 132 KiB; the nginx route has the matching limit.
@@ -113,9 +118,11 @@ can consume additional relayer gas. Railgun nullifiers and the unique escrow ID 
 funding twice. The client must retain its pending action and must not treat an error as proof
 that no transaction was submitted.
 
-Enable the example relayer configuration with a verified adapter and fund its existing
-`RELAYER_PRIVATE_KEY` account with Sepolia ETH. Startup rejects other chains, the maker's
-own gas account, and adapters whose `railgun()` differs from settlement's `RAILGUN()`.
+Enable it in the relayer's configuration and fund its `RELAYER_PRIVATE_KEY` account with ETH,
+which tops its funding account up. Fundings go through Railgun's own Relay Adapt on the chain of
+the relayer's `network`. Startup rejects a chain, Railgun or token of another network, a
+`relay_adapt` other than Railgun's own there, the maker's own gas account, and adapters whose
+`railgun()` differs from settlement's `RAILGUN()`. There is no aggregate sponsorship budget.
 Operators opt in through configuration; the hosted Sepolia service is enabled as recorded
 in [deployment.md](deployment.md#october-2-initial-funding-sponsorship). Mainnet
 Railgun broadcaster submission (a private fee note with `requireSuccess=false`) remains
@@ -198,3 +205,17 @@ and the maker use a fixed 320,000-zatoshi ceiling.
 Android rereads the matching confirmed escrow and current clock immediately before a reverse
 refund reveal. This closes preparation delays, but timely inclusion after sending the secret
 still depends on the relayer, chain availability, and the lock window.
+
+## Terms hash (2026-10-06)
+
+The contract keeps only `keccak256(abi.encode(terms))` of each swap's `Terms` (maker, token,
+amount, makerKey, userKey, user, t0, t1, payoutNote) and reverts `WrongTerms` on any call whose
+terms hash otherwise. `getSwap` returns the hash, stage, `paidOut`, both locks and the revealed
+secret; `Opened` still emits the terms. Every call that acts on a swap takes `terms` after the
+id, and every relayer request on a swap carries them as a `terms` object: `/v1/reverse/ready`,
+`/lock-refund`, `/refund` (and its nested payout), `/refund-payout` and `/rescue`. The relayer
+reads the escrow against them before sending and rejects a mismatch. `/v1/reverse/fund` is
+unchanged: `openReverse` takes the same `ReverseOpen` and stores the hash. Read an escrow by
+comparing `getSwap(id).termsHash` with the hash of the terms the quote and the user's share
+give; a mismatch means it is not the quoted escrow. This changes the ABI: ship the contract,
+maker, relayer, native library and wallet together for a new deployment.

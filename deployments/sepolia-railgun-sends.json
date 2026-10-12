@@ -1,0 +1,50 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "relayerSince": "2026-10-08T19:10:33Z",
+  "relayerSourceCommit": "970cdf9",
+  "release": "/opt/zecswap/releases/20261008-railgun-sends-970cdf9",
+  "previousRelease": "/opt/zecswap/releases/20261008-monitoring-991e16f",
+  "backup": "/var/backups/zecswap/20261008-railgun-sends-970cdf9",
+  "relayerSha256": "47926d2f40abc5d83067f43287a0fcb8fb1d33e20a4f24d7880bc046f690e09c",
+  "makerSha256": "e9aaa24a026a38c14559392ebc2516b9ec9125f4ad262714bb48e9edfbb14e9e",
+  "issuerSha256": "84bedcddeb9903a3524a115c4af34362cbe8e1c0ac3386de93fed5d677d51018",
+  "makerAndIssuer": "the 991e16f binaries copied into the release byte for byte, not restarted",
+  "nginxSiteSha256": "a8fc7c1593163d364933944e35f8c1904ed2e32023949392ec689e65baa5a5e6",
+  "railgunSends": {
+    "route": "POST /relayer/v1/railgun/transact",
+    "railgunAddress": "0zk1qy25r4x4qjhtlfe0k9z22jy9psfm83j4k4fgvqs3pmv4he4ytefm8rv7j6fe3z53lltumh8amd66g2axaej92dmjk6mvnuveqtmmwccdm593pft827p4xpwljug",
+    "railgunProxy": "0xeCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea",
+    "token": "0x5764d0044bef5aa839e0ddafe2073421101b9ed8",
+    "fee": "250000",
+    "maxGasLimit": 3000000,
+    "maxGasPriceWei": "20000000000",
+    "journal": "/var/lib/zecswap-relayer/railgun-sends.sqlite",
+    "seed": "RELAYER_RAILGUN_SEED appended to /etc/zecswap-relayer/secrets.env; the seed and mnemonic are in the owner's .env.testnet",
+    "gatewayAllowance": "send class, 2 r/s, burst 20, client_max_body_size 132k"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "relayerTerms": "railgunSends with the expected 0zk address, the Sepolia proxy, fee 250000 of the relayer's token",
+    "relayerMonitor": "11 operations; fees 100000 payout, 250000 funding, 250000 sends",
+    "sendForAnotherChain": "400 rejected, wrong chain",
+    "throughNginx": {
+      "makerHealth": 204,
+      "makerInfo": 200,
+      "relayerTerms": 200,
+      "issuerTokenKey": 200,
+      "send60KB": 400,
+      "send140KB": 413
+    },
+    "throughPublicGateway": {
+      "terms": "railgunSends advertised",
+      "sendForAnotherChain": 400,
+      "notATransactCall": 400,
+      "send60KB": 400
+    },
+    "makerAndIssuerUntouched": "both running since 2026-10-08T14:55:40Z",
+    "liveSepoliaSuite": "railgun-send passed on Ethereum Sepolia in 11.3 min (.testnet/e2e-railgun-send-sepolia-pass.log)",
+    "forkSuite": "all ten scenarios passed on an anvil fork of Ethereum Sepolia with the live Zcash testnet (.testnet/e2e-fork-all.log)"
+  },
+  "openIssue": "On Sepolia a relayed send's outputs stay MissingExternalPOI: Railgun's Sepolia indexer breaks its transaction verification-hash chain at index 4188 (block 11816741), so SDK wallets cannot prove their own sends. Mainnet's chain is whole (140,430 transactions, no breaks)."
+}

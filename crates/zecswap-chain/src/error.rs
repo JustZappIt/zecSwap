@@ -16,6 +16,14 @@ pub enum Error {
     Wallet(String),
     #[error("settlement contract: {0}")]
     Contract(String),
+    #[error("transaction {0} reverted")]
+    Reverted(alloy::primitives::B256),
+    #[error("transaction {0} sent, but its receipt is unavailable: it may still mine")]
+    Unconfirmed(alloy::primitives::B256),
+    #[error("swap {0} opened on other terms than these")]
+    WrongTerms(alloy::primitives::B256),
+    #[error("recording a transaction before its broadcast: {0}")]
+    Journal(String),
     #[error(transparent)]
     Swap(#[from] zecswap_core::Error),
 }

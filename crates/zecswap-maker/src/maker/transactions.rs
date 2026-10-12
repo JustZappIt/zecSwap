@@ -2,25 +2,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::{StreamExt, stream};
-use zecswap_chain::evm::{B256, SwapEvent};
+use zecswap_chain::evm::{SwapEvent, SwapEventKind};
 
+use super::notifications::Alert;
 use super::{Maker, unix_now};
 use crate::store::Notification;
-
-pub(super) fn transaction_links(chain_id: u64, hash: B256, uses_railgun: Option<bool>) -> String {
-    let (explorer, railgun) = match chain_id {
-        1 => ("https://etherscan.io", Some("ethereum")),
-        11155111 => ("https://sepolia.etherscan.io", Some("sepolia")),
-        8453 => ("https://basescan.org", None),
-        84532 => ("https://sepolia.basescan.org", None),
-        _ => return format!("Ethereum transaction: {hash}"),
-    };
-    let mut links = format!("{explorer}/tx/{hash}");
-    if let Some(chain) = railgun.filter(|_| uses_railgun == Some(true)) {
-        links.push_str(&format!("\nhttps://railscan.io/{chain}/tx/{hash}"));
-    }
-    links
-}
 
 impl Maker {
     fn log_observed_event(&self, scope: &str, event: &SwapEvent) {
@@ -56,62 +42,32 @@ impl Maker {
         )
     }
 
-    pub(super) fn cached_transaction_links(&self, id: B256) -> String {
-        let transactions = self
-            .store
-            .evm_transactions(&self.transaction_scope(), id)
-            .unwrap_or_default();
-        if transactions.is_empty() {
-            return String::new();
-        }
-        // Keep messages under Telegram's limit; the dashboard holds the complete history.
-        let mut links = String::from("\n\nConfirmed Ethereum transactions (latest 4):");
-        for tx in transactions.iter().rev().take(4).rev() {
-            links.push_str(&format!(
-                "\n{} · block {}\n{}",
-                tx.kind.replace('_', " "),
-                tx.block_number,
-                transaction_links(self.chain_id, tx.transaction_hash, tx.uses_railgun)
-            ));
-        }
-        links
-    }
-
+    /// Reads the receipt of a transaction on one of this maker's swaps, never on another's.
     async fn classify_transaction(&self, scope: &str, event: &SwapEvent) {
-        if matches!(self.store.evm_info(scope, event.transaction_hash), Ok(None))
-            && let Ok(uses_railgun) = self.settlement.uses_railgun(event.transaction_hash).await
-        {
-            let _ = self
-                .store
-                .save_evm_info(scope, event.transaction_hash, uses_railgun);
+        let ours = matches!(self.store.swap(&event.id), Ok(Some(_)))
+            || matches!(self.store.reverse_swap(event.id), Ok(Some(_)));
+        if ours && matches!(self.store.evm_info(scope, event.transaction_hash), Ok(None)) {
+            let _ = self.read_transaction(scope, event.transaction_hash).await;
         }
     }
 
+    /// A rescue is the one event on a swap with an alert of its own: the rest reach Telegram in
+    /// the swap's start and end.
     fn transaction_alert(&self, event: &SwapEvent) -> Result<Option<Notification>> {
-        if !event.kind.notify() {
+        if event.kind != SwapEventKind::Rescued {
             return Ok(None);
         }
-        let detail = format!(
-            "Ethereum transaction confirmed: {}.\nBlock: {}\n{}",
-            event.kind.label(),
-            event.block_number,
-            transaction_links(
-                self.chain_id,
-                event.transaction_hash,
-                self.store
-                    .evm_info(&self.transaction_scope(), event.transaction_hash)?
-            )
-        );
         let key = format!(
             "{}:evm:{}:{}",
             self.transaction_scope(),
             event.transaction_hash,
             event.log_index
         );
+        let alert = Alert::Returned(event.transaction_hash);
         let notification = if let Some(swap) = self.store.swap(&event.id)? {
-            self.forward_alert(&swap, "transaction", &detail)
+            self.forward_alert(&swap, alert)
         } else if let Some(swap) = self.store.reverse_swap(event.id)? {
-            self.reverse_alert(&swap, "transaction", &detail)
+            self.reverse_alert(&swap, alert)
         } else {
             None
         };
@@ -141,7 +97,7 @@ impl Maker {
             .record_evm_window(scope, from, to, &events, advance)
     }
 
-    async fn transaction_pass(&self) -> Result<u64> {
+    pub(super) async fn transaction_pass(&self) -> Result<u64> {
         let confirmations = self
             .config
             .reverse
@@ -168,16 +124,21 @@ impl Maker {
             }
             self.store.init_transaction_cursor(&scope, start, head)?;
         }
-        // New swaps must not wait for the historical backfill.
-        let recent = head.saturating_sub(11);
-        for from in (recent..=head).step_by(10) {
-            self.index_window(&scope, from, (from + 9).min(head), false)
-                .await?;
-        }
         let cursor = self
             .store
             .transaction_cursor(&scope)?
             .expect("initialized cursor");
+        // The newest twelve blocks are read ahead of a cursor still backfilling history, so new
+        // swaps never wait on it, and read again now and then once it keeps up, for events a
+        // reorganisation moved or dropped. Otherwise each block is read once, as the cursor
+        // passes it.
+        let recent = head.saturating_sub(11);
+        if cursor.next_block < recent || self.reconcile_due() {
+            for from in (recent..=head).step_by(10) {
+                self.index_window(&scope, from, (from + 9).min(head), false)
+                    .await?;
+            }
+        }
         let end = (cursor.next_block.saturating_add(499)).min(head);
         let windows: Vec<_> = (cursor.next_block..=end)
             .step_by(10)
@@ -252,48 +213,61 @@ impl Maker {
                     "Ethereum explorer metadata lookup delayed; retrying"
                 );
             }
-            tokio::time::sleep(Duration::from_secs(15)).await;
+            let failure =
+                match tokio::time::timeout(Duration::from_secs(30), self.cost_pass()).await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(super::observer_failure(&error)),
+                    Err(_) => Some("timeout"),
+                };
+            if let Some(failure_kind) = failure {
+                tracing::warn!(
+                    operation = "cost_observer",
+                    failure_kind,
+                    "swap cost recording delayed; retrying"
+                );
+            }
+            // Swaps live on the chain make events every few blocks; without any, a pass every
+            // minute and a half keeps up, in windows nearly full, and fresher than the two
+            // minutes after which the dashboard calls the history stale.
+            let idle = if self.chain_busy() { 15 } else { 90 };
+            tokio::time::sleep(Duration::from_secs(idle)).await;
         }
     }
 
-    async fn enrich_evm_history(&self) -> Result<()> {
+    /// Fills in what the explorer links, the timeline and swap costs show, once per transaction
+    /// and block, a bounded number of reads a pass: receipts first, the maker's own sends
+    /// before events', then the times of event blocks a reorganisation moved since.
+    pub(super) async fn enrich_evm_history(&self) -> Result<()> {
         let scope = self.transaction_scope();
         let mut remaining = 25;
-        for swap in self.store.monitor_swaps(self.config.timing.t0_after, 500)? {
+        for hash in self.store.unread_transactions(&scope, remaining as usize)? {
+            // A send the node has no receipt of may never mine: asked again every five minutes.
+            if self.recently_unmined(hash) {
+                continue;
+            }
+            if !self.read_transaction(&scope, hash).await? {
+                self.unmined(hash);
+            }
+            remaining -= 1;
+        }
+        let mut timed = std::collections::HashSet::new();
+        for swap in self.store.monitor_swaps(500, None)? {
+            if remaining <= 0 {
+                return Ok(());
+            }
             for transaction in self.store.evm_transactions(&scope, swap.id)? {
-                if transaction.uses_railgun.is_none() {
-                    let uses_railgun = self
-                        .settlement
-                        .uses_railgun(transaction.transaction_hash)
-                        .await?;
-                    self.store
-                        .save_evm_info(&scope, transaction.transaction_hash, uses_railgun)?;
-                    remaining -= 1;
-                    if remaining == 0 {
-                        return Ok(());
+                if transaction.block_time.is_none() && timed.insert(transaction.block_hash) {
+                    if let Some(time) = self.settlement.block_time(transaction.block_hash).await? {
+                        self.store
+                            .save_block_time(&scope, transaction.block_hash, time)?;
                     }
+                    remaining -= 1;
+                }
+                if remaining <= 0 {
+                    return Ok(());
                 }
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explorer_links_follow_the_chain_and_only_use_the_transaction_hash() {
-        let hash = B256::repeat_byte(3);
-        let sepolia = transaction_links(11155111, hash, Some(true));
-        assert!(sepolia.contains(&format!("https://sepolia.etherscan.io/tx/{hash}")));
-        assert!(sepolia.contains(&format!("https://railscan.io/sepolia/tx/{hash}")));
-        let mainnet = transaction_links(1, hash, Some(true));
-        assert!(mainnet.contains("https://etherscan.io/tx/"));
-        assert!(mainnet.contains("https://railscan.io/ethereum/tx/"));
-        assert!(!mainnet.contains("sepolia"));
-        assert!(!transaction_links(999, hash, None).contains("https://"));
-        assert!(!transaction_links(1, hash, Some(false)).contains("railscan"));
     }
 }

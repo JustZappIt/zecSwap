@@ -1,0 +1,27 @@
+[Unit]
+Description=Refresh Google's attestation status list for the ZecSwap token issuer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=zecswap-issuer
+Group=zecswap-issuer
+StateDirectory=zecswap-issuer
+StateDirectoryMode=0700
+UMask=0077
+# Put in place only once it reads: the issuer won't start on a list it can't read.
+ExecStart=/usr/bin/curl -fsS --max-time 60 -o /var/lib/zecswap-issuer/attestation-status.json.new https://android.googleapis.com/attestation/status
+ExecStart=/usr/bin/python3 -c "import json, sys; sys.exit(not isinstance(json.load(open(sys.argv[1]))['entries'], dict))" /var/lib/zecswap-issuer/attestation-status.json.new
+ExecStart=/bin/mv -f /var/lib/zecswap-issuer/attestation-status.json.new /var/lib/zecswap-issuer/attestation-status.json
+TimeoutStartSec=120s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=

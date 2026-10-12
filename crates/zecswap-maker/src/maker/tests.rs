@@ -1,12 +1,17 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tempfile::TempDir;
 use tonic::transport::Endpoint;
 use tower::ServiceExt;
 use zecswap_chain::evm::PrivateKeySigner;
 use zecswap_core::{ShareProof, ViewingKeys};
+use zecswap_tokens::Pending;
 
 use super::*;
+
+const TICKET_KEY: [u8; 32] = [8; 32];
 
 fn maker() -> (TempDir, Arc<Maker>) {
     let dir = tempfile::tempdir().unwrap();
@@ -22,13 +27,18 @@ fn maker() -> (TempDir, Arc<Maker>) {
     .unwrap();
     let key = PrivateKeySigner::random();
     let maker = Maker {
-        telegram: crate::telegram::Telegram::new(None, None).unwrap(),
+        tokens: None,
+        telegram: zecswap_alerts::Telegram::new(None, None).unwrap(),
+        failing: std::sync::Mutex::default(),
         prices: crate::market::PriceBook::from_env(&config.pricing).unwrap(),
-        monitoring: monitoring::Monitoring::new(None),
+        quote_gas_price: Default::default(),
+        chain: Default::default(),
+        monitoring: monitoring::Monitoring::new(Default::default()),
         inventory: None,
         account: key.address(),
         lock_duration: 7200,
         root: Zeroizing::new([7; 32]),
+        ticket_key: Zeroizing::new(TICKET_KEY),
         chain_id: 1,
         sweep_to: joint
             .unified_address(zecswap_core::NetworkType::Test)
@@ -53,16 +63,56 @@ fn maker() -> (TempDir, Arc<Maker>) {
     (dir, Arc::new(maker))
 }
 
+/// A reverse quote of `maker`'s, its share from `nonce`.
+fn reverse_quote(maker: &Maker, nonce: u64) -> zecswap_api::reverse::Quote {
+    let share = maker.maker_share(nonce).unwrap();
+    zecswap_api::reverse::Quote {
+        terms: Quote {
+            quote_id: B256::repeat_byte(1),
+            maker: maker.account,
+            maker_share: share.public(),
+            maker_proof: maker
+                .context([1; 32])
+                .prove_maker(&share, UnwrapErr(SysRng)),
+            chain_id: maker.chain_id,
+            contract: maker.config.contract,
+            token: maker.config.token,
+            amount: 1234567,
+            deposit_zat: 100001,
+            expires_at: 2000,
+            network_cost: None,
+        },
+        user: Address::repeat_byte(2),
+        refund_note: B256::repeat_byte(3),
+        funding_deadline: 3000,
+        ready_deadline: 4000,
+        refund_after: 5000,
+    }
+}
+
+#[test]
+fn lightwalletd_follows_the_network_unless_named() {
+    let example = include_str!("../../maker.example.toml");
+    let unnamed = example
+        .replace("lightwalletd = ", "# lightwalletd = ")
+        .replace(r#"network = "testnet""#, r#"network = "mainnet""#);
+    let config: Config = toml::from_str(&unnamed).unwrap();
+    assert_eq!(config.lightwalletd(), "https://zec.rocks:443");
+    let config: Config = toml::from_str(example).unwrap();
+    assert_eq!(config.lightwalletd(), "https://testnet.zec.rocks:443");
+}
+
 fn acceptance() -> Acceptance {
     Acceptance {
         user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
         user_proof: ShareProof::from_bytes([0; 64]),
         viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+        token_request: None,
     }
 }
 
 #[tokio::test]
-async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
+async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
     let (_dir, maker) = maker();
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
     let swap = crate::store::Swap {
@@ -79,18 +129,18 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
         opened_at: 1000,
+        token: Address::repeat_byte(3),
+        t0: 3700,
         t1: 7300,
         sweep: None,
         settled: false,
         refund_started: false,
+        token_request: None,
+        token_return: None,
     };
-    assert!(
-        maker
-            .forward_alert(&swap, "accepted", "Bridge accepted")
-            .is_none()
-    );
+    assert!(maker.forward_alert(&swap, Alert::Started).is_none());
     maker.telegram =
-        crate::telegram::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+        zecswap_alerts::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
     maker
         .store
         .insert_quote(
@@ -107,48 +157,51 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
     let reverse = crate::store::ReverseSwap {
         id: B256::repeat_byte(6),
         nonce: 0,
-        quote: zecswap_api::reverse::Quote {
-            terms: Quote {
-                quote_id: B256::repeat_byte(1),
-                maker: maker.account,
-                maker_share: share.public(),
-                maker_proof: maker
-                    .context([1; 32])
-                    .prove_maker(&share, UnwrapErr(SysRng)),
-                chain_id: maker.chain_id,
-                contract: maker.config.contract,
-                token: maker.config.token,
-                amount: 1234567,
-                deposit_zat: 100001,
-                expires_at: 2000,
-            },
-            user: Address::repeat_byte(2),
-            refund_note: B256::repeat_byte(3),
-            funding_deadline: 3000,
-            ready_deadline: 4000,
-            refund_after: 5000,
-        },
+        quote: reverse_quote(&maker, 0),
         acceptance: acceptance(),
         account: swap.zcash_account,
         deposit: Some(TxId::from_bytes([8; 32])),
         sweep: None,
         settled: false,
+        token_return: None,
+    };
+    let claimed = OnChainSwap {
+        stage: Stage::Claimed,
+        maker: maker.account,
+        user: Address::repeat_byte(2),
+        token: Address::repeat_byte(3),
+        amount: 1234567,
+        t0: 3700,
+        t1: 7300,
+        claim_lock_until: 0,
+        refund_lock_until: 0,
+        maker_share: share.public(),
+        user_share: swap.user_share,
+        secret: [0; 32],
+        payout_note: Some(B256::repeat_byte(4)),
+        paid_out: true,
     };
     let mut keys = Vec::new();
     for (network, name) in [
-        (crate::Chain::Testnet, "testnet"),
-        (crate::Chain::Mainnet, "mainnet"),
+        (zecswap_api::Network::Testnet, "testnet"),
+        (zecswap_api::Network::Mainnet, "mainnet"),
     ] {
         maker.config.network = network;
         maker.chain_id = if name == "testnet" { 11155111 } else { 1 };
         let scope = maker.transaction_scope();
         maker.store.init_transaction_cursor(&scope, 90, 99).unwrap();
-        let events: Vec<_> = (0..6)
+        let kinds = [
+            zecswap_chain::evm::SwapEventKind::Opened,
+            zecswap_chain::evm::SwapEventKind::Claimed,
+            zecswap_chain::evm::SwapEventKind::PaidOut,
+            zecswap_chain::evm::SwapEventKind::ClaimLocked,
+        ];
+        let events: Vec<_> = (0..4u8)
             .map(|index| {
                 (
                     zecswap_chain::evm::SwapEvent {
                         id: swap.id,
-                        kind: zecswap_chain::evm::SwapEventKind::Claimed,
+                        kind: kinds[usize::from(index)],
                         transaction_hash: B256::repeat_byte(20 + index),
                         block_number: 100,
                         block_hash: B256::repeat_byte(4),
@@ -162,59 +215,55 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
             .store
             .record_evm_window(&scope, 100, 109, &events, false)
             .unwrap();
-        for (event, _) in &events {
-            maker
-                .store
-                .save_evm_info(&scope, event.transaction_hash, true)
-                .unwrap();
-        }
-        for (event, direction) in [
+        let explorer = if name == "testnet" {
+            "https://sepolia.etherscan.io"
+        } else {
+            "https://etherscan.io"
+        };
+        let dashboard = format!("https://zapp-dashboard-seven.vercel.app/bridge?network={name}");
+        for (event, headline, amounts, short, link) in [
             (
-                maker
-                    .forward_alert(&swap, "accepted", "Bridge accepted")
-                    .unwrap(),
-                "ZEC → USDC",
+                maker.forward_alert(&swap, Alert::Started).unwrap(),
+                format!("ZecSwap {name} · ZEC → USDC started"),
+                "0.00100001 ZEC for 1.234567 USDC",
+                "0x05050505",
+                dashboard.clone(),
             ),
             (
+                maker.reverse_alert(&reverse, Alert::Started).unwrap(),
+                format!("ZecSwap {name} · USDC → ZEC started"),
+                "1.234567 USDC for 0.00100001 ZEC",
+                "0x06060606",
+                dashboard.clone(),
+            ),
+            // The swap ended with its payout, the last settling transaction on it.
+            (
                 maker
-                    .reverse_alert(&reverse, "accepted", "Bridge accepted")
+                    .forward_alert(&swap, Alert::Ended(forward_ending(Some(&claimed), true)))
                     .unwrap(),
-                "USDC → ZEC",
+                format!("ZecSwap {name} · ZEC → USDC completed after "),
+                "0.00100001 ZEC for 1.234567 USDC",
+                "0x05050505",
+                format!("{explorer}/tx/{}", B256::repeat_byte(22)),
             ),
         ] {
-            assert!(event.text.contains(&name.to_uppercase()));
-            assert!(event.text.contains(&format!("?network={name}")));
-            assert!(event.text.contains(direction));
-            assert!(event.text.contains("1.234567 USDC ↔ 0.00100001 ZEC"));
-            assert!(!event.text.contains("private-token"));
-            assert!(!event.text.contains("123456789"));
-            assert!(!event.text.contains(&hex::encode(swap.viewing.to_bytes())));
-            assert!(!event.text.contains(&hex::encode(*maker.root)));
-            assert!(event.text.chars().count() < 4096);
-            assert!(event.text.contains("Swap ID (bridge reference):"));
-            assert!(!event.text.contains(&format!("/tx/{}", swap.id)));
-            if direction == "ZEC → USDC" {
-                assert!(
-                    event
-                        .text
-                        .contains(&format!("/tx/{}", B256::repeat_byte(25)))
-                );
-                assert!(
-                    !event
-                        .text
-                        .contains(&format!("/tx/{}", B256::repeat_byte(20)))
-                );
-                let path = if name == "testnet" {
-                    "sepolia"
-                } else {
-                    "ethereum"
-                };
-                assert!(
-                    event
-                        .text
-                        .contains(&format!("https://railscan.io/{path}/tx/"))
-                );
+            let lines: Vec<_> = event.text.lines().collect();
+            assert!(lines[0].starts_with(&headline), "{}", event.text);
+            assert_eq!(lines[1], amounts);
+            assert!(lines.len() <= 5);
+            assert_eq!(*lines.last().unwrap(), link);
+            assert!(event.text.contains(&format!(" UTC · swap {short}\n")));
+            for private in [
+                maker.account.to_string(),
+                maker.config.contract.to_string(),
+                "private-token".into(),
+                "123456789".into(),
+                hex::encode(swap.viewing.to_bytes()),
+                hex::encode(*maker.root),
+            ] {
+                assert!(!event.text.contains(&private));
             }
+            assert!(!event.text.contains("block"));
             assert!(!keys.contains(&event.key));
             keys.push(event.key);
         }
@@ -222,6 +271,37 @@ async fn bridge_alerts_use_exact_public_details_and_isolate_both_networks() {
     let summary = serde_json::to_string(&maker.store.notification_status(true).unwrap()).unwrap();
     assert!(!summary.contains("private-token"));
     assert!(!summary.contains("123456789"));
+}
+
+#[tokio::test]
+async fn errors_alert_once_they_last_five_minutes() {
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.telegram =
+        zecswap_alerts::Telegram::new(Some("123:private-token"), Some("123456789")).unwrap();
+    let id = B256::repeat_byte(7);
+    let error = |at| {
+        Some(crate::store::Notification {
+            key: String::new(),
+            text: "stuck".into(),
+            created_at: at,
+        })
+    };
+    let pending = |maker: &Maker| maker.store.notification_status(true).unwrap().pending;
+    maker.record_alert_failure("forward", id, error(1000));
+    maker.record_alert_failure("forward", id, error(1299));
+    assert_eq!(pending(&maker), 0);
+    // A pass that succeeds starts the clock again.
+    maker.record_alert_failure("forward", id, None);
+    maker.record_alert_failure("forward", id, error(1300));
+    maker.record_alert_failure("forward", id, error(1599));
+    assert_eq!(pending(&maker), 0);
+    maker.record_alert_failure("forward", id, error(1600));
+    maker.record_alert_failure("forward", id, error(1900));
+    assert_eq!(pending(&maker), 1);
+    // Each scope keeps its own clock.
+    maker.record_alert_failure("reverse", id, error(1900));
+    assert_eq!(pending(&maker), 1);
 }
 
 fn request(path: &str, body: impl serde::Serialize) -> Request<Body> {
@@ -242,7 +322,9 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(response.headers()["cache-control"], "no-store");
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
-    maker.monitoring = monitoring::Monitoring::new(Some("monitor-test-token"));
+    maker.monitoring = monitoring::Monitoring::new(zecswap_api::server::MonitorToken::new(Some(
+        "monitor-test-token",
+    )));
     let maker = Arc::new(maker);
     let app = crate::api::router(maker.clone());
     for (token, status) in [
@@ -265,8 +347,11 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
                 .await
                 .unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["schemaVersion"], 2);
             assert_eq!(json["counts"]["quotes"], 0);
-            assert!(json["inventory"]["usdcAvailable"].is_null());
+            assert_eq!(json["counts"]["awaitingDeposit"], 0);
+            assert!(json["inventory"].get("usdcAvailable").is_none());
+            assert!(json["tokens"].is_null());
             assert_eq!(json["watchtowerHealthy"], false);
             assert!(json["swaps"].as_array().unwrap().is_empty());
             assert!(
@@ -276,8 +361,100 @@ async fn monitor_route_is_authenticated_read_only_and_survives_upstream_outages(
             );
         }
     }
+    let swap = format!("/v1/monitor/swaps/{}", B256::repeat_byte(9));
+    for (token, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("wrong-token"), StatusCode::UNAUTHORIZED),
+        (Some("monitor-test-token"), StatusCode::NOT_FOUND),
+    ] {
+        let mut request = Request::get(&swap);
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{token:?}");
+    }
     assert_eq!(maker.store.monitor_counts().unwrap().quotes, 0);
     assert!(maker.store.unsettled_swaps().unwrap().is_empty());
+}
+
+/// The monitor reads nothing from the chain: with the settlement RPC taking connections and
+/// never answering, a snapshot and a single swap's record still come back at once, and the RPC
+/// sees no request.
+#[tokio::test]
+async fn monitoring_never_waits_on_the_chain() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let rpc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", rpc.local_addr().unwrap());
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = connections.clone();
+    let silent = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = rpc.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            held.push(stream);
+        }
+    });
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.settlement =
+        Settlement::connect(&url, maker.config.contract, PrivateKeySigner::random()).unwrap();
+    maker
+        .store
+        .insert_quote(
+            [1; 32],
+            Address::repeat_byte(1),
+            None,
+            1_000_000,
+            100_000,
+            unix_now() + 120,
+        )
+        .unwrap();
+    let swap = Swap {
+        id: B256::repeat_byte(3),
+        quote: maker
+            .store
+            .take_quote(&[1; 32], unix_now())
+            .unwrap()
+            .unwrap(),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
+        zcash_account: AccountUuid::from_uuid(uuid::Uuid::from_bytes([3; 16])),
+        opened_at: unix_now(),
+        token: Address::repeat_byte(4),
+        t0: unix_now() + 3600,
+        t1: unix_now() + 7200,
+        sweep: None,
+        settled: false,
+        refund_started: false,
+        token_request: None,
+        token_return: None,
+    };
+    maker.store.insert_swap(&swap, None).unwrap();
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), maker.monitor_snapshot())
+        .await
+        .expect("the monitor waited on the chain")
+        .unwrap();
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["counts"]["awaitingDeposit"], 1);
+    let swaps = json["swaps"].as_array().unwrap();
+    assert_eq!(swaps.len(), 1);
+    assert_eq!(swaps[0]["id"], swap.id.to_string());
+    assert_eq!(swaps[0]["quoteId"], B256::repeat_byte(1).to_string());
+    assert!(swaps[0]["acceptedAt"].as_u64().is_some());
+    for chain in ["stage", "chainObserved", "paidOut", "claimLockUntil"] {
+        assert!(swaps[0].get(chain).is_none(), "{chain}");
+    }
+    let single = serde_json::to_value(maker.monitor_swap(swap.id).unwrap().unwrap()).unwrap();
+    assert_eq!(single["swap"]["id"], swap.id.to_string());
+    assert_eq!(connections.load(Ordering::SeqCst), 0);
+    silent.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -445,6 +622,101 @@ async fn both_endpoints_return_503_at_startup_and_when_stale() {
     }
 }
 
+/// Every accept answer carries the swap's ticket, which verifies under the ticket secret alone:
+/// a repeated reverse accept's, and the forward one's, which is built the same way (an accept that
+/// opens a swap needs lightwalletd for its deposit account).
+#[tokio::test]
+async fn accept_answers_carry_a_ticket_that_verifies_under_the_secret() {
+    let verifies = |ticket: &str, swap_id: B256, key: &[u8]| {
+        let mut expected = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        expected.update(swap_id.as_slice());
+        ticket.split_once('.').is_some_and(|(id, mac)| {
+            id == swap_id.to_string()
+                && hex::decode(mac).is_ok_and(|mac| expected.verify_slice(&mac).is_ok())
+        })
+    };
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.config.reverse = Some(crate::config::ReverseConfig {
+        evm_confirmations: std::num::NonZeroU32::MIN,
+        funding_window: 900,
+        ready_after: 7200,
+        refund_after: 10800,
+        deposit_margin: 1800,
+        fee_reserve_zat: 20000,
+    });
+    let inventory = UnifiedSpendingKey::from_seed(
+        &zecswap_chain::zcash::Network::TestNetwork,
+        &[1; 32],
+        0u32.try_into().unwrap(),
+    )
+    .unwrap();
+    maker.inventory = Some((AccountUuid::from_uuid(uuid::Uuid::nil()), inventory));
+    let quote = maker
+        .store
+        .insert_reverse_quote(|nonce| {
+            let mut quote = reverse_quote(&maker, nonce);
+            quote.terms.expires_at = unix_now() + 600;
+            Ok(quote)
+        })
+        .unwrap();
+    let (nonce, _) = maker
+        .store
+        .reverse_quote(quote.terms.quote_id)
+        .unwrap()
+        .unwrap();
+    let user = SecretShare::random(UnwrapErr(SysRng));
+    let payout = Payout {
+        user: quote.user.into(),
+        note: Some(quote.refund_note.0),
+    };
+    let acceptance = Acceptance {
+        user_share: user.public(),
+        user_proof: maker.context(quote.terms.quote_id.0).prove_user(
+            &quote.terms.maker_share,
+            &user,
+            &payout,
+            UnwrapErr(SysRng),
+        ),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+        token_request: None,
+    };
+    let swap_id = zecswap_chain::evm::reverse_swap_id(quote.user, &quote.terms.maker_share);
+    let swap = crate::store::ReverseSwap {
+        id: swap_id,
+        nonce,
+        quote: quote.clone(),
+        acceptance: acceptance.clone(),
+        account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        deposit: None,
+        sweep: None,
+        settled: false,
+        token_return: None,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&swap, unix_now(), None)
+        .unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+
+    let reverse = maker
+        .accept_reverse(quote.terms.quote_id, acceptance, None)
+        .await
+        .unwrap();
+    assert_eq!(reverse.swap_id, swap_id);
+    assert!(verifies(&reverse.ticket, swap_id, &TICKET_KEY));
+    assert!(!verifies(&reverse.ticket, swap_id, &[9; 32]));
+    let forward_id = B256::repeat_byte(4);
+    let forward = maker.accepted(forward_id, 3700, 7300);
+    assert!(verifies(&forward.ticket, forward_id, &TICKET_KEY));
+    assert!(!verifies(
+        &forward.ticket,
+        B256::repeat_byte(5),
+        &TICKET_KEY
+    ));
+}
+
 #[tokio::test(start_paused = true)]
 async fn accept_rechecks_health_after_waiting_without_consuming_quote() {
     let (_dir, maker) = maker();
@@ -467,6 +739,204 @@ async fn accept_rechecks_health_after_waiting_without_consuming_quote() {
         response.await.unwrap().unwrap().status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+    assert!(maker.store.take_quote(&id, unix_now()).unwrap().is_some());
+}
+
+/// Makes `maker`'s accepts take tokens, and returns the issuer whose tokens it takes.
+fn take_tokens(maker: &mut Maker, dir: &std::path::Path) -> zecswap_tokens::IssuerKey {
+    let issuer = zecswap_tokens::IssuerKey::generate().unwrap();
+    let return_key = dir.join("return.pem");
+    let pem = zecswap_tokens::IssuerKey::generate().unwrap().to_pem();
+    std::fs::write(&return_key, pem.unwrap()).unwrap();
+    let gate = Gate::open(&zecswap_tokens::server::Config {
+        issuer: "issuer.test".into(),
+        origin: "maker".into(),
+        keys: vec![issuer.token_key().to_base64()],
+        return_key,
+        spent: dir.join("spent.sqlite"),
+    })
+    .unwrap();
+    maker.tokens = Some(Arc::new(gate));
+    issuer
+}
+
+/// Today's challenge at `maker`.
+fn challenge(maker: &Maker) -> zecswap_tokens::Challenge {
+    maker.tokens().unwrap().challenge(zecswap_tokens::today())
+}
+
+/// A token from `issuer` for `maker`'s accepts today.
+fn token(maker: &Maker, issuer: &zecswap_tokens::IssuerKey) -> zecswap_tokens::Token {
+    let (pending, blinded) = Pending::new(issuer.token_key(), &challenge(maker)).unwrap();
+    pending
+        .finalize(issuer.token_key(), &issuer.sign(&blinded).unwrap())
+        .unwrap()
+}
+
+/// A request for a token back under `maker`'s return key: the client's half, and what an
+/// accept carries.
+fn token_request(maker: &Maker) -> (Pending, String) {
+    let key = maker.tokens().unwrap().return_key().clone();
+    let (pending, blinded) = Pending::new(&key, &challenge(maker)).unwrap();
+    (pending, URL_SAFE_NO_PAD.encode(blinded))
+}
+
+/// The blind signature a forward swap's status hands its token back with, if any.
+async fn token_return(maker: &Arc<Maker>, id: B256) -> Option<Vec<u8>> {
+    let response = crate::api::router(maker.clone())
+        .oneshot(
+            Request::get(format!("/v1/swaps/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let status: zecswap_api::Status = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status.swap_id, id);
+    Some(URL_SAFE_NO_PAD.decode(status.token_return?).unwrap())
+}
+
+/// Posts an accept for `quote` paid with `token`.
+async fn accept_paid(
+    app: &axum::Router,
+    quote: B256,
+    acceptance: &Acceptance,
+    token: &zecswap_tokens::Token,
+) -> StatusCode {
+    let mut request = request(&format!("/v1/quote/{quote}/accept"), acceptance);
+    request
+        .headers_mut()
+        .insert("authorization", token.authorization().parse().unwrap());
+    app.clone().oneshot(request).await.unwrap().status()
+}
+
+/// With `[tokens]`, every accept takes a token, one a swap, and its refusal says where to get
+/// one; quotes and reads take none, and the maker publishes the key it hands tokens back under.
+#[tokio::test]
+async fn accepts_take_a_token_when_configured() {
+    let (dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    let issuer = take_tokens(&mut maker, dir.path());
+    let return_key = maker.tokens().unwrap().return_key().to_base64();
+    let app = crate::api::router(Arc::new(maker));
+    let quote = B256::repeat_byte(1);
+    for path in [
+        format!("/v1/quote/{quote}/accept"),
+        format!("/v1/reverse/quote/{quote}/accept"),
+    ] {
+        let response = app.clone().oneshot(request(&path, ())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        let asked = response.headers()["www-authenticate"].to_str().unwrap();
+        let (_, key) = zecswap_tokens::read_www_authenticate(asked).unwrap();
+        assert_eq!(key.id(), issuer.token_key().id());
+    }
+    for path in ["/v1/quote", "/v1/reverse/quote"] {
+        let response = app.clone().oneshot(request(path, ())).await.unwrap();
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let info = Request::get("/v1/info").body(Body::empty()).unwrap();
+    let response = app.oneshot(info).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let info: zecswap_api::service::MakerInfo = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info.token_return_key, Some(return_key));
+}
+
+/// At `max_awaiting_deposit` swaps waiting on their users, an accept is refused before it takes
+/// its quote; a swap whose deposit has been seen stops counting.
+#[tokio::test]
+async fn accepts_stop_while_too_many_swaps_await_deposits() {
+    let (_dir, maker) = maker();
+    let mut maker = Arc::try_unwrap(maker).ok().unwrap();
+    maker.config.max_awaiting_deposit = Some(1);
+    let deadline = unix_now() + 120;
+    for id in [[1; 32], [2; 32]] {
+        maker
+            .store
+            .insert_quote(id, Address::repeat_byte(1), None, 1, 1, deadline)
+            .unwrap();
+    }
+    let account = AccountUuid::from_uuid(uuid::Uuid::from_bytes([3; 16]));
+    let waiting = Swap {
+        id: B256::repeat_byte(3),
+        quote: maker
+            .store
+            .take_quote(&[1; 32], unix_now())
+            .unwrap()
+            .unwrap(),
+        user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
+        viewing: ViewingKeys::random(UnwrapErr(SysRng)),
+        zcash_account: account,
+        opened_at: unix_now(),
+        token: Address::repeat_byte(4),
+        t0: unix_now() + 3600,
+        t1: unix_now() + 7200,
+        sweep: None,
+        settled: false,
+        refund_started: false,
+        token_request: None,
+        token_return: None,
+    };
+    maker.store.insert_swap(&waiting, None).unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+
+    let refused = maker.accept([2; 32].into(), acceptance(), None).await;
+    assert!(matches!(refused, Err(MakerError::Unavailable)));
+    assert!(maker.store.quote(&[2; 32], unix_now()).unwrap().is_some());
+    let deposited = WalletSnapshot {
+        funds: Funds {
+            total: 1,
+            spendable: 0,
+        },
+        sweep: None,
+    };
+    maker
+        .wallet_snapshots
+        .lock()
+        .unwrap()
+        .insert(account, deposited);
+    // Past the cap now, it fails on its forged proof instead.
+    let rejected = maker.accept([2; 32].into(), acceptance(), None).await;
+    assert!(matches!(rejected, Err(MakerError::Rejected(_))));
+}
+
+/// Whichever side an acceptance fails on, the quote stays for its user to accept again.
+#[tokio::test]
+async fn a_failed_accept_leaves_the_quote_live() {
+    let (_dir, maker) = maker();
+    let (id, payout) = ([1; 32], Address::repeat_byte(1));
+    let nonce = maker
+        .store
+        .insert_quote(id, payout, None, 1, 1, unix_now() + 120)
+        .unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+    let rejected = maker.accept(id.into(), acceptance(), None).await;
+    assert!(matches!(rejected, Err(MakerError::Rejected(_))));
+    // A sound acceptance, while the maker's EVM RPC is unreachable.
+    let user = SecretShare::random(UnwrapErr(SysRng));
+    let sound = Acceptance {
+        user_share: user.public(),
+        user_proof: maker.context(id).prove_user(
+            &maker.maker_share(nonce).unwrap().public(),
+            &user,
+            &Payout {
+                user: payout.into(),
+                note: None,
+            },
+            UnwrapErr(SysRng),
+        ),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+        token_request: None,
+    };
+    let unreachable = maker.accept(id.into(), sound, None).await;
+    assert!(matches!(unreachable, Err(MakerError::Internal(_))));
     assert!(maker.store.take_quote(&id, unix_now()).unwrap().is_some());
 }
 
@@ -566,19 +1036,20 @@ async fn anvil_rpc(url: &str, method: &str, params: serde_json::Value) -> serde_
     reply["result"].clone()
 }
 
-#[tokio::test]
-async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() {
+/// A maker on a local chain, its contracts deployed and its inventory added; none without
+/// anvil or a contracts build.
+async fn on_anvil() -> Option<(alloy::node_bindings::AnvilInstance, TempDir, Maker)> {
     use alloy::node_bindings::Anvil;
     use zecswap_chain::evm::{U256, deploy};
 
     let Ok(anvil) = Anvil::new().try_spawn() else {
         eprintln!("skipped: anvil is not installed");
-        return;
+        return None;
     };
     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
     if !artifacts.join("ZecSwap.sol/ZecSwap.json").exists() {
         eprintln!("skipped: run forge build in contracts/");
-        return;
+        return None;
     }
     let creation = |name: &str| {
         let artifact: serde_json::Value = serde_json::from_slice(
@@ -593,16 +1064,19 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         )
         .unwrap()
     };
-    let (_dir, maker) = maker();
+    let (dir, maker) = maker();
     let mut maker = Arc::try_unwrap(maker).ok().unwrap();
     let key = PrivateKeySigner::from(anvil.keys()[0].clone());
     let url = anvil.endpoint();
     let token = deploy(&url, key.clone(), creation("TestToken"))
         .await
         .unwrap();
+    let railgun = deploy(&url, key.clone(), creation("MockRailgun"))
+        .await
+        .unwrap();
     let mut code = creation("ZecSwap");
     code.extend_from_slice(&U256::from(maker.lock_duration).to_be_bytes::<32>());
-    code.extend_from_slice(&Address::ZERO.into_word().0);
+    code.extend_from_slice(&railgun.into_word().0);
     let contract = deploy(&url, key.clone(), code).await.unwrap();
     maker.account = key.address();
     maker.config.evm_rpc = url.clone();
@@ -610,20 +1084,26 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     maker.config.token = token;
     maker.config.evm_confirmations = std::num::NonZeroU32::new(3).unwrap();
     maker.settlement = Settlement::connect(&url, contract, key).unwrap();
+    maker.chain_id = maker.settlement.chain_id().await.unwrap();
     maker
         .settlement
-        .mint_test_token(token, maker.account, 1_000_000)
+        .mint_test_token(token, maker.account, 10_000_000)
         .await
         .unwrap();
     maker
         .settlement
-        .add_inventory(token, 1_000_000)
+        .add_inventory(token, 10_000_000)
         .await
         .unwrap();
+    Some((anvil, dir, maker))
+}
+
+/// A swap `maker` has accepted for quote `[id; 32]`, as `accept` records it before `open`.
+async fn recorded_swap(maker: &Maker, id: u8, token_request: Option<Vec<u8>>) -> Swap {
     maker
         .store
         .insert_quote(
-            [1; 32],
+            [id; 32],
             Address::repeat_byte(7),
             None,
             1_000_000,
@@ -633,7 +1113,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         .unwrap();
     let quote = maker
         .store
-        .take_quote(&[1; 32], unix_now())
+        .take_quote(&[id; 32], unix_now())
         .unwrap()
         .unwrap();
     let user_share = SecretShare::random(UnwrapErr(SysRng)).public();
@@ -643,28 +1123,265 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         quote,
         user_share,
         viewing: ViewingKeys::random(UnwrapErr(SysRng)),
-        zcash_account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        zcash_account: AccountUuid::from_uuid(uuid::Uuid::from_bytes([id; 16])),
         opened_at: now,
+        token: maker.config.token,
+        t0: now + 3600,
         t1: now + 7200,
         sweep: None,
         settled: false,
         refund_started: false,
+        token_request,
+        token_return: None,
     };
     maker.store.insert_swap(&swap, None).unwrap();
-    maker
-        .settlement
-        .open(&OpenRequest {
-            token,
-            amount: swap.quote.amount,
-            maker_share: &maker.maker_share(swap.quote.nonce).unwrap().public(),
-            user_share: &swap.user_share,
-            user: swap.quote.payout,
-            t0: now + 3600,
-            t1: swap.t1,
-            payout_note: None,
-        })
-        .await
+    swap
+}
+
+/// A maker on a local chain that has opened a forward swap.
+async fn opened_swap() -> Option<(
+    alloy::node_bindings::AnvilInstance,
+    TempDir,
+    Maker,
+    Swap,
+    Terms,
+)> {
+    let (anvil, dir, maker) = on_anvil().await?;
+    let swap = recorded_swap(&maker, 1, None).await;
+    let terms = maker.terms(&swap).unwrap();
+    maker.settlement.open(&terms).await.unwrap();
+    Some((anvil, dir, maker, swap, terms))
+}
+
+/// Each settlement event the indexer records carries its block's time once the history is
+/// enriched, read from the block itself, for the monitor's timeline.
+#[tokio::test]
+async fn settlement_events_carry_their_block_time() {
+    let Some((anvil, _dir, maker, swap, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x3"])).await;
+    maker.transaction_pass().await.unwrap();
+    let opened = |maker: &Maker| {
+        let swap = serde_json::to_value(maker.monitor_swap(swap.id).unwrap().unwrap()).unwrap();
+        swap["swap"]["evmTransactions"][0].clone()
+    };
+    let before = opened(&maker);
+    assert_eq!(before["kind"], "opened");
+    assert!(before["blockTime"].is_null());
+    maker.enrich_evm_history().await.unwrap();
+    let number = format!("{:#x}", before["blockNumber"].as_u64().unwrap());
+    let block = anvil_rpc(
+        &url,
+        "eth_getBlockByNumber",
+        serde_json::json!([number, false]),
+    )
+    .await;
+    let time = block["timestamp"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("0x");
+    assert_eq!(
+        opened(&maker)["blockTime"].as_u64(),
+        Some(u64::from_str_radix(time, 16).unwrap())
+    );
+}
+
+/// A send that reverts on-chain burns gas yet emits no event for the indexer to find: the
+/// journal still puts it in its swap's costs, beside the `open` the indexer found, each with
+/// the sender, gas and price its receipt shows.
+#[tokio::test]
+async fn a_reverted_send_is_costed_with_its_swap() {
+    use serde_json::json;
+    let Some((anvil, _dir, maker)) = on_anvil().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    let swap = recorded_swap(&maker, 1, None).await;
+    let terms = maker.terms(&swap).unwrap();
+    let opened = maker
+        .journal(swap.id, "open", maker.settlement.open(&terms).await)
         .unwrap();
+    // Sent past the estimate, as when the chain moves between estimate and mining: it mines,
+    // and fails.
+    let reverted: B256 = anvil_rpc(
+        &url,
+        "eth_sendTransaction",
+        json!([{"from": maker.account, "to": maker.config.contract, "data": "0xdeadbeef", "gas": "0x186a0"}]),
+    )
+    .await
+    .as_str()
+    .unwrap()
+    .parse()
+    .unwrap();
+    let sent = Err(zecswap_chain::Error::Reverted(reverted));
+    assert!(maker.journal(swap.id, "ready", sent).is_err());
+    anvil_rpc(&url, "anvil_mine", json!(["0x3"])).await;
+    maker.transaction_pass().await.unwrap();
+    maker.enrich_evm_history().await.unwrap();
+
+    let ledger = serde_json::to_value(maker.economics(Some(0)).unwrap()).unwrap();
+    assert_eq!(ledger["maker"], json!(maker.account));
+    let costs = &ledger["swaps"][0]["evm"];
+    assert_eq!(costs.as_array().unwrap().len(), 2);
+    let number = |value: &serde_json::Value| {
+        u128::from_str_radix(value.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+    };
+    for (cost, hash, events, operation, succeeded) in [
+        (&costs[0], opened, json!(["opened"]), "open", true),
+        (&costs[1], reverted, json!([]), "ready", false),
+    ] {
+        let receipt = anvil_rpc(&url, "eth_getTransactionReceipt", json!([hash])).await;
+        assert_eq!(cost["transactionHash"], json!(hash));
+        assert_eq!(
+            (&cost["events"], &cost["operation"]),
+            (&events, &json!(operation))
+        );
+        assert_eq!(cost["sender"], json!(maker.account));
+        assert_eq!(cost["succeeded"], succeeded);
+        assert!(number(&receipt["gasUsed"]) > 21_000);
+        assert_eq!(
+            cost["gasUsed"].as_u64().map(u128::from),
+            Some(number(&receipt["gasUsed"]))
+        );
+        assert_eq!(
+            cost["gasPriceWei"],
+            number(&receipt["effectiveGasPrice"]).to_string()
+        );
+    }
+}
+
+/// Where the maker charges its network cost, a quote charges its gas at the chain's gas price
+/// now, with its Zcash fee, at the market prices of the moment, and says what it charged.
+#[tokio::test]
+async fn a_quote_charges_the_makers_network_cost_at_the_chains_gas_price() {
+    use crate::pricing::{Costs, MarketConfig};
+    use zecswap_prices::{Provider, stand_in};
+
+    let Some((_anvil, _dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    let prices = stand_in::start(StatusCode::OK).await;
+    maker.config.pricing = crate::pricing::Pricing {
+        market: Some(MarketConfig {
+            token_decimals: 6,
+            refresh_seconds: 60,
+            max_age_seconds: 300,
+            providers: vec![Provider::CoinMarketCap],
+        }),
+        costs: Some(Costs {
+            forward_gas: 400_000,
+            reverse_gas: 350_000,
+            zcash_fee_zat: 10_000,
+            margin_bps: 0,
+        }),
+        unit: 1_000_000,
+        ..maker.config.pricing.clone()
+    };
+    maker.prices = crate::market::PriceBook::new(&maker.config.pricing, &stand_in::keys())
+        .unwrap()
+        .served_by(&prices.url);
+    maker.health.completed();
+    maker.zcash_health.completed();
+    let request = || QuoteRequest {
+        units: 1,
+        payout: Address::repeat_byte(1),
+        payout_note: None,
+    };
+    let quote = maker.quote(request()).await.unwrap();
+    let gas_price = maker.settlement.gas_price().await.unwrap();
+    let priced = maker.prices.quote(unix_now(), Some(gas_price)).unwrap();
+    assert_eq!(quote.network_cost, priced.forward_cost());
+    assert!(quote.network_cost.is_some_and(|cost| cost > 0));
+    let uncharged = priced.policy.terms(1, 0).unwrap();
+    assert_eq!(quote.amount, uncharged.amount);
+    assert!(quote.deposit_zat > uncharged.deposit_zat);
+}
+
+/// Restarted on another account, root secret or, with a reverse swap pending, token, a maker
+/// refuses to run rather than fail every call on its live swaps, cancels included.
+#[tokio::test]
+async fn a_maker_refuses_to_start_on_swaps_it_cannot_act_on() {
+    let Some((_anvil, _dir, mut maker, _, _)) = opened_swap().await else {
+        return;
+    };
+    maker.check_swaps().await.unwrap();
+    let root = maker.root.clone();
+    maker.root = Zeroizing::new([8; 32]);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(error.to_string().contains("MAKER_ROOT_SECRET"), "{error:#}");
+    maker.root = root;
+    let account = maker.account;
+    maker.account = Address::repeat_byte(0x55);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(
+        error.to_string().contains("another EVM account"),
+        "{error:#}"
+    );
+    maker.account = account;
+
+    let mut nonce = 0;
+    let quote = maker
+        .store
+        .insert_reverse_quote(|index| {
+            nonce = index;
+            let share = maker.maker_share(index)?;
+            Ok(zecswap_api::reverse::Quote {
+                terms: Quote {
+                    quote_id: B256::repeat_byte(2),
+                    maker: maker.account,
+                    maker_share: share.public(),
+                    maker_proof: maker
+                        .context([2; 32])
+                        .prove_maker(&share, UnwrapErr(SysRng)),
+                    chain_id: maker.chain_id,
+                    contract: maker.config.contract,
+                    token: maker.config.token,
+                    amount: 1,
+                    deposit_zat: 1,
+                    expires_at: unix_now() + 60,
+                    network_cost: None,
+                },
+                user: Address::repeat_byte(2),
+                refund_note: B256::repeat_byte(3),
+                funding_deadline: unix_now() + 120,
+                ready_deadline: unix_now() + 3600,
+                refund_after: unix_now() + 7200,
+            })
+        })
+        .unwrap();
+    let reverse = crate::store::ReverseSwap {
+        id: B256::repeat_byte(6),
+        nonce,
+        quote,
+        acceptance: acceptance(),
+        account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        deposit: None,
+        sweep: None,
+        settled: false,
+        token_return: None,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&reverse, unix_now(), None)
+        .unwrap();
+    maker.check_swaps().await.unwrap();
+    // Forward swaps keep the token they opened with; a pending reverse quote names its own.
+    maker.config.token = Address::repeat_byte(0x99);
+    let error = maker.check_swaps().await.unwrap_err();
+    assert!(
+        error.to_string().contains("escrows another token"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() {
+    let Some((anvil, _dir, mut maker, swap, terms)) = opened_swap().await else {
+        return;
+    };
+    let (url, now) = (anvil.endpoint(), swap.opened_at);
     anvil_rpc(
         &url,
         "evm_setNextBlockTimestamp",
@@ -684,7 +1401,13 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
             .unwrap();
     }
     assert_eq!(
-        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        maker
+            .settlement
+            .swap(swap.id, &terms)
+            .await
+            .unwrap()
+            .unwrap()
+            .stage,
         Stage::Refunded
     );
     maker.tick().await.unwrap();
@@ -698,9 +1421,11 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     assert!(maker.status(swap.id).unwrap().unwrap().settled);
     drop(busy);
 
-    // Reopen persisted state, then remove both the lock and the refund from the chain.
+    // Reopen persisted state, as a restart on a config that now names another token would,
+    // then remove both the lock and the refund from the chain.
     let store_path = _dir.path().join("maker.sqlite");
     maker.store = Store::open(&store_path).unwrap();
+    maker.config.token = Address::repeat_byte(0x99);
     assert_eq!(maker.store.watched_swaps().unwrap().len(), 1);
     assert!(maker.store.unsettled_swaps().unwrap().is_empty());
     assert_eq!(
@@ -716,7 +1441,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     assert!(
         maker
             .settlement
-            .swap(swap.id)
+            .swap(swap.id, &terms)
             .await
             .unwrap()
             .unwrap()
@@ -728,8 +1453,434 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         .unwrap()
         .unwrap();
     assert_eq!(
-        maker.settlement.swap(swap.id).await.unwrap().unwrap().stage,
+        maker
+            .settlement
+            .swap(swap.id, &terms)
+            .await
+            .unwrap()
+            .unwrap()
+            .stage,
         Stage::Refunded
     );
     drop(busy);
+}
+
+/// An accept refused before it takes its quote leaves its token to spend again; one that takes
+/// the quote keeps it spent, though it fails after.
+#[tokio::test]
+async fn only_an_accept_that_takes_its_quote_spends_its_token() {
+    let Some((_anvil, dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    let issuer = take_tokens(&mut maker, dir.path());
+    let (id, payout) = ([1; 32], Address::repeat_byte(1));
+    let nonce = maker
+        .store
+        .insert_quote(id, payout, None, 1, 1, unix_now() + 120)
+        .unwrap();
+    maker.health.completed();
+    maker.zcash_health.completed();
+    let maker = Arc::new(maker);
+    let app = crate::api::router(maker.clone());
+    let paid = token(&maker, &issuer);
+    let (_, request) = token_request(&maker);
+    let forged = Acceptance {
+        token_request: Some(request.clone()),
+        ..acceptance()
+    };
+    for _ in 0..2 {
+        let refused = accept_paid(&app, id.into(), &forged, &paid).await;
+        assert_eq!(refused, StatusCode::BAD_REQUEST);
+    }
+    let user = SecretShare::random(UnwrapErr(SysRng));
+    let sound = Acceptance {
+        user_share: user.public(),
+        user_proof: maker.context(id).prove_user(
+            &maker.maker_share(nonce).unwrap().public(),
+            &user,
+            &Payout {
+                user: payout.into(),
+                note: None,
+            },
+            UnwrapErr(SysRng),
+        ),
+        viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+        token_request: None,
+    };
+    let unasked = accept_paid(&app, id.into(), &sound, &paid).await;
+    assert_eq!(
+        unasked,
+        StatusCode::BAD_REQUEST,
+        "no request for the token back"
+    );
+    // Takes the quote, then fails to watch the deposit address: lightwalletd is unreachable.
+    let sound = Acceptance {
+        token_request: Some(request),
+        ..sound
+    };
+    let failed = accept_paid(&app, id.into(), &sound, &paid).await;
+    assert_eq!(failed, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(maker.store.quote(&id, unix_now()).unwrap().is_none());
+    let spent = accept_paid(&app, id.into(), &forged, &paid).await;
+    assert_eq!(spent, StatusCode::UNAUTHORIZED);
+}
+
+/// Once a swap is paid into, if not yet confirmed, its status hands the accept's token back,
+/// signed blind, and the token it becomes buys another accept. A swap walked away from hands
+/// nothing back, all the way to its refund.
+#[tokio::test]
+async fn only_a_swap_paid_into_hands_its_token_back() {
+    let Some((anvil, dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    take_tokens(&mut maker, dir.path());
+    let maker = Arc::new(maker);
+    let gate = maker.tokens().unwrap();
+    let mut swaps = Vec::new();
+    for id in [1, 2] {
+        let (pending, request) = token_request(&maker);
+        let request = gate.read_return_request(&request).unwrap();
+        let swap = recorded_swap(&maker, id, Some(request)).await;
+        maker
+            .settlement
+            .open(&maker.terms(&swap).unwrap())
+            .await
+            .unwrap();
+        swaps.push((swap, pending));
+    }
+    let [(paid, pending), (left, _)] = <[_; 2]>::try_from(swaps).ok().unwrap();
+    let snapshot = |total| WalletSnapshot {
+        funds: Funds {
+            total,
+            spendable: 0,
+        },
+        sweep: None,
+    };
+    let deposited = |swap: &Swap, total| {
+        let mut snapshots = maker.wallet_snapshots.lock().unwrap();
+        snapshots.insert(swap.zcash_account, snapshot(total));
+    };
+    maker.zcash_health.completed();
+    deposited(&paid, paid.quote.deposit_zat - 1);
+    deposited(&left, 0);
+    maker.tick().await.unwrap();
+    assert!(token_return(&maker, paid.id).await.is_none(), "underpaid");
+    deposited(&paid, paid.quote.deposit_zat);
+    maker.tick().await.unwrap();
+    let signature = token_return(&maker, paid.id).await.unwrap();
+    let returned = pending.finalize(gate.return_key(), &signature).unwrap();
+
+    maker
+        .store
+        .insert_quote(
+            [3; 32],
+            Address::repeat_byte(1),
+            None,
+            1,
+            1,
+            unix_now() + 120,
+        )
+        .unwrap();
+    maker.health.completed();
+    let forged = Acceptance {
+        token_request: Some(token_request(&maker).1),
+        ..acceptance()
+    };
+    let app = crate::api::router(maker.clone());
+    let taken = accept_paid(&app, B256::repeat_byte(3), &forged, &returned).await;
+    assert_eq!(
+        taken,
+        StatusCode::BAD_REQUEST,
+        "past the token, refused on its proof"
+    );
+
+    let url = anvil.endpoint();
+    let at = serde_json::json!([left.opened_at + 3300]);
+    anvil_rpc(&url, "evm_setNextBlockTimestamp", at).await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    for _ in 0..2 {
+        maker.zcash_health.completed();
+        maker.tick().await.unwrap();
+    }
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x2"])).await;
+    maker.tick().await.unwrap();
+    assert!(maker.status(left.id).unwrap().unwrap().settled);
+    assert!(token_return(&maker, left.id).await.is_none());
+}
+
+/// A swap whose `open` never landed hands its token back once `t1` shows it never will.
+#[tokio::test]
+async fn a_swap_whose_open_never_landed_hands_its_token_back() {
+    let Some((anvil, dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    take_tokens(&mut maker, dir.path());
+    let maker = Arc::new(maker);
+    let gate = maker.tokens().unwrap();
+    let (pending, request) = token_request(&maker);
+    let request = gate.read_return_request(&request).unwrap();
+    let swap = recorded_swap(&maker, 1, Some(request)).await;
+    maker.tick().await.unwrap();
+    assert!(
+        token_return(&maker, swap.id).await.is_none(),
+        "it may still land"
+    );
+
+    let url = anvil.endpoint();
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([swap.t1]),
+    )
+    .await;
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x5"])).await;
+    maker.tick().await.unwrap();
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+    let signature = token_return(&maker, swap.id).await.unwrap();
+    pending.finalize(gate.return_key(), &signature).unwrap();
+}
+
+/// A reverse swap hands its accept's token back once the user funds its escrow, and not before.
+#[tokio::test]
+async fn a_reverse_swap_hands_its_token_back_once_its_escrow_is_funded() {
+    use zecswap_chain::evm::{reverse_funding_calls, reverse_swap_id};
+    use zecswap_core::{Domain, NetworkType, derive_user_keys};
+
+    let Some((anvil, dir, mut maker)) = on_anvil().await else {
+        return;
+    };
+    take_tokens(&mut maker, dir.path());
+    maker.config.reverse = Some(crate::config::ReverseConfig {
+        evm_confirmations: std::num::NonZeroU32::new(12).unwrap(),
+        funding_window: 900,
+        ready_after: 7200,
+        refund_after: 10800,
+        deposit_margin: 1800,
+        fee_reserve_zat: 20000,
+    });
+    let maker = Arc::new(maker);
+    let keys = derive_user_keys(&[7; 64], NetworkType::Test, 0, 0).unwrap();
+    let now = maker.settlement.now().await.unwrap();
+    let mut nonce = 0;
+    let quote = maker
+        .store
+        .insert_reverse_quote(|index| {
+            nonce = index;
+            let share = maker.maker_share(index)?;
+            Ok(zecswap_api::reverse::Quote {
+                terms: Quote {
+                    quote_id: B256::repeat_byte(2),
+                    maker: maker.account,
+                    maker_share: share.public(),
+                    maker_proof: maker
+                        .context([2; 32])
+                        .prove_maker(&share, UnwrapErr(SysRng)),
+                    chain_id: maker.chain_id,
+                    contract: maker.config.contract,
+                    token: maker.config.token,
+                    amount: 1_000_000,
+                    deposit_zat: 100_000,
+                    expires_at: unix_now() + 60,
+                    network_cost: None,
+                },
+                user: keys.auth.address().into(),
+                refund_note: B256::repeat_byte(5),
+                funding_deadline: now + 300,
+                ready_deadline: now + 3600,
+                refund_after: now + 7200,
+            })
+        })
+        .unwrap();
+    let (pending, request) = token_request(&maker);
+    let mut swap = crate::store::ReverseSwap {
+        id: reverse_swap_id(quote.user, &quote.terms.maker_share),
+        nonce,
+        quote,
+        acceptance: Acceptance {
+            user_share: keys.share.public(),
+            user_proof: ShareProof::from_bytes([0; 64]),
+            viewing_keys: keys.viewing,
+            token_request: Some(request),
+        },
+        account: AccountUuid::from_uuid(uuid::Uuid::nil()),
+        deposit: None,
+        sweep: None,
+        settled: false,
+        token_return: None,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&swap, unix_now(), None)
+        .unwrap();
+    let reads = maker
+        .reverse_reads(std::slice::from_ref(&swap))
+        .await
+        .unwrap();
+    maker
+        .advance_reverse(&mut swap, true, &reads)
+        .await
+        .unwrap();
+    let id = swap.id;
+    let returned = |maker: &Maker| maker.store.reverse_swap(id).unwrap().unwrap().token_return;
+    assert!(returned(&maker).is_none(), "not funded yet");
+
+    let payer = anvil.addresses()[1];
+    maker
+        .settlement
+        .mint_test_token(maker.config.token, payer, 1_000_000)
+        .await
+        .unwrap();
+    let open = swap.quote.open(keys.share.public());
+    let domain = Domain {
+        chain_id: maker.chain_id,
+        contract: maker.config.contract.into(),
+    };
+    let signature = keys.auth.sign(&domain.open_reverse(&open));
+    for (to, data) in reverse_funding_calls(maker.config.contract, &open, &signature) {
+        let call = serde_json::json!([{"from": payer, "to": to, "data": format!("0x{}", hex::encode(data))}]);
+        anvil_rpc(&anvil.endpoint(), "eth_sendTransaction", call).await;
+    }
+    let reads = maker
+        .reverse_reads(std::slice::from_ref(&swap))
+        .await
+        .unwrap();
+    maker
+        .advance_reverse(&mut swap, true, &reads)
+        .await
+        .unwrap();
+    assert!(returned(&maker).is_some());
+
+    let response = crate::api::router(maker.clone())
+        .oneshot(
+            Request::get(format!("/v1/reverse/swaps/{}", swap.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let status: zecswap_api::reverse::Status = serde_json::from_slice(&body).unwrap();
+    let signature = URL_SAFE_NO_PAD
+        .decode(status.token_return.unwrap())
+        .unwrap();
+    let key = maker.tokens().unwrap().return_key().clone();
+    pending.finalize(&key, &signature).unwrap();
+}
+
+/// Puts Multicall3's code where it is on every public chain, which a fresh anvil lacks.
+async fn install_multicall3(anvil: &alloy::node_bindings::AnvilInstance) {
+    use alloy::providers::MULTICALL3_ADDRESS;
+    use alloy::providers::bindings::IMulticall3;
+
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[1].clone());
+    let deployed = zecswap_chain::evm::deploy(&url, key, IMulticall3::BYTECODE.to_vec())
+        .await
+        .unwrap();
+    let code = anvil_rpc(&url, "eth_getCode", serde_json::json!([deployed, "latest"])).await;
+    anvil_rpc(
+        &url,
+        "anvil_setCode",
+        serde_json::json!([MULTICALL3_ADDRESS, code]),
+    )
+    .await;
+}
+
+/// A pass reads every swap it watches in one call, however many there are.
+#[tokio::test]
+async fn a_pass_reads_every_swap_it_watches_in_one_call() {
+    let Some((anvil, _dir, maker)) = on_anvil().await else {
+        return;
+    };
+    install_multicall3(&anvil).await;
+    for id in 1..=5 {
+        let swap = recorded_swap(&maker, id, None).await;
+        maker
+            .settlement
+            .open(&maker.terms(&swap).unwrap())
+            .await
+            .unwrap();
+    }
+    let before = maker.settlement.meter().usage();
+    maker.tick().await.unwrap();
+    let pass = maker.settlement.meter().usage().since(&before);
+    assert_eq!(pass.requests.get("eth_call"), Some(&1), "{pass:?}");
+    assert_eq!(
+        pass.requests.get("eth_getBlockByNumber"),
+        Some(&1),
+        "{pass:?}"
+    );
+    let swaps = maker.store.watched_swaps().unwrap();
+    assert!(swaps.iter().all(|swap| {
+        maker
+            .last_read(swap.id)
+            .flatten()
+            .is_some_and(|chain| chain.stage == Stage::Open)
+    }));
+}
+
+/// A settled swap is read every pass until a finalized block holds its refund, and never
+/// after: no reorganisation can undo it.
+#[tokio::test]
+async fn a_finalized_refund_is_never_read_again() {
+    let Some((anvil, _dir, maker, swap, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([swap.opened_at + 3300]),
+    )
+    .await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    for _ in 0..2 {
+        maker.tick().await.unwrap();
+    }
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x2"])).await;
+    maker.tick().await.unwrap();
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+    let usage = |maker: &Maker| maker.settlement.meter().usage();
+
+    let before = usage(&maker);
+    maker.tick().await.unwrap();
+    let pass = usage(&maker).since(&before);
+    assert!(pass.requests.contains_key("eth_call"), "{pass:?}");
+
+    // anvil finalizes 64 blocks back.
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x50"])).await;
+    maker.tick().await.unwrap();
+    let before = usage(&maker);
+    maker.tick().await.unwrap();
+    let pass = usage(&maker).since(&before);
+    assert_eq!(pass.methods(), "eth_chainId=1", "a call nodes don't bill");
+    assert_eq!(pass.compute_units(), 0);
+    assert!(maker.status(swap.id).unwrap().unwrap().settled);
+}
+
+/// Once the observer keeps up, it reads each block's events once, and a pass with no new blocks
+/// reads none.
+#[tokio::test]
+async fn an_observer_reads_each_block_once() {
+    let Some((anvil, _dir, maker, _, _)) = opened_swap().await else {
+        return;
+    };
+    let url = anvil.endpoint();
+    maker.transaction_pass().await.unwrap();
+    let usage = |maker: &Maker| maker.settlement.meter().usage();
+    let logs = |maker: &Maker, before| {
+        let pass: zecswap_chain::evm::RpcUsage = usage(maker).since(&before);
+        pass.requests.get("eth_getLogs").copied().unwrap_or(0)
+    };
+
+    let before = usage(&maker);
+    maker.transaction_pass().await.unwrap();
+    assert_eq!(logs(&maker, before), 0, "no new blocks");
+
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x3"])).await;
+    let before = usage(&maker);
+    maker.transaction_pass().await.unwrap();
+    assert_eq!(logs(&maker, before), 1, "the new blocks, once");
 }

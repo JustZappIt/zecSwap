@@ -1,0 +1,31 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-09T03:37:27Z",
+  "sourceCommit": "8c81c9a",
+  "release": "/opt/zecswap/releases/20261009-profitability-8c81c9a",
+  "previousRelease": "/opt/zecswap/releases/20261008-railgun-spent-5f82797",
+  "backup": "/var/backups/zecswap/20261009-profitability-8c81c9a",
+  "makerSha256": "41347e006203f5318517f1d97059d6863b4c6f97da2a93df5aafc0a7842c6393",
+  "relayerSha256": "cb44f5d95f046efdf00523d2ac290b2c0f380279fa5f71dbbe0c61840844901f",
+  "issuerSha256": "84bedcddeb9903a3524a115c4af34362cbe8e1c0ac3386de93fed5d677d51018",
+  "issuer": "the 991e16f binary copied into the release byte for byte, not restarted",
+  "changes": {
+    "makerConfig": "[pricing.market] providers = [\"coinmarketcap\", \"alchemy\"]",
+    "relayerConfig": "[railgun_sends] fee 250000 -> 500000 (the floor), providers = [\"coinmarketcap\", \"alchemy\"], fee_margin_bps = 1000",
+    "secrets": "ALCHEMY_API_KEY (the maker RPC's Alchemy key) in both secrets.env; ZCASH_CMC_KEY (the maker's) in the relayer's"
+  },
+  "dashboard": "zapp-dashboard d4a12d8, Vercel production deployment aue6rmdyt, deployed before the droplet",
+  "validation": {
+    "preconditionsHeld": true,
+    "alchemyPrices": "ZEC, USDC and ETH priced with the maker RPC's key",
+    "relayerTerms": "floor 500000, feePerUnitGas 2736 test tokens an ETH of gas with the margin, for 600 s, directly and through nginx",
+    "relayerSendsLedger": "both sends the relayer had sent costed",
+    "makerPricing": "coinmarketcap, fresh, providers [coinmarketcap, alchemy] without errors",
+    "makerEconomics": "eleven swaps in the last 30 days",
+    "exportsThroughNginx": "200 for /maker/v1/monitor/economics and /relayer/v1/monitor/sends",
+    "sendForAnotherChain": "400 rejected",
+    "publicGateway": "terms quote the floor and the rate; maker health 204"
+  },
+  "knownIssue": "the test token emits no Transfer events, so the economics export counts the relayer's payout fees as nothing here"
+}

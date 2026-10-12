@@ -45,14 +45,18 @@ vectors, a testnet maker. The original design and threat model are in
 | Path | Role |
 |---|---|
 | `crates/zecswap-core` | Pure crypto: shares, proofs of knowledge, joint account (UFVK/UA), seed-derived keys incl. the per-swap auth key, EIP-712 signing, PCZT signing with the combined key |
-| `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, and the encrypted shield note a payout goes to; `engine/` checks it against Railgun's own engine and wallet SDK (Node) |
+| `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, the encrypted shield note a payout goes to, and transaction outputs as their receiver reads them (a relayer's fee notes); `engine/` checks it against Railgun's own engine and wallet SDK (Node), and `send.cjs` proves sends with the SDK for the live suite |
 | `crates/zecswap-chain` | I/O adapters: Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the EVM contract client (`evm`) |
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures; never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, and with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`); never run by a maker |
+| `crates/zecswap-alerts` | Telegram alerts for the maker and the relayer: the bot's client, the durable queue messages wait in, in each service's own SQLite, and the gas alerts of the account each sends from (`gas`) |
+| `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
+| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
+| `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
-| `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers and relayer), `src/scenarios.rs` |
+| `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors` |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
 
@@ -95,6 +99,200 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- RPC budget (2026-10-12): the Alchemy account the maker, the relayer, `.env.testnet` and the
+  Android dev builds share hit its 30M CU monthly cap at 13:48 UTC (the cap is per account, not
+  per key). Nearly all of it was the maker: every swap settled in the last day was read three
+  calls a tick for 24 hours (~357k CU a swap; the stress runs' 42 swaps ran it at ~16M CU a day),
+  and the transaction observer read the newest twelve blocks' logs again every 15 s (~1M CU a
+  day, idle or not). Now a pass reads every swap it watches in one Multicall3 `aggregate3`
+  (`Settlement::swap_states`; a call a swap where Multicall3 isn't deployed, as on a fresh
+  anvil, whose tests set its code), the block number once, and never again a swap whose claim
+  or refund a finalized block holds (`maker/reads.rs`); with nothing to read, a pass makes one
+  `eth_chainId`, which Alchemy bills nothing, so health still tests the RPC. The Zcash worker's
+  sweeps and reverse status requests use the passes' reads (`last_read`, `chain_now`), and a
+  reverse swap's phase answers for 10 s. The observer reads each block once as its cursor passes
+  it, the newest twelve again every 2 minutes while swaps are live (10 otherwise), every 15 s
+  while swaps are live and 90 s otherwise (the dashboard calls history stale at 120 s); a sent
+  transaction without a receipt is asked about every 5 minutes. `RAILGUN()` is read once, the
+  maker's inventory for quotes every 30 s (its opens clear it), gas prices for quotes and relayer
+  fees once a minute, and the relayer reads its lanes' balances in one call after each lane's
+  send and every 2 minutes. Every connection counts its requests by method (`evm::RpcMeter`):
+  each service logs its RPC (host and a key fingerprint, never the key) at start and its
+  requests and Alchemy CU every hour, and both monitors export `rpc`. Idle, the two spend
+  ~0.15M CU a day (was ~1.5M); a swap some 20k (was ~0.4M).
+- Concurrent swaps (2026-10-12, branch `fix/concurrent-swaps`): what 15 swaps at once on the
+  testnet showed. A swap's relayer requests take turns, each running to its end in a task of its
+  own (`Relayer::in_turn`, `turns.rs`): a client giving up at its timeout no longer cuts a send
+  off half way, and its repeat waits for the first instead of getting `503`. Each swap's one-time
+  steps (claim, payout, ready, refund, refund payout) go out once (`send_once`): a repeat while
+  the first may still land answers `503 unavailable` and sends nothing, one after it landed
+  answers with no transactions, and only one that reverted or left the pool goes again; a
+  restarted relayer sends none from an account whose earlier sends aren't mined
+  (`Steps::note_earlier`). A payout of a paid-out swap answers `200` with no transactions (it was
+  `400`), a claim of a claimed swap pays out what is left, a send failing on a step that landed
+  meanwhile is no failure (`unless_landed`), and a receipt that never came is `503`, never `500`.
+  The client posts a relayer request until the chain shows it (`User::relayed`): after a timeout
+  or a `5xx` it watches the chain for 15 s and posts again, a claim only while its lock keeps
+  `CLAIM_MARGIN`; a `4xx` ends it. Endpoints wait out a `503` with `Retry-After` (30 s at most,
+  90 s in all). nginx gives quotes and accepts zones of their own and lets ten accepts in at a
+  time. In that run the payouts stalled for 4.5 minutes because the relayer's own account ran
+  short of ETH, and every payout queued behind the first.
+- Sends pay the gas price quotes charge (2026-10-11): every send through `Settlement`
+  (`submit`, `send_eth`, `deploy`) tips what the node suggests (`eth_maxPriorityFeePerGas`, the
+  tip in `eth_gasPrice`, at which the maker's network cost and the relayer's fees are priced),
+  under a cap of twice the next block's base fee (`evm::fees`, which `max_fee_per_gas` and the
+  lanes' floats follow). alloy's gas filler tipped the median of the last ten blocks'
+  20th-percentile tips: Sepolia's bots tip a flat gwei, so it flipped between 0.001 and 1 gwei
+  (1 gwei half the time), and swaps whose quotes charged $0.001 of gas paid up to $0.95 for an
+  open and $3.09 for a refund payout. Railgun sends and fundings already paid `eth_gasPrice`.
+  The maker's ledger credits a sponsored funding's fee to whichever relayer account sent it
+  (`evm::paid_to`: the fee goes to the relayer's own account, the funding lane sends it), and
+  zapp-dashboard counts the accounts the relayer's monitor names as the relayer's. On the
+  testnet droplet since 2026-10-12 08:03 UTC.
+- Review fixes and the network switch (2026-10-11): calldata wallets post (`railgun/transact`,
+  `reverse/fund` and its inner calls) must be its call's canonical ABI encoding, lengths capped,
+  before anything is decoded (`evm/canonical.rs`): alloy follows offsets anywhere, so shared
+  tails decoded to gigabytes. A withdrawal must pay out the relayer's own token, and the notes of
+  a send that reverted wait an hour (`503`, `Retry-After`). Each accept answers with a `ticket`,
+  an HMAC of the swap id under `MAKER_TICKET_SECRET`, sent in `ZecSwap-Ticket`; the Worker checks
+  it (`TICKET_SECRET`) and names the swap to nginx, which gives each ticketed swap its own
+  allowance (`$zecswap_tickets_required` turns away unticketed ones once apps send tickets).
+  `network = "testnet" | "mainnet"` in the maker's, relayer's and issuer's configs
+  (`zecswap_api::Network`) fixes the Zcash network, chains, Railgun, USDC and lightwalletd, and
+  each refuses to start on another's; mainnet waits on NU7 in the zcash crates.
+- The relayer's queues (2026-10-11): a request that would fail never holds up another. Every send
+  is simulated before it takes its account's turn (`Settlement::submit`, Railgun sends, fundings)
+  and retries wait outside it. Locks the contract would refuse are refused untried (`check_lock`),
+  a repeat of a held lock sends nothing, and a claim's share must be the swap's. A swap's
+  requests take turns (`Relayer::in_turn`): one posted while another runs waits for it.
+  Each kind of send has its own account (`lanes.rs`): claims and refunds; locks and readies;
+  Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
+  users sign for (payouts, rescues, refund payouts) and tops the others up to
+  `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
+  now (the base fee twice over and the tip), after each lane's send and every 2 minutes. The
+  monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
+  the account that signed them, so older journal entries still resolve. Still open: sending
+  without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared
+  allowance.
+- Profitability (2026-10-08, branch `feature/profitability`): the price engine asks
+  `[pricing.market] providers` in order (`coinmarketcap`, `alchemy`; required; keys
+  `ZCASH_CMC_KEY`, `ALCHEMY_API_KEY`), so quotes pause only while every one fails; the
+  monitor's `pricing.source` names the provider and `pricing.providers` each one's error. The
+  maker records what each swap earned and cost: its quote's prices (`quote_prices`), every
+  Ethereum transaction on it from one receipt read (`evm_costs`: sender, gas, effective price,
+  the token paid to the sender, i.e. a relayer's fee), its own sends journaled first
+  (`sent_transactions`, so a reverted one, which emits no event, still counts), and the exact
+  fee of each of its Zcash sends (`zcash_costs`, `Wallet::fee`), each valued in USD when it
+  happened: `live` from its own price within five minutes, else `history` from Alchemy's
+  five-minute candles. `GET /v1/monitor/economics?since=` exports it and zapp-dashboard's
+  `/bridge/profit` charts it. The relayer keeps the same for the private sends and unshields it
+  sponsors (`send_costs` in its journal: gas from each receipt, kind and fee read back from the
+  send's journaled bytes, a reverted one earning nothing), at `GET /v1/monitor/sends`; the live
+  `railgun-send` checks it. Both value history through `crates/zecswap-prices` (Alchemy's
+  five-minute candles). A sponsored send burns about 1.07M gas (~$0.32 at 0.12 gwei, $2.65 at
+  1 gwei), so a fixed fee can't follow gas: with `providers` (top level of the relayer's config)
+  every relayer fee follows it (`src/pricing.rs`). A send's terms add `feePerUnitGas` (USDC base
+  units per 10^18 wei, `fee_margin_bps` included) and `feeExpiresAt`; `fee` is the floor. The app
+  prices a send with the SDK's broadcaster estimate and `calculateBroadcasterFeeERC20Amount`,
+  never under the floor (`engine/send.cjs`, `priced`); the relayer checks fee × 10^18 ≥ its own
+  gas estimate × the gas price it pays × the lowest rate it quoted in ten minutes, and answers
+  `503` while it can't price gas. Swap fees (2026-10-09; the owner wants each swap profitable,
+  with no minimum size): a payout's fee is the larger of `fee` and `fee_gas` (claim lock, claim
+  and payout, 1.65M on Sepolia) at the gas price and rate now, the reverse funding's likewise
+  (`[reverse_funding] fee_gas`, 2.06M); terms quote both with a top-level `feeExpiresAt`, and the
+  relayer takes any fee at or above the lowest it quoted in the hour (`SWAP_FEE_VALIDITY`), or
+  the floor while unpriced, so no claim waits on a price. The maker charges its own gas and Zcash
+  fee in every quote (`[pricing.costs]`: `forward_gas` 412k on Sepolia, `reverse_gas` 362k,
+  `zcash_fee_zat`, `margin_bps`) at the chain's gas price and the quote's prices, on top of the
+  spread; quotes say so (`networkCost`) and `quote_costs` keeps it. Sepolia's test token logs no
+  `Transfer`s, so the ledger reads a relayer's fee from the escrow's `PaidOut`/`Rescued` and a
+  funding's Relay Adapt calldata too (`evm::paid_to`). The shared `crates/zecswap-prices` `Feed`
+  (CoinMarketCap then Alchemy) serves both maker and relayer; its `stand-in` feature is the
+  providers' test double. New tables only, so existing stores and journals open and backfill.
+  Deploy the dashboard first (an older one rejects `source: alchemy`). The app records a swap's
+  relayer fee when it quotes and caps it (`MAX_RELAYER_FEE`); it signs that fee at the claim.
+- Railgun broadcaster (2026-10-08, branch `feature/railgun-broadcaster`): `POST
+  /v1/railgun/transact` sends a wallet's own proved `transact` (private send or withdrawal) for
+  a fee note to the relayer's 0zk address, read as Railgun's public broadcasters read it
+  (`evm/railgun.rs`); any chain, the proxy read from the contract. Every send is journaled
+  (SQLite) before its broadcast, so the same bytes never send twice; answers are `200`,
+  `400 rejected` (nothing sent, ever), `409 alreadySpent`, `5xx` (post again). The live suite's
+  `railgun-send` proves with Railgun's own SDK (`engine/send.cjs`); on a fork it cuts the SDK's
+  quick sync at the fork block and turns screening off. The relayer's Sepolia Railgun seed and
+  mnemonic are in `.env.testnet`. Open: on live Sepolia a relayed send's outputs never clear
+  screening, since Railgun's indexer breaks its txid verification-hash chain at index 4188 and
+  SDK wallets can't prove their own sends; forwarding the SDK's pre-send POIs would fix it.
+- Monitoring (2026-10-08, branch `feature/monitoring`): the maker's `/v1/monitor` is schema 2
+  and reads nothing from the chain (the dashboard, `~/dev/zapp-dashboard`, reads swap states and
+  balances on its own RPC through Multicall3); it adds per-swap accept/open/settle times, block
+  times of Ethereum events, token outcomes by day (walk-aways = wasted tokens), the deposit cap
+  and gas alert accounts, and `/v1/monitor/swaps/{id}`. The issuer and relayer have their own
+  `/v1/monitor` (`ISSUER_MONITOR_TOKEN`, `RELAYER_MONITOR_TOKEN`): day totals and refusals by
+  reason, never a device; relayed transactions by outcome and their gas, read after the reply.
+  All three share one gateway allowance; Alloy ships the issuer's journal. The dashboard pins
+  the contract in Vercel's `BRIDGE_TESTNET_CONTRACT`: update it with every contract redeploy.
+- Telegram alerts (2026-10-11): the maker sends a swap two messages, when it is accepted and
+  when it ends (completed; refunded; cancelled, no ZEC arrived; expired), each with its
+  direction, amounts, time, the swap id's first eight hex digits (the dashboard's search finds
+  them) and one link: the settling transaction on Etherscan, else the dashboard. Otherwise only
+  a rescued Railgun payout, `[gas_alerts]` low and recovered, and an error that has lasted five
+  minutes (`LASTING_ERROR`, timed in memory) send anything: no deposit, confirmation or sweep
+  messages, no contract, maker address or block numbers. `TELEGRAM_BOT_TOKEN` and
+  `TELEGRAM_CHAT_ID` switch it on per network's maker; the hosted testnet shares the onramp gas
+  monitor's bot and chat. The relayer, given the same pair, sends one per Railgun send it
+  broadcasts once it mines (`send_alert`, queued with the send's cost): a private send with its
+  fee (the amount is private), an unshield with the USDC it took out of Railgun and its fee, or
+  that it reverted. Both queue in `crates/zecswap-alerts`. Gas alerts (2026-10-12): each
+  service's own `[gas_alerts]` watch the account it sends from (the testnet's: under 0.005 ETH,
+  topped up at 0.01), read at start and when one of its sends ends (`Settlement::sent`, woken
+  by every turn on the account's send line), and only while it is low on a timer too
+  (`interval_seconds`), for the top-up no send shows: no polling otherwise. The relayer's need
+  `[railgun_sends]` (its journal holds the queue); each monitor's `gasAlerts` names its account,
+  and zapp-dashboard reads the relayer's from the relayer's monitor.
+- PR #8 review (2026-10-06), each fix with a test that fails without it:
+  - Contract: a reverse escrow's id is `reverseSwapId` (`keccak256(abi.encode(user, makerKey,
+    true))`), never a forward id, so a maker can't open a user's verified forward swap as a
+    reverse escrow and take away its claim after `t0`; `deposit` credits only what arrives;
+    an `open` paying into Railgun above uint120 is refused.
+  - Relayer: serves only its `token` and `maker`, on every route; refuses a payout whose fee
+    leaves nothing to shield; checks Railgun takes the payout before revealing in a claim.
+  - Maker: each swap stores its token (terms never follow the config); share indices come from
+    the clock, so a restored backup can't reissue one; `check_swaps` refuses to start on live
+    swaps opened under another key or root secret; settled swaps are watched for a day (read on
+    the chain only until a finalized block holds them), then archived and their wallet accounts
+    dropped; an accept reads its quote and the chain clock
+    before taking the quote or importing an account; `max_awaiting_deposit` caps swaps waiting
+    on users.
+  - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).
+    The issuer's `android-key` mode checks Android hardware key attestation (one key per
+    install), and the hosted testnet issuer runs it since 2026-10-08; `insecure-test` starts
+    only with `allow_insecure = true`.
+- Tokens count walk-aways (2026-10-07): a device walks away from at most `tokens_per_day` swaps
+  a day (3) and makes as many as it pays into. The gate holds an accept's token while it runs
+  and keeps it only once the quote is taken (`Spend::keep`): a refused accept leaves it
+  spendable. The accept body's `tokenRequest`, blinded under the maker's `return_key` (in
+  `[tokens]`, required; `/v1/info` shows it, the app pins it), is signed once the user pays in
+  in full (forward, in the maker's wallet view) or the escrow is funded (reverse), or when a
+  forward `open` never landed; `GET /v1/swaps/{id}` (new) and `/v1/reverse/swaps/{id}` serve the
+  blind signature as `tokenReturn`. Challenges carry the UTC day in their redemption context,
+  so tokens die at midnight and the spent store keeps only today's. The client spends the
+  issuer's tokens before returned ones and drops earlier days'.
+- Attestation and the gateway (2026-10-08): the issuer reads a certificate's `TRUE` written as
+  1 (a OnePlus StrongBox writes it so) and Google's status list's decimal serials (most of
+  them), and `zecswap-issuer-status.timer` refreshes that list. Only the app's testnet builds on
+  a locked phone get tokens from the hosted issuer: not emulators, unlocked phones or the CLI.
+  `deploy/nginx.conf` gives each kind of request its own allowance, claims and refunds theirs,
+  and each swap's status reads one too; nginx refuses with `503` and `Retry-After`, never
+  `429`, which from the issuer means a device's tokens for the day are spent. The Worker
+  forwards only `Authorization`, `Content-Type` and `Content-Length`.
+- Terms hash (2026-10-06): the contract stores only `hashTerms(terms)` of each swap, so `open`
+  writes three slots (about 106k gas, from 243k–264k). Every call on a swap takes its `Terms`
+  after the id and reverts `WrongTerms` unless they hash to it; one loader (`_load`) does
+  this and `test/ZecSwap.terms.t.sol` fails if a function skips it. `Opened` still emits the
+  terms. Rust's one definition is `zecswap_core::Terms::hash`; `Settlement::swap(id, &terms)`
+  errors `Error::WrongTerms` on a mismatch, and `swap_state` reads the slim state alone. The
+  maker persists each swap's token and `t0` (its terms never follow the config) and returns
+  `t0`/`t1` in `Accepted`; relayer requests carry `terms`.
 - The contract stores the revealed share (`Swap.secret`); nothing reads event logs.
 - `claim` is a pull payment; the payout is withdrawn separately.
 - A lapsed lock gives the other side the next turn; there is no "one lock each" deadlock.
@@ -121,6 +319,12 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Gotchas
 
+- Sepolia repriced new state in early October 2026: deploying ZecSwap takes ~30M gas (4.2M
+  before) and `open` ~360k (108k on a local fork). `forge script` simulates the old prices and
+  runs out of gas: deploy with `cast send --create` and the node's estimate. The anvil fork the
+  live suite uses keeps the old prices.
+- anvil's fork errors quote the upstream URL, Alchemy key included: filter URLs out of anything
+  printed from a fork (`sed -E 's#https?://[^ "]+#<url>#g'`).
 - Alchemy's free tier caps `eth_getLogs` at 10 blocks. Load-balanced RPCs read a block behind.
   Railgun's wallet SDK scans logs, so `balance.cjs` needs an RPC without that cap;
   `https://ethereum-sepolia-rpc.publicnode.com` works.
@@ -139,6 +343,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   alloy-primitives 1.6+ clashes with zcash_transparent's pre-release `digest`.
 - `zcash_client_sqlite` needs `transparent-inputs` because `zcash_client_backend/pczt` turns it on.
 - Don't reintroduce an orchard fork or SDK patch: signing goes through pczt's public Signer.
+- A maker store from an older maker lacks columns the swaps now need, and the maker refuses to
+  start on it: a new deployment's maker gets a fresh store. Maker share indices come from the
+  clock (`next_share_index`), so a fresh or restored store never reissues one.
 - Never sign EVM transactions through `ProviderBuilder::new()`'s default fillers: its nonce
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's

@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use zecswap_api::{Acceptance, reverse::Quote};
 use zecswap_chain::evm::B256;
 use zecswap_chain::zcash::{AccountUuid, TxId};
+use zecswap_core::Terms;
 
-use super::Store;
+use super::{FINAL_AFTER, NOW, Store};
 
 pub(super) const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS reverse_quotes (
@@ -16,7 +17,9 @@ pub(super) const SCHEMA: &str = "
         id BLOB PRIMARY KEY,
         quote_id BLOB NOT NULL UNIQUE REFERENCES reverse_quotes(quote_id),
         data TEXT NOT NULL,
-        settled INTEGER NOT NULL DEFAULT 0
+        settled INTEGER NOT NULL DEFAULT 0,
+        settled_at INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0
     );
 ";
 
@@ -32,6 +35,17 @@ pub(crate) struct ReverseSwap {
     #[serde(with = "optional_txid")]
     pub sweep: Option<TxId>,
     pub settled: bool,
+    /// The blind signature handing the accept's token back (base64url), once the escrow is
+    /// funded.
+    #[serde(default)]
+    pub token_return: Option<String>,
+}
+
+impl ReverseSwap {
+    /// What `openReverse` commits the escrow to, which every call on it supplies again.
+    pub(crate) fn terms(&self) -> Terms {
+        self.quote.open(self.acceptance.user_share).terms()
+    }
 }
 
 mod optional_txid {
@@ -59,9 +73,7 @@ impl Store {
     ) -> Result<Quote> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let nonce = tx.query_row("SELECT IFNULL(MAX(nonce) + 1, 0) FROM quotes", [], |row| {
-            row.get(0)
-        })?;
+        let nonce = super::next_share_index(&tx)?;
         let quote = build(nonce)?;
         tx.execute(
             "INSERT INTO quotes (quote_id, nonce, payout, payout_note, amount, deposit_zat, expires_at)
@@ -108,6 +120,7 @@ impl Store {
                 serde_json::to_string(swap)?
             ],
         )?;
+        super::accepted(&tx, &swap.id)?;
         super::notifications::insert(&tx, event)?;
         tx.commit()?;
         Ok(())
@@ -130,17 +143,21 @@ impl Store {
         self.reverse_swaps(false)
     }
 
+    /// Also revisits swaps settled within `FINAL_AFTER`, so a reorg can resume settlement.
     pub(crate) fn watched_reverse_swaps(&self) -> Result<Vec<ReverseSwap>> {
         self.reverse_swaps(true)
     }
 
-    fn reverse_swaps(&self, include_settled: bool) -> Result<Vec<ReverseSwap>> {
+    fn reverse_swaps(&self, recently_settled: bool) -> Result<Vec<ReverseSwap>> {
         let conn = self.conn();
-        let mut statement = conn.prepare(
-            "SELECT data FROM reverse_swaps WHERE settled = 0 OR ?1 ORDER BY settled, rowid",
-        )?;
+        let mut statement = conn.prepare(&format!(
+            "SELECT data FROM reverse_swaps WHERE settled = 0 OR (?1 AND settled_at > {NOW} - ?2)
+             ORDER BY settled, rowid"
+        ))?;
         statement
-            .query_map([include_settled], |row| row.get::<_, String>(0))?
+            .query_map(params![recently_settled, FINAL_AFTER], |row| {
+                row.get::<_, String>(0)
+            })?
             .map(|row| Ok(serde_json::from_str(&row?)?))
             .collect()
     }
@@ -158,7 +175,11 @@ impl Store {
         let tx = conn.transaction()?;
         ensure!(
             tx.execute(
-                "UPDATE reverse_swaps SET data = ?2, settled = ?3 WHERE id = ?1",
+                &format!(
+                    "UPDATE reverse_swaps SET data = ?2, settled = ?3,
+                         settled_at = CASE WHEN ?3 THEN IFNULL(settled_at, {NOW}) END
+                     WHERE id = ?1"
+                ),
                 params![
                     swap.id.as_slice(),
                     serde_json::to_string(swap)?,
@@ -177,7 +198,7 @@ impl Store {
 mod tests {
     use super::*;
     use rand::{rand_core::UnwrapErr, rngs::SysRng};
-    use zecswap_chain::evm::{Address, swap_id};
+    use zecswap_chain::evm::{Address, reverse_swap_id};
     use zecswap_core::{
         NetworkType, Payout, SwapContext, ViewingKeys, derive_maker_share, derive_user_keys,
     };
@@ -193,9 +214,10 @@ mod tests {
             contract: [1; 20],
             quote_id: [2; 32],
         };
+        let mut reverse_nonce = 0;
         let quote = store
             .insert_reverse_quote(|nonce| {
-                assert_eq!(nonce, 0);
+                reverse_nonce = nonce;
                 let maker = derive_maker_share(&[9; 32], nonce).unwrap();
                 Ok(Quote {
                     terms: zecswap_api::Quote {
@@ -209,6 +231,7 @@ mod tests {
                         amount: u128::from(u64::MAX) + 1,
                         deposit_zat: 100_000,
                         expires_at: 200,
+                        network_cost: None,
                     },
                     user: user.auth.address().into(),
                     refund_note: B256::repeat_byte(5),
@@ -219,11 +242,12 @@ mod tests {
             })
             .unwrap();
         assert!(store.take_quote(&context.quote_id, 100).unwrap().is_none());
-        assert_eq!(
+        // Both directions draw from one sequence of maker shares.
+        assert!(
             store
                 .insert_quote([3; 32], Address::repeat_byte(4), None, 1, 1, 200)
-                .unwrap(),
-            1
+                .unwrap()
+                > reverse_nonce
         );
         let acceptance = Acceptance {
             user_share: user.share.public(),
@@ -237,9 +261,10 @@ mod tests {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: ViewingKeys::random(UnwrapErr(SysRng)),
+            token_request: None,
         };
         let mut swap = ReverseSwap {
-            id: swap_id(quote.user, &quote.terms.maker_share),
+            id: reverse_swap_id(quote.user, &quote.terms.maker_share),
             nonce: 0,
             quote,
             acceptance,
@@ -247,6 +272,7 @@ mod tests {
             deposit: None,
             sweep: None,
             settled: false,
+            token_return: None,
         };
         assert!(store.insert_reverse_swap(&swap, 200, None).is_err());
         store.conn().execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON notifications WHEN NEW.event_key = 'reject' BEGIN SELECT RAISE(FAIL, 'injected queue failure'); END;").unwrap();
@@ -278,9 +304,11 @@ mod tests {
             swap.acceptance.viewing_keys.to_bytes()
         );
         assert_eq!(store.pending_reverse_swaps().unwrap().len(), 1);
-        let rows = store.monitor_swaps(2700, 50).unwrap();
+        let rows = store.monitor_swaps(50, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].direction, "reverse");
+        assert!(rows[0].accepted_at.is_some());
+        assert_eq!((rows[0].opened_at, rows[0].token_returned), (None, None));
         assert_eq!(rows[0].funding_deadline, Some(300));
         assert_eq!(rows[0].ready_deadline, 500);
         assert_eq!(rows[0].refund_after, 700);
@@ -312,5 +340,20 @@ mod tests {
         assert_eq!(store.notification_status(true).unwrap().pending, 2);
         assert!(store.pending_reverse_swaps().unwrap().is_empty());
         assert!(store.reverse_swap(swap.id).unwrap().unwrap().settled);
+
+        // Re-read for a day after settling, then final, its deposit account offered once.
+        assert_eq!(store.watched_reverse_swaps().unwrap().len(), 1);
+        assert!(store.final_swaps().unwrap().is_empty());
+        store
+            .conn()
+            .execute(
+                "UPDATE reverse_swaps SET settled_at = settled_at - ?1",
+                [FINAL_AFTER],
+            )
+            .unwrap();
+        assert!(store.watched_reverse_swaps().unwrap().is_empty());
+        assert_eq!(store.final_swaps().unwrap(), [(swap.id, swap.account)]);
+        store.archive(&swap.id).unwrap();
+        assert!(store.final_swaps().unwrap().is_empty());
     }
 }

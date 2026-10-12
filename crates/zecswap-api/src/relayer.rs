@@ -1,8 +1,9 @@
 //! The relayer's API. A relayer sends the transactions of users with no account on the chain:
 //! each is authorized by the swap's own key or carries the revealed share, so a relayer can
-//! delay a swap but never redirect it.
+//! delay a swap but never redirect it. Each request that acts on a swap carries its terms
+//! (`crate::Terms`), which the relayer checks against the chain before sending anything.
 
-use alloy_primitives::{Address, B256, FixedBytes};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use serde::{Deserialize, Serialize};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
@@ -15,12 +16,55 @@ pub struct Terms {
     pub relayer: Address,
     pub chain_id: u64,
     pub contract: Address,
-    /// Token base units the relayer keeps from a payout, as a decimal string.
+    /// Token base units the relayer keeps from a payout, as a decimal string. Where the relayer
+    /// prices gas, the larger of its floor and the gas a swap's claim and payout (or refund and
+    /// its payout) burn, at the gas price and ETH price now.
     #[serde(with = "decimal")]
     pub fee: u128,
+    /// Until when this `fee` and `reverseFunding.fee` are honored: the relayer takes any fee at
+    /// or above the lowest it quoted in the hour before. Absent where it prices no gas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_expires_at: Option<u64>,
     /// Absent when initial reverse funding is not sponsored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverse_funding: Option<ReverseFundingTerms>,
+    /// Absent when the relayer sends no private Railgun sends or withdrawals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub railgun_sends: Option<RailgunSendTerms>,
+}
+
+/// What the relayer takes to send a wallet's own Railgun transaction (`POST /v1/railgun/transact`)
+/// as its broadcaster: the transaction's first output is a fee note to `railgunAddress`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RailgunSendTerms {
+    /// The relayer's own 0zk address, which the fee note pays.
+    pub railgun_address: String,
+    /// Railgun's proxy on the relayer's chain, which the transaction calls.
+    pub railgun_proxy: Address,
+    /// The token the fee is paid in.
+    pub token: Address,
+    /// Token base units the fee note must carry at least, as a decimal string.
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    /// The fee's gas-based part, as Railgun's broadcasters quote `feePerUnitGas`: token base
+    /// units per 10^18 wei of gas cost, the relayer's margin included. A send pays the larger of
+    /// `fee` and this times the wei its gas costs, over 10^18. Absent while the relayer can't price
+    /// gas, or prices none: then `fee` alone.
+    #[serde(
+        default,
+        with = "crate::optional_decimal",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fee_per_unit_gas: Option<u128>,
+    /// Until when a proof whose fee was worked out at this rate is held to it, not a later one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_expires_at: Option<u64>,
+    pub max_gas_limit: u64,
+    /// The highest gas price the relayer pays, and so the highest minimum a proof may set.
+    #[serde(with = "decimal")]
+    pub max_gas_price_wei: u128,
+    pub max_calldata_bytes: usize,
 }
 
 /// Sponsored Sepolia funding uses the V2 Relay Adapt ABI and no Railgun broadcaster fee note:
@@ -35,6 +79,8 @@ pub struct ReverseFundingTerms {
     #[serde(with = "decimal")]
     pub max_gas_price_wei: u128,
     pub max_calldata_bytes: usize,
+    /// What the funding must pay the relayer, priced like a payout's fee: its floor, or the gas
+    /// of the funding and its ready at the prices now if more.
     #[serde(with = "decimal")]
     pub fee: u128,
 }
@@ -44,16 +90,19 @@ pub struct ReverseFundingTerms {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockClaim {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub deadline: u64,
     pub signature: FixedBytes<65>,
 }
 
 /// `POST /v1/claim`: reveals the user share under the held claim lock, then pays out. The
-/// payout comes first so that the relayer is sure of its fee before it reveals anything.
+/// payout comes first so that the relayer is sure of its fee before it reveals anything. It
+/// names the same swap and terms as the claim.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Claim {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     /// The user share, big-endian.
     pub secret: B256,
     pub payout: Payout,
@@ -64,6 +113,7 @@ pub struct Claim {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Payout {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub note: Note,
     #[serde(with = "decimal")]
     pub fee: u128,
@@ -75,6 +125,7 @@ pub struct Payout {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rescue {
     pub swap_id: B256,
+    pub terms: crate::Terms,
     pub note: Note,
     #[serde(with = "decimal")]
     pub fee: u128,
@@ -90,6 +141,31 @@ pub struct Note {
     pub npk: B256,
     pub encrypted_bundle: [B256; 3],
     pub shield_key: B256,
+}
+
+/// `POST /v1/railgun/transact`: a proved, unsigned Railgun `transact` call, as the wallet SDK
+/// populates it for a broadcaster. Persist the exact bytes before posting, and post the same
+/// bytes again after any answer but `200`, `400` or `409`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RailgunTransact {
+    pub chain_id: u64,
+    pub to: Address,
+    pub data: Bytes,
+    #[serde(with = "decimal")]
+    pub value: u128,
+}
+
+/// `409` from `POST /v1/railgun/transact`: a note the transaction spends is spent, or a
+/// transaction the relayer sent spends it. `transactions` names the relayer's own that do, pending
+/// or mined; it is empty when the notes went in one the relayer did not send or no longer
+/// remembers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlreadySpent {
+    pub code: crate::service::ErrorCode,
+    pub error: String,
+    pub transactions: Vec<B256>,
 }
 
 /// The transactions a request sent, in order.

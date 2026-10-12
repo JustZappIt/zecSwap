@@ -5,10 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use alloy::node_bindings::Anvil;
+use zecswap_chain::Error;
 use zecswap_chain::evm::{
-    Address, OpenRequest, PrivateKeySigner, Settlement, Stage, U256, deploy, swap_id,
+    Address, PrivateKeySigner, Settlement, Stage, U256, deploy, reverse_swap_id, swap_id,
 };
-use zecswap_core::{Domain, NetworkType, derive_maker_share, derive_user_keys};
+use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 
 #[tokio::test]
 async fn a_send_that_fails_leaves_no_nonce_gap() {
@@ -27,6 +28,54 @@ async fn a_send_that_fails_leaves_no_nonce_gap() {
     next.await
         .expect("the next send is stuck behind a nonce gap")
         .unwrap();
+}
+
+/// A send tips what the node suggests, so it pays the gas price that quotes and the relayer's
+/// fees charge, not the median of recent blocks' tips that alloy's own estimate tips.
+#[tokio::test]
+async fn a_send_pays_the_gas_price_quotes_charge() {
+    use alloy::consensus::Transaction as _;
+    use alloy::network::{EthereumWallet, TransactionBuilder};
+    use alloy::providers::{Provider, ProviderBuilder};
+    use alloy::rpc::types::TransactionRequest;
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let url = anvil.endpoint();
+    let others = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(PrivateKeySigner::from(
+            anvil.keys()[1].clone(),
+        )))
+        .connect_http(url.parse().unwrap());
+    // Recent blocks tip far over the latest, as Sepolia's bots, tipping a flat gwei, often do.
+    for gwei in [100, 100, 100, 2] {
+        let tip = gwei * 1_000_000_000;
+        let tx = TransactionRequest::default()
+            .with_to(Address::repeat_byte(2))
+            .with_max_priority_fee_per_gas(tip)
+            .with_max_fee_per_gas(tip + 10_000_000_000);
+        let pending = others.send_transaction(tx).await.unwrap();
+        assert!(pending.get_receipt().await.unwrap().status());
+    }
+    // anvil suggests the latest block's least tip; alloy's estimate is their median, 100 gwei.
+    let tip = others.get_max_priority_fee_per_gas().await.unwrap();
+    assert_eq!(tip, 2_000_000_000);
+
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let chain = Settlement::connect(&url, Address::ZERO, key).unwrap();
+    let price = chain.gas_price().await.unwrap();
+    let cap = chain.max_fee_per_gas().await.unwrap();
+    let sent = chain
+        .send_eth(Address::repeat_byte(3), U256::from(1))
+        .await
+        .unwrap();
+    let tx = others.get_transaction_by_hash(sent).await.unwrap().unwrap();
+    assert_eq!(tx.max_priority_fee_per_gas(), Some(tip));
+    assert_eq!(tx.max_fee_per_gas(), cap);
+    let receipt = others.get_transaction_receipt(sent).await.unwrap().unwrap();
+    assert_eq!(receipt.effective_gas_price, price);
 }
 
 /// A swap paid into Railgun, settled by a relayer on the user's signatures: the Rust signer,
@@ -71,33 +120,40 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     let note = wallet.note(&keys.note_entropy).unwrap();
     let e = derive_maker_share(&[9; 32], 0).unwrap();
     let now = maker.now().await.unwrap();
-    maker
-        .open(&OpenRequest {
-            token,
-            amount: 1_000_000,
-            maker_share: &e.public(),
-            user_share: &keys.share.public(),
-            user: keys.auth.address().into(),
-            t0: now + 3_600,
-            t1: now + 7_200,
-            payout_note: Some(note.commitment().into()),
-        })
-        .await
-        .unwrap();
+    let terms = Terms {
+        maker: maker_account.into(),
+        token: token.into(),
+        amount: 1_000_000,
+        maker_share: e.public(),
+        user_share: keys.share.public(),
+        user: keys.auth.address(),
+        t0: now + 3_600,
+        t1: now + 7_200,
+        payout_note: note.commitment(),
+    };
+    maker.open(&terms).await.unwrap();
     let id = swap_id(maker_account, &keys.share.public());
-    maker.ready(id).await.unwrap();
+    maker.ready(id, &terms).await.unwrap();
 
     let user = Settlement::read_only(&url, contract).unwrap();
     let swap = user
-        .swap(id)
+        .swap(id, &terms)
         .await
         .unwrap()
-        .expect("the swap is keyed as in Rust");
+        .expect("the swap is keyed, and its terms hashed, as in Rust");
     assert_eq!(swap.user, Address::from(keys.auth.address()));
     assert_eq!(swap.payout_note, Some(note.commitment().into()));
+    let other_payee = Terms {
+        user: [0x77; 20],
+        ..terms.clone()
+    };
+    assert!(matches!(
+        user.swap(id, &other_payee).await,
+        Err(Error::WrongTerms(wrong)) if wrong == id
+    ));
     assert!(user.railgun_accepts(token).await.unwrap());
     assert!(
-        user.ready(id).await.is_err(),
+        user.ready(id, &terms).await.is_err(),
         "a read-only connection sends nothing"
     );
 
@@ -109,17 +165,20 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     let deadline = user.now().await.unwrap() + 60;
     let lock = keys.auth.sign(&domain.lock_claim(&id.0, deadline));
     relayer
-        .lock_claim_with_sig(id, deadline, &lock)
+        .lock_claim_with_sig(id, &terms, deadline, &lock)
         .await
         .unwrap();
-    relayer.claim(id, &keys.share).await.unwrap();
+    relayer.claim(id, &terms, &keys.share).await.unwrap();
     let fee = 20_000;
     let payout = keys
         .auth
         .sign(&domain.payout(&id.0, &relayer_account.into(), fee));
-    let tx = relayer.payout(id, &note, fee, &payout).await.unwrap();
+    let tx = relayer
+        .payout(id, &terms, &note, fee, &payout)
+        .await
+        .unwrap();
 
-    let swap = user.swap(id).await.unwrap().unwrap();
+    let swap = user.swap(id, &terms).await.unwrap().unwrap();
     assert_eq!(swap.stage, Stage::Claimed);
     assert!(swap.paid_out);
     let shielded = user.shielded(tx).await.unwrap();
@@ -132,6 +191,115 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
         user.token_balance(token, relayer_account).await.unwrap(),
         fee
     );
+}
+
+/// A pass reads any number of swaps, and accounts, in one call where Multicall3 is deployed, as
+/// on every chain the services use, and the same answers one at a time where it isn't; the
+/// contract's Railgun proxy, which it fixes at deployment, is read once.
+#[tokio::test]
+async fn many_swaps_and_balances_are_read_in_one_call() {
+    use zecswap_chain::evm::BlockId;
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("MockRailgun.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let account = key.address();
+    let creation = |name: &str| creation_code(&artifacts, name);
+    let railgun = deploy(&url, key.clone(), creation("MockRailgun"))
+        .await
+        .unwrap();
+    let token = deploy(&url, key.clone(), creation("TestToken"))
+        .await
+        .unwrap();
+    let mut code = creation("ZecSwap");
+    code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&railgun.into_word().0);
+    let contract = deploy(&url, key.clone(), code).await.unwrap();
+    let maker = Settlement::connect(&url, contract, key.clone()).unwrap();
+    maker.mint_test_token(token, account, 3_000).await.unwrap();
+    maker.add_inventory(token, 3_000).await.unwrap();
+    let now = maker.now().await.unwrap();
+    let mut ids = Vec::new();
+    for nonce in 0..3 {
+        let user_share = derive_maker_share(&[3; 32], nonce).unwrap().public();
+        let terms = Terms {
+            maker: account.into(),
+            token: token.into(),
+            amount: 1_000,
+            maker_share: derive_maker_share(&[9; 32], nonce).unwrap().public(),
+            user_share,
+            user: [7; 20],
+            t0: now + 3_600,
+            t1: now + 7_200,
+            payout_note: [0; 32],
+        };
+        maker.open(&terms).await.unwrap();
+        ids.push(swap_id(account, &user_share));
+    }
+    ids.push(swap_id(
+        Address::repeat_byte(5),
+        &derive_maker_share(&[4; 32], 0).unwrap().public(),
+    ));
+    let owners = [anvil.addresses()[2], Address::repeat_byte(6)];
+    let eth_calls = |chain: &Settlement| {
+        chain
+            .meter()
+            .usage()
+            .requests
+            .get("eth_call")
+            .copied()
+            .unwrap_or(0)
+    };
+
+    let single = Settlement::read_only(&url, contract).unwrap();
+    let one_by_one = single.swap_states(&ids, BlockId::latest()).await.unwrap();
+    assert_eq!(eth_calls(&single), 4, "no Multicall3: a call a swap");
+    assert_eq!(one_by_one.iter().flatten().count(), 3);
+    assert!(one_by_one[3].is_none());
+    let balances = single.eth_balances(&owners).await.unwrap();
+
+    install_multicall3(&url, &key).await;
+    let batched = Settlement::read_only(&url, contract).unwrap();
+    assert_eq!(
+        batched.swap_states(&ids, BlockId::latest()).await.unwrap(),
+        one_by_one
+    );
+    assert_eq!(batched.eth_balances(&owners).await.unwrap(), balances);
+    assert_eq!(
+        eth_calls(&batched),
+        2,
+        "one call each, whatever their number"
+    );
+    assert_eq!(batched.railgun().await.unwrap(), railgun);
+    assert_eq!(batched.railgun().await.unwrap(), railgun);
+    assert_eq!(eth_calls(&batched), 3, "the Railgun proxy is read once");
+    let usage = batched.meter().usage();
+    assert_eq!(usage.requests.get("eth_getCode"), Some(&1));
+    assert_eq!(usage.failed, 0);
+}
+
+/// Puts Multicall3's code where it is on every public chain, which a fresh anvil lacks.
+async fn install_multicall3(url: &str, key: &PrivateKeySigner) {
+    use alloy::providers::bindings::IMulticall3;
+    use alloy::providers::{MULTICALL3_ADDRESS, Provider, ProviderBuilder};
+
+    let deployed = deploy(url, key.clone(), IMulticall3::BYTECODE.to_vec())
+        .await
+        .unwrap();
+    let provider = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    let code = provider.get_code_at(deployed).await.unwrap();
+    let () = provider
+        .raw_request("anvil_setCode".into(), (MULTICALL3_ADDRESS, code))
+        .await
+        .unwrap();
 }
 
 fn creation_code(artifacts: &Path, name: &str) -> Vec<u8> {
@@ -230,8 +398,9 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 .unwrap();
             assert!(receipt.status());
         }
-        let id = swap_id(keys.auth.address().into(), &e.public());
-        let chain = maker.swap(id).await.unwrap().unwrap();
+        let id = reverse_swap_id(keys.auth.address().into(), &e.public());
+        let escrow = terms.terms();
+        let chain = maker.swap(id, &escrow).await.unwrap().unwrap();
         assert_eq!(chain.maker_share, keys.share.public());
         assert_eq!(chain.user_share, e.public());
         assert_eq!(
@@ -250,23 +419,26 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(maker.confirmed_swap(id, 1).await.unwrap(), Some(chain));
+        assert_eq!(
+            maker.confirmed_swap(id, &escrow, 1).await.unwrap(),
+            Some(chain)
+        );
         let deadline = maker.now().await.unwrap() + 60;
         if index == 0 {
             let signature = keys.auth.sign(&domain.ready(&id.0, deadline));
             relay
-                .ready_with_sig(id, deadline, &signature)
+                .ready_with_sig(id, &escrow, deadline, &signature)
                 .await
                 .unwrap();
-            maker.lock_claim(id).await.unwrap();
-            maker.claim(id, &e).await.unwrap();
+            maker.lock_claim(id, &escrow).await.unwrap();
+            maker.claim(id, &escrow, &e).await.unwrap();
             assert_eq!(
                 maker.balance_of(maker_address, token).await.unwrap(),
                 terms.amount
             );
             assert_eq!(
                 maker
-                    .swap(id)
+                    .swap(id, &escrow)
                     .await
                     .unwrap()
                     .unwrap()
@@ -279,23 +451,23 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
         } else {
             let signature = keys.auth.sign(&domain.lock_refund(&id.0, deadline));
             relay
-                .lock_refund_with_sig(id, deadline, &signature)
+                .lock_refund_with_sig(id, &escrow, deadline, &signature)
                 .await
                 .unwrap();
-            relay.refund(id, &keys.share).await.unwrap();
+            relay.refund(id, &escrow, &keys.share).await.unwrap();
             let fee = 20_000;
             let signature =
                 keys.auth
                     .sign(&domain.refund_payout(&id.0, &relay_address.into(), fee));
             let tx = relay
-                .refund_payout(id, &note, fee, &signature)
+                .refund_payout(id, &escrow, &note, fee, &signature)
                 .await
                 .unwrap();
             let notes = maker.shielded(tx).await.unwrap();
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0].value + notes[0].fee, terms.amount - fee);
             assert!(wallet.open(&notes[0].note).is_some());
-            assert!(maker.swap(id).await.unwrap().unwrap().paid_out);
+            assert!(maker.swap(id, &escrow).await.unwrap().unwrap().paid_out);
         }
     }
 }

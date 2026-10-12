@@ -29,7 +29,7 @@ use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_primitives::transaction::builder::BundlePadding;
 use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
-use zcash_protocol::value::Zatoshis;
+use zcash_protocol::value::{BalanceError, Zatoshis};
 use zcash_protocol::{ShieldedPool, TxId};
 use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
 
@@ -58,6 +58,8 @@ pub struct Wallet {
     network: Network,
     blocks: MemoryBlockCache,
     confirmations: ConfirmationsPolicy,
+    /// Whether lightwalletd was found to serve the wallet's network.
+    server_checked: bool,
 }
 
 impl Wallet {
@@ -72,6 +74,7 @@ impl Wallet {
             network,
             blocks: MemoryBlockCache::default(),
             confirmations: ConfirmationsPolicy::default(),
+            server_checked: false,
         })
     }
 
@@ -87,6 +90,14 @@ impl Wallet {
         self.network
     }
 
+    async fn check_server(&mut self, client: &mut Lightwalletd) -> Result<(), Error> {
+        if !self.server_checked {
+            lightwalletd::check_network(client, self.network.network_type()).await?;
+            self.server_checked = true;
+        }
+        Ok(())
+    }
+
     /// Scans every tracked account up to the chain tip.
     pub async fn sync(&mut self, client: &mut Lightwalletd) -> Result<(), Error> {
         // Without an account there is no birthday to start from, and the wallet would scan
@@ -95,6 +106,7 @@ impl Wallet {
         if self.db.get_account_ids()?.is_empty() {
             return Ok(());
         }
+        self.check_server(client).await?;
         let tip = lightwalletd::chain_tip(client).await?;
         if self.born_above(tip)? {
             return Ok(());
@@ -123,6 +135,7 @@ impl Wallet {
                 return Ok(account);
             }
         }
+        self.check_server(client).await?;
         let encoded = joint.ufvk(self.network.network_type());
         let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
         let birthday = Self::birthday_at_tip(client).await?;
@@ -147,6 +160,7 @@ impl Wallet {
                 return Ok(account);
             }
         }
+        self.check_server(client).await?;
         let encoded = joint.ufvk(self.network.network_type());
         let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
         let birthday = if let Some(height) = from_height {
@@ -174,6 +188,7 @@ impl Wallet {
         seed: &[u8],
         name: &str,
     ) -> Result<(AccountUuid, UnifiedSpendingKey), Error> {
+        self.check_server(client).await?;
         let birthday = Self::birthday_at_tip(client).await?;
         Ok(self
             .db
@@ -367,6 +382,7 @@ impl Wallet {
     /// Sends a stored transaction to the network. Sending one again is harmless.
     #[tracing::instrument(skip_all, fields(transaction_hash = %txid, chain = "zcash", operation = "broadcast"), err(level = "warn"))]
     pub async fn broadcast(&mut self, client: &mut Lightwalletd, txid: TxId) -> Result<(), Error> {
+        self.check_server(client).await?;
         let tx = self
             .db
             .get_transaction(txid)?
@@ -383,6 +399,16 @@ impl Wallet {
             "Zcash submission verified; awaiting mining"
         );
         Ok(())
+    }
+
+    /// The fee a stored transaction paid; none for one not stored, or with transparent inputs,
+    /// whose values the transaction doesn't carry.
+    pub fn fee(&self, txid: TxId) -> Result<Option<u64>, Error> {
+        Ok(self
+            .db
+            .get_transaction(txid)?
+            .and_then(|tx| tx.fee_paid(|_| Ok::<_, BalanceError>(None)).ok().flatten())
+            .map(u64::from))
     }
 
     pub fn is_mined(&self, txid: TxId) -> Result<bool, Error> {
