@@ -32,7 +32,9 @@ relayer's runs low on ETH ([October 12 alerts](#october-12-relayer-and-gas-alert
 UTC their sends pay the gas price quotes and fees charge
 ([October 12 gas](#october-12-sends-at-the-quoted-gas-price)), and since 08:31 UTC each watches
 its own account's ETH, read when one of its sends ends and on a timer only while it is low
-([October 12 gas alerts](#october-12-gas-alerts-on-sends)).
+([October 12 gas alerts](#october-12-gas-alerts-on-sends)). Since 09:09 UTC a claim or payout
+posted again never sends a second transaction or answers `500`, and the gateway lets ten accepts in
+at a time ([October 12 concurrent swaps](#october-12-concurrent-swaps)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -535,6 +537,34 @@ Rollback files are in `/var/backups/zecswap/20261012-gas-on-sends-c1b865c` (root
 `maker-config.toml`, `relayer-config.toml`, `maker.sqlite`, `railgun-sends.sqlite` and
 `previous-current`. Restore both configs, since the older binaries refuse the new `[gas_alerts]`,
 point `/opt/zecswap/current` back at the previous release, and restart the maker and relayer.
+
+## October 12 concurrent swaps
+
+At 09:09 UTC the relayer restarted on a build of `36a3c1a` in
+`/opt/zecswap/releases/20261012-concurrent-swaps-36a3c1a`, now `/opt/zecswap/current`, and nginx
+reloaded the gateway config of the same commit; the maker is `c1b865c`'s and the issuer `0d4cdb3`'s,
+byte for byte, and neither restarted. Fifteen swaps at once had shown the way. Clients whose claims
+timed out, while every payout queued behind one stuck in the pool, posted their payouts again, and
+the relayer sent second ones, which reverted or failed their simulation, and answered `500`. Now a
+swap's requests take turns and run to their end whether or not their clients still wait, and a
+swap's claim, payout, ready, refund and refund payout each go out once: a repeat while the first
+may still land answers `503`, and once it has, `200` with no transactions. A relayer that restarts
+sends none of them from an account whose earlier sends aren't mined. `zecswap-cli` of this commit
+follows a relayer request that timed out on the chain and posts it again, and waits out the
+gateway's `503`. The gateway gives quotes and accepts zones of their own and lets ten accepts in at
+a time ([Operating the deployment](#operating-the-deployment)).
+
+The deploy checked that the Droplet ran `20261012-gas-on-sends-c1b865c`, the staged checksums and
+the installed site's, and that nginx took the new site on its own, backed up the site and the
+relayer's journal, and after the restart saw the maker's info and the relayer's terms through
+nginx, and a quote and an accept each reach the maker through its own zone. No error since the
+restart. [sepolia-concurrent-swaps.json](../deployments/sepolia-concurrent-swaps.json) records the
+checksums.
+
+Rollback files are in `/var/backups/zecswap/20261012-concurrent-swaps-36a3c1a` (root-only):
+`nginx-site`, `railgun-sends.sqlite` and `previous-current`. Restore the site with `cp -a` and
+reload nginx, point `/opt/zecswap/current` back at the previous release and restart the relayer;
+its journal didn't change.
 
 ## Deployment sequence
 
