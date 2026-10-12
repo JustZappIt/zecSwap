@@ -117,7 +117,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   Each kind of send has its own account (`lanes.rs`): claims and refunds; locks and readies;
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
-  `top_up_transactions` (8) of their largest transactions at the gas price now, every 30 s. The
+  `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
+  now (on Sepolia hundreds of times the gas price), every 30 s. The
   monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
   the account that signed them, so older journal entries still resolve. Still open: sending
   without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared
