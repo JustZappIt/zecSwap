@@ -99,6 +99,14 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Sends pay the gas price quotes charge (2026-10-11): every send through `Settlement`
+  (`submit`, `send_eth`, `deploy`) tips what the node suggests (`eth_maxPriorityFeePerGas`, the
+  tip in `eth_gasPrice`, at which the maker's network cost and the relayer's fees are priced),
+  under a cap of twice the next block's base fee (`evm::fees`, which `max_fee_per_gas` and the
+  lanes' floats follow). alloy's gas filler tipped the median of the last ten blocks'
+  20th-percentile tips: Sepolia's bots tip a flat gwei, so it flipped between 0.001 and 1 gwei
+  (1 gwei half the time), and swaps whose quotes charged $0.001 of gas paid up to $0.95 for an
+  open and $3.09 for a refund payout. Railgun sends and fundings already paid `eth_gasPrice`.
 - Review fixes and the network switch (2026-10-11): calldata wallets post (`railgun/transact`,
   `reverse/fund` and its inner calls) must be its call's canonical ABI encoding, lengths capped,
   before anything is decoded (`evm/canonical.rs`): alloy follows offsets anywhere, so shared
@@ -119,7 +127,7 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
   `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
-  now (on Sepolia hundreds of times the gas price), every 30 s. The
+  now (the base fee twice over and the tip), every 30 s. The
   monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
   the account that signed them, so older journal entries still resolve. Still open: sending
   without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared

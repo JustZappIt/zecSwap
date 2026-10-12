@@ -12,6 +12,7 @@ use alloy::contract::{CallBuilder, CallDecoder};
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::{Ethereum, EthereumWallet, TransactionBuilder};
 use alloy::primitives::keccak256;
+use alloy::providers::utils::{EIP1559_BASE_FEE_MULTIPLIER, Eip1559Estimation};
 use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
@@ -878,19 +879,16 @@ impl Settlement {
         Ok(())
     }
 
-    /// What gas costs now, in wei.
+    /// What gas costs now, in wei: the base fee and the tip the node suggests, the tip every send
+    /// pays, so what quotes and fees charge at this price covers their sends.
     pub async fn gas_price(&self) -> Result<u128, Error> {
         self.provider.get_gas_price().await.map_err(Error::contract)
     }
 
     /// The fee cap a send is filled with now: the ETH it must hold for each gas it may burn,
-    /// which can be many times the gas price.
+    /// the base fee twice over and the tip.
     pub async fn max_fee_per_gas(&self) -> Result<u128, Error> {
-        self.provider
-            .estimate_eip1559_fees()
-            .await
-            .map(|fees| fees.max_fee_per_gas)
-            .map_err(Error::contract)
+        Ok(fees(&self.provider).await?.max_fee_per_gas)
     }
 
     pub async fn eth_balance(&self, owner: Address) -> Result<U256, Error> {
@@ -909,11 +907,7 @@ impl Settlement {
             .with_from(account)
             .with_to(to)
             .with_value(wei);
-        let pending = self
-            .provider
-            .send_transaction(tx)
-            .await
-            .map_err(Error::contract)?;
+        let pending = send_at_fees(&self.provider, tx).await?;
         Ok(confirmed(pending).await?.transaction_hash)
     }
 
@@ -931,19 +925,19 @@ impl Settlement {
             let failed = match call.estimate_gas().await {
                 Ok(_) => {
                     let _sending = self.sending.lock().await;
-                    match call.send().await {
+                    match send_at_fees(&self.provider, call.as_ref().clone()).await {
                         Ok(pending) => return confirmed(pending).await,
                         Err(e) => e,
                     }
                 }
-                Err(e) => e,
+                Err(e) => Error::contract(e),
             };
             // Usually an estimate made on a node that hasn't seen the transaction this one
             // depends on. If an earlier attempt did reach the network, the repeat is
             // harmless: swap moves revert, and token moves stay within this account's own.
             if attempts == SEND_ATTEMPTS {
                 warn!(attempt = attempts, outcome = "send_failed", error = %failed, "transaction submission failed");
-                return Err(Error::contract(failed));
+                return Err(failed);
             }
             warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %failed, "RPC rejected transaction submission");
             attempts += 1;
@@ -960,14 +954,44 @@ pub async fn deploy(
 ) -> Result<Address, Error> {
     let provider = signing_provider(rpc_url, Some(EthereumWallet::from(signer)))?;
     let tx = TransactionRequest::default().with_deploy_code(init_code);
-    let pending = provider
-        .send_transaction(tx)
-        .await
-        .map_err(Error::contract)?;
-    confirmed(pending)
+    confirmed(send_at_fees(&provider, tx).await?)
         .await?
         .contract_address
         .ok_or_else(|| Error::Contract("deployment created no contract".into()))
+}
+
+/// Sends `tx` from a signing provider, at the fees every send pays now.
+async fn send_at_fees(
+    provider: &DynProvider,
+    tx: TransactionRequest,
+) -> Result<PendingTransactionBuilder<Ethereum>, Error> {
+    let fees = fees(provider).await?;
+    let tx = tx
+        .with_max_fee_per_gas(fees.max_fee_per_gas)
+        .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
+    provider.send_transaction(tx).await.map_err(Error::contract)
+}
+
+/// The tip the node suggests, the one its gas price is made of, under a cap of the next block's
+/// base fee twice over: quotes and fees charge that gas price. alloy's own estimate tips the
+/// median of recent blocks' tips, which on Sepolia, where bots tip a flat gwei, ran to a
+/// thousand times the node's.
+async fn fees(provider: &DynProvider) -> Result<Eip1559Estimation, Error> {
+    let history = provider
+        .get_fee_history(1, BlockNumberOrTag::Latest, &[])
+        .await
+        .map_err(Error::contract)?;
+    let base_fee = history
+        .next_block_base_fee()
+        .ok_or_else(|| Error::Contract("the node reports no base fee".into()))?;
+    let tip = provider
+        .get_max_priority_fee_per_gas()
+        .await
+        .map_err(Error::contract)?;
+    Ok(Eip1559Estimation {
+        max_fee_per_gas: base_fee * EIP1559_BASE_FEE_MULTIPLIER + tip,
+        max_priority_fee_per_gas: tip,
+    })
 }
 
 fn signing_provider(rpc_url: &str, wallet: Option<EthereumWallet>) -> Result<DynProvider, Error> {

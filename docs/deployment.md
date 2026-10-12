@@ -835,6 +835,13 @@ price as well: quotes pause while ETH's price or the gas price can't be read, as
 Measure the gas on the chain served, from the dashboard's costs by operation: Sepolia reprices
 new state, so its budgets overstate Ethereum's.
 
+The sends pay that gas price. The maker's and the relayer's contract calls tip what the node
+suggests, the tip its gas price is made of, under a cap of twice the next block's base fee on
+top; Railgun sends and fundings pay the gas price itself, or their proof's minimum if higher.
+alloy's own estimate tips the median of the last ten blocks' tips instead: Sepolia's bots tip a
+flat gwei, so it ran to a thousand times what quotes charged, and a ZEC to USDC swap whose quote
+charged $0.001 of gas paid $0.95 to open its escrow.
+
 The relayer's fees follow gas the same way. With `providers` at the top of its config, a
 payout's fee is the larger of `fee` and `fee_gas` (the claim lock, the claim and the payout:
 1.65M on Sepolia) at the gas price and ETH price when it is quoted, `fee_margin_bps` on top;
