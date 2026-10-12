@@ -23,9 +23,11 @@ zecswap-tokens = { path = "../zecswap-tokens" }
 zeroize.workspace = true
 
 [dev-dependencies]
+alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 axum = "0.8"
 hex = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 zecswap-issuer = { path = "../zecswap-issuer" }
+zecswap-relayer = { path = "../zecswap-relayer" }
 zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }

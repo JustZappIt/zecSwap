@@ -153,14 +153,15 @@ async fn deposit(ctx: &mut Session, run: &mut Run, joint: &JointAccount) -> Resu
 
 async fn claim(ctx: &mut Session, user: &User, run: &mut Run) -> Result<()> {
     let paid = user.claim(&run.swap).await?;
-    match (paid.tx, user.settlement().account()) {
-        (None, _) => println!("claimed; nothing was left to pay"),
-        (Some(tx), Some(account)) => println!("claimed; paid {} to {account} in {tx}", paid.amount),
-        (Some(tx), None) => println!(
-            "claimed; shielded {} into {} in {tx}",
-            paid.amount,
-            user.railgun().address()
-        ),
+    let to = match user.settlement().account() {
+        Some(account) => format!("paid {} to {account}", paid.amount),
+        None => format!("shielded {} into {}", paid.amount, user.railgun().address()),
+    };
+    // A request that timed out may have paid, in a transaction no answer named.
+    match (paid.amount, paid.tx) {
+        (0, _) => println!("claimed; nothing was left to pay"),
+        (_, Some(tx)) => println!("claimed; {to} in {tx}"),
+        (_, None) => println!("claimed; {to}"),
     }
     finish(ctx, run)
 }

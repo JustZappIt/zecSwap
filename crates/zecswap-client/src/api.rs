@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use reqwest::StatusCode;
-use reqwest::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use reqwest::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
@@ -15,6 +15,46 @@ use crate::tokens::Tokens;
 
 /// Accepting waits for the maker's `open` to land, and a relayed claim for two transactions.
 const TIMEOUT: Duration = Duration::from_secs(180);
+/// The most a request waits in all on `503`s asking it to come back: the gateway's, past an
+/// allowance, before the request reaches the service.
+const BUSY_PATIENCE: Duration = Duration::from_secs(90);
+/// The longest `Retry-After` waited for: one asking longer is an outage, not a queue.
+const BUSY_WAIT: Duration = Duration::from_secs(30);
+
+/// A service's answer other than success.
+#[derive(Debug)]
+pub struct ServiceError {
+    pub service: &'static str,
+    pub status: StatusCode,
+    pub body: String,
+}
+
+impl ServiceError {
+    /// Whether the service turned the request down, sending nothing: a `5xx`, or no answer at
+    /// all, may follow a send.
+    pub fn refused(&self) -> bool {
+        self.status.is_client_error()
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} answered {}: {}",
+            self.service, self.status, self.body
+        )
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+/// Whether `error` is a service's refusal, after which nothing it was asked for was sent.
+pub(crate) fn refused(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ServiceError>()
+        .is_some_and(ServiceError::refused)
+}
 
 /// A maker's quote API. Nothing it says is trusted until the contract agrees.
 #[derive(Clone)]
@@ -123,6 +163,14 @@ pub enum Broadcast {
 impl RelayerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("relayer", url).map(Self)
+    }
+
+    /// Gives each request `timeout` to answer, rather than three minutes.
+    pub fn with_timeout(self, timeout: Duration) -> Result<Self> {
+        Ok(Self(Endpoint {
+            http: reqwest::Client::builder().timeout(timeout).build()?,
+            ..self.0
+        }))
     }
 
     /// Submit a persisted, locally proved funding transaction. Returned hashes are pending;
@@ -257,7 +305,7 @@ impl Endpoint {
     /// Posts an accept: asked for a token, it pays with one and asks for it back.
     async fn accept(&self, path: &str, swap_id: B256, acceptance: &Acceptance) -> Result<Accepted> {
         let url = format!("{}{path}", self.url);
-        let mut response = self.http.post(&url).json(acceptance).send().await?;
+        let mut response = self.send(|| self.http.post(&url).json(acceptance)).await?;
         if let Some(tokens) = &self.tokens {
             // A token the maker refuses, spent after all or no longer good, gives way to the
             // next.
@@ -273,12 +321,14 @@ impl Endpoint {
                     token_request: Some(payment.request.clone()),
                     ..acceptance.clone()
                 };
+                let authorization = payment.token.authorization();
                 let sent = self
-                    .http
-                    .post(&url)
-                    .header(AUTHORIZATION, payment.token.authorization())
-                    .json(&paid)
-                    .send()
+                    .send(|| {
+                        self.http
+                            .post(&url)
+                            .header(AUTHORIZATION, &authorization)
+                            .json(&paid)
+                    })
                     .await;
                 let status = sent.as_ref().ok().map(reqwest::Response::status);
                 tokens.settle(swap_id, payment, status);
@@ -295,8 +345,8 @@ impl Endpoint {
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.read(self.http.get(format!("{}{path}", self.url)).send().await?)
-            .await
+        let url = format!("{}{path}", self.url);
+        self.read(self.send(|| self.http.get(&url)).await?).await
     }
 
     async fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
@@ -310,37 +360,129 @@ impl Endpoint {
         body: &impl Serialize,
         ticket: Option<&str>,
     ) -> Result<T> {
-        let mut request = self.http.post(format!("{}{path}", self.url)).json(body);
-        if let Some(ticket) = ticket {
-            request = request.header(TICKET_HEADER, ticket);
+        let url = format!("{}{path}", self.url);
+        let request = || {
+            let request = self.http.post(&url).json(body);
+            match ticket {
+                Some(ticket) => request.header(TICKET_HEADER, ticket),
+                None => request,
+            }
+        };
+        self.read(self.send(request).await?).await
+    }
+
+    /// Sends what `request` builds, and again while the answer is a `503` asking to come back
+    /// shortly: given before the request reaches the service, so sending it again sends nothing
+    /// twice.
+    async fn send(
+        &self,
+        request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        let mut waited = Duration::ZERO;
+        loop {
+            let response = request().send().await?;
+            let wait = (response.status() == StatusCode::SERVICE_UNAVAILABLE)
+                .then(|| retry_after(&response))
+                .flatten()
+                .filter(|wait| *wait <= BUSY_WAIT && waited + *wait <= BUSY_PATIENCE);
+            let Some(wait) = wait else {
+                return Ok(response);
+            };
+            waited += wait;
+            tokio::time::sleep(wait).await;
         }
-        self.read(request.send().await?).await
     }
 
     async fn read<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
         let status = response.status();
         if status.is_success() {
-            Ok(response.json().await?)
-        } else {
-            bail!(
-                "{} answered {status}: {}",
-                self.name,
-                response.text().await?
-            )
+            return Ok(response.json().await?);
         }
+        Err(ServiceError {
+            service: self.name,
+            status,
+            body: response.text().await?,
+        }
+        .into())
     }
+}
+
+/// The wait a `Retry-After` of delay-seconds asks for; an HTTP date asks none this client keeps.
+fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+    let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
+    seconds.trim().parse().ok().map(Duration::from_secs)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use axum::Router;
     use axum::http::HeaderMap;
-    use axum::routing::post;
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use zecswap_api::service::MakerInfo;
 
     use super::*;
     use crate::tokens::tests::serve;
+
+    /// A maker behind a gateway that answers `busy` first, each a `503` with its `Retry-After`
+    /// if any: the requests it saw, and how one for its info ended.
+    async fn info_through(busy: &[Option<&'static str>]) -> (usize, Result<MakerInfo>) {
+        let busy = Arc::new(Mutex::new(busy.iter().copied().collect::<VecDeque<_>>()));
+        let seen = Arc::new(Mutex::new(0));
+        let answer = {
+            let seen = seen.clone();
+            move || async move {
+                *seen.lock().unwrap() += 1;
+                let Some(retry_after) = busy.lock().unwrap().pop_front() else {
+                    return axum::Json(MakerInfo {
+                        api_version: 1,
+                        maker: Address::repeat_byte(1),
+                        chain_id: 11_155_111,
+                        contract: Address::repeat_byte(2),
+                        token: Address::repeat_byte(3),
+                        zcash_network: zecswap_api::Network::Testnet,
+                        reverse_enabled: false,
+                        token_return_key: None,
+                    })
+                    .into_response();
+                };
+                let mut headers = HeaderMap::new();
+                if let Some(seconds) = retry_after {
+                    headers.insert(RETRY_AFTER, seconds.parse().unwrap());
+                }
+                (StatusCode::SERVICE_UNAVAILABLE, headers, "busy").into_response()
+            }
+        };
+        let maker =
+            MakerApi::new(serve(Router::new().route("/v1/info", get(answer))).await).unwrap();
+        let info = maker.info().await;
+        let seen = *seen.lock().unwrap();
+        (seen, info)
+    }
+
+    #[tokio::test]
+    async fn a_busy_gateway_is_waited_out_as_it_asks() {
+        let started = std::time::Instant::now();
+        let (seen, info) = info_through(&[Some("1"), Some("1")]).await;
+        assert_eq!(info.unwrap().chain_id, 11_155_111);
+        assert_eq!(seen, 3);
+        assert!(started.elapsed() >= Duration::from_secs(2));
+
+        // A 503 asking no wait, or one too long, is the service's answer.
+        for busy in [None, Some("3600"), Some("Wed, 21 Oct 2026 07:28:00 GMT")] {
+            let started = std::time::Instant::now();
+            let (seen, info) = info_through(&[busy]).await;
+            let error = info.unwrap_err();
+            let answer = error.downcast_ref::<ServiceError>().unwrap();
+            assert_eq!(answer.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(!answer.refused(), "a 503 may follow a send");
+            assert_eq!(seen, 1, "{busy:?}");
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+    }
 
     #[tokio::test]
     async fn a_request_for_a_swap_carries_its_ticket() {
