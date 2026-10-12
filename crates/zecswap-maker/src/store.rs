@@ -296,6 +296,18 @@ impl Store {
         Ok(())
     }
 
+    /// When a swap of either direction was accepted, if it was since accept times were kept.
+    pub(crate) fn accepted_at(&self, id: B256) -> Result<Option<u64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT at FROM swap_accepted WHERE id = ?1",
+                [id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn record_sweep(&self, id: &B256, txid: TxId) -> Result<()> {
         self.conn().execute(
             "UPDATE swaps SET sweep_txid = ?2 WHERE id = ?1",

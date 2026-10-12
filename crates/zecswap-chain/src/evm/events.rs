@@ -30,23 +30,6 @@ impl SwapEventKind {
             Self::Refunded => "refunded",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Opened => "Escrow opened / funded",
-            Self::Ready => "Ready to claim",
-            Self::ClaimLocked => "Claim lock",
-            Self::Claimed => "Escrow claimed",
-            Self::PaidOut => "Railgun payout",
-            Self::Rescued => "Railgun payout recovery",
-            Self::RefundLocked => "Refund lock",
-            Self::Refunded => "Escrow refunded",
-        }
-    }
-
-    pub fn notify(self) -> bool {
-        !matches!(self, Self::Ready | Self::ClaimLocked | Self::RefundLocked)
-    }
 }
 
 #[derive(Clone, Debug)]

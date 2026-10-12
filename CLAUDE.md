@@ -155,6 +155,15 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   reason, never a device; relayed transactions by outcome and their gas, read after the reply.
   All three share one gateway allowance; Alloy ships the issuer's journal. The dashboard pins
   the contract in Vercel's `BRIDGE_TESTNET_CONTRACT`: update it with every contract redeploy.
+- Telegram alerts (2026-10-11): the maker sends a swap two messages, when it is accepted and
+  when it ends (completed; refunded; cancelled, no ZEC arrived; expired), each with its
+  direction, amounts, time, the swap id's first eight hex digits (the dashboard's search finds
+  them) and one link: the settling transaction on Etherscan, else the dashboard. Otherwise only
+  a rescued Railgun payout, `[gas_alerts]` low and recovered, and an error that has lasted five
+  minutes (`LASTING_ERROR`, timed in memory) send anything: no deposit, confirmation or sweep
+  messages, no contract, maker address or block numbers. `TELEGRAM_BOT_TOKEN` and
+  `TELEGRAM_CHAT_ID` switch it on per network's maker; the hosted testnet shares the onramp gas
+  monitor's bot and chat and has no `[gas_alerts]` yet. The relayer sends none.
 - PR #8 review (2026-10-06), each fix with a test that fails without it:
   - Contract: a reverse escrow's id is `reverseSwapId` (`keccak256(abi.encode(user, makerKey,
     true))`), never a forward id, so a maker can't open a user's verified forward swap as a

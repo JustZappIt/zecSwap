@@ -16,14 +16,16 @@ fn transition(account: &GasAlertAccount, balance: U256) -> Option<bool> {
     }
 }
 
+/// Ether to six decimals, cut rather than rounded so a balance never reads higher than it is.
 fn eth(wei: U256) -> String {
-    let base = U256::from(1_000_000_000_000_000_000u64);
-    let fraction = format!("{:018}", wei % base);
+    let micro = wei / U256::from(1_000_000_000_000u64);
+    let base = U256::from(1_000_000u64);
+    let fraction = format!("{:06}", micro % base);
     let fraction = fraction.trim_end_matches('0');
     if fraction.is_empty() {
-        (wei / base).to_string()
+        (micro / base).to_string()
     } else {
-        format!("{}.{fraction}", wei / base)
+        format!("{}.{fraction}", micro / base)
     }
 }
 
@@ -57,29 +59,23 @@ impl Maker {
                 let Some(low) = transition(account, balance) else {
                     continue;
                 };
-                let scope = format!(
-                    "{}:{}:gas:{}",
-                    self.alert_network(),
-                    self.chain_id,
-                    account.address
-                );
-                let state = if low { "LOW GAS" } else { "GAS RECOVERED" };
-                let text = format!(
-                    "Zapp bridge · {}\n{state}: {}\nAccount: {}\nBalance: {} ETH\nLow threshold: {} ETH\nRecovery threshold: {} ETH\nEVM chain: {}\n{}\nhttps://zapp-dashboard-seven.vercel.app/bridge?network={}",
-                    self.alert_network().to_uppercase(),
-                    account.label,
-                    account.address,
-                    eth(balance),
-                    eth(U256::from(account.low_wei)),
-                    eth(U256::from(account.recovery_wei)),
-                    self.chain_id,
-                    if low {
-                        "Top up this address with native ETH on the listed chain. Gas is separate from token/private USD balances."
-                    } else {
-                        "The configured gas reserve has been restored. This does not guarantee every transaction's fee."
-                    },
-                    self.alert_network()
-                );
+                let network = self.alert_network();
+                let scope = format!("{network}:{}:gas:{}", self.chain_id, account.address);
+                let text = if low {
+                    format!(
+                        "ZecSwap {network} · gas low: {}\n{} ETH, under {} ETH\n{}",
+                        account.label,
+                        eth(balance),
+                        eth(U256::from(account.low_wei)),
+                        account.address
+                    )
+                } else {
+                    format!(
+                        "ZecSwap {network} · gas topped up: {}\n{} ETH",
+                        account.label,
+                        eth(balance)
+                    )
+                };
                 match self.store.gas_notification(
                     &scope,
                     low,
@@ -118,19 +114,17 @@ mod tests {
     }
 
     #[test]
-    fn uses_hysteresis_and_exact_wei_without_rounding() {
+    fn uses_hysteresis_and_never_rounds_a_balance_up() {
         let account = account();
         assert_eq!(transition(&account, U256::from(9)), Some(true));
         assert_eq!(transition(&account, U256::from(10)), None);
         assert_eq!(transition(&account, U256::from(14)), None);
         assert_eq!(transition(&account, U256::from(15)), Some(false));
         assert_eq!(transition(&account, U256::MAX), Some(false));
-        assert_eq!(eth(U256::from(1)), "0.000000000000000001");
-        assert_eq!(
-            eth(U256::from(7_925_991_455_494_601u64)),
-            "0.007925991455494601"
-        );
+        assert_eq!(eth(U256::from(1)), "0");
+        assert_eq!(eth(U256::from(7_925_991_455_494_601u64)), "0.007925");
         assert_eq!(eth(U256::from(1_000_000_000_000_000_000u64)), "1");
+        assert_eq!(eth(U256::from(20_500_000_000_000_000_000u128)), "20.5");
     }
 
     #[test]
