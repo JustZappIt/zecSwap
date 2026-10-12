@@ -1199,10 +1199,19 @@ async fn fees(provider: &DynProvider) -> Result<Eip1559Estimation, Error> {
         .get_max_priority_fee_per_gas()
         .await
         .map_err(Error::contract)?;
-    Ok(Eip1559Estimation {
+    Ok(eip1559(base_fee, tip))
+}
+
+/// The least a send tips. Ethereum's nodes suggest no tip at all when blocks are quiet, and on
+/// 2026-10-12 a mainnet claim sent so, its share already public, waited 6m41s to be mined.
+const MIN_TIP_WEI: u128 = 20_000_000;
+
+fn eip1559(base_fee: u128, suggested_tip: u128) -> Eip1559Estimation {
+    let tip = suggested_tip.max(MIN_TIP_WEI);
+    Eip1559Estimation {
         max_fee_per_gas: base_fee * EIP1559_BASE_FEE_MULTIPLIER + tip,
         max_priority_fee_per_gas: tip,
-    })
+    }
 }
 
 fn signing_provider(
@@ -1473,6 +1482,17 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn sends_tip_at_least_the_floor_and_whatever_more_the_node_suggests() {
+        let base = 116_000_000;
+        let quiet = eip1559(base, 0);
+        assert_eq!(quiet.max_priority_fee_per_gas, MIN_TIP_WEI);
+        assert_eq!(quiet.max_fee_per_gas, 2 * base + MIN_TIP_WEI);
+        let busy = eip1559(base, 2_000_000_000);
+        assert_eq!(busy.max_priority_fee_per_gas, 2_000_000_000);
+        assert_eq!(busy.max_fee_per_gas, 2 * base + 2_000_000_000);
     }
 
     #[test]
