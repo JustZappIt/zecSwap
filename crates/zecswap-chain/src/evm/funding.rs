@@ -356,7 +356,7 @@ impl Settlement {
                 .saturating_add(estimate / 5)
                 .min(policy.max_gas_limit),
         );
-        let _sending = self.sending.lock().await;
+        let _sending = self.sending.turn().await;
         let pending = self.provider.send_transaction(tx).await
             .map_err(|_| Error::Contract("funding submission outcome unknown; reconcile escrow before retrying the same proof".into()))?;
         let hash = *pending.tx_hash();

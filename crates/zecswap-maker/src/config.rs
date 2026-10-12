@@ -42,9 +42,9 @@ pub struct Config {
     pub timing: Timing,
     #[serde(default)]
     pub reverse: Option<ReverseConfig>,
-    /// Optional native-gas alerts using the existing Telegram delivery queue.
+    /// Telegram messages when the maker's own account runs low on ETH and once it is topped up.
     #[serde(default)]
-    pub gas_alerts: Option<GasAlerts>,
+    pub gas_alerts: Option<zecswap_alerts::GasAlerts>,
     /// The most swaps, of both directions, waiting on their users to pay in at once: past it,
     /// accepts are refused, so spam can tie up only so much inventory and gas. No limit if absent.
     #[serde(default)]
@@ -53,56 +53,6 @@ pub struct Config {
     /// the issuer gives it tokens, without the maker learning which device asked.
     #[serde(default)]
     pub tokens: Option<zecswap_tokens::server::Config>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GasAlerts {
-    pub interval_seconds: u64,
-    pub accounts: Vec<GasAlertAccount>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GasAlertAccount {
-    pub label: String,
-    pub address: Address,
-    pub low_wei: u64,
-    pub recovery_wei: u64,
-}
-
-impl GasAlerts {
-    pub fn check(&self) -> Result<()> {
-        anyhow::ensure!(
-            (60..=3600).contains(&self.interval_seconds),
-            "gas alert interval must be 60..3600 seconds"
-        );
-        anyhow::ensure!(
-            !self.accounts.is_empty() && self.accounts.len() <= 8,
-            "gas alerts require 1..8 accounts"
-        );
-        let mut seen = std::collections::HashSet::new();
-        for account in &self.accounts {
-            anyhow::ensure!(
-                !account.label.is_empty()
-                    && account.label.len() <= 40
-                    && account
-                        .label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b" -_".contains(&b)),
-                "invalid gas alert account label"
-            );
-            anyhow::ensure!(
-                !account.address.is_zero() && seen.insert(account.address),
-                "gas alert addresses must be nonzero and unique"
-            );
-            anyhow::ensure!(
-                account.low_wei > 0 && account.recovery_wei > account.low_wei,
-                "gas recovery threshold must exceed a positive low threshold"
-            );
-        }
-        Ok(())
-    }
 }
 
 fn default_evm_confirmations() -> NonZeroU32 {

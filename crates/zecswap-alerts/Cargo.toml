@@ -1,6 +1,6 @@
 [package]
 name = "zecswap-alerts"
-description = "Telegram alerts for the ZecSwap maker and relayer: the bot's client and a durable queue in each service's SQLite"
+description = "Telegram alerts for the ZecSwap maker and relayer: the bot's client, a durable queue in each service's SQLite, and the gas of the account each sends from"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -14,11 +14,13 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["macros", "time"] }
 tracing = "0.1"
+zecswap-chain = { path = "../zecswap-chain" }
 zeroize.workspace = true
 
 [dev-dependencies]
+alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 axum = "0.8"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }

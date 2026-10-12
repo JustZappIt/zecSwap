@@ -17,7 +17,7 @@ use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider, Provide
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard, Notify};
 use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
@@ -337,7 +337,35 @@ pub struct Settlement {
     account: Option<Address>,
     /// The account's key, for transactions recorded before they are broadcast.
     wallet: Option<EthereumWallet>,
-    sending: Mutex<()>,
+    sending: Line,
+}
+
+/// The account's sends, one at a time. A turn that ends, whether or not its transaction went
+/// out, wakes whoever waits in `Settlement::sent`.
+#[derive(Default)]
+struct Line {
+    turn: Mutex<()>,
+    ended: Notify,
+}
+
+impl Line {
+    async fn turn(&self) -> Turn<'_> {
+        Turn {
+            _turn: self.turn.lock().await,
+            ended: &self.ended,
+        }
+    }
+}
+
+struct Turn<'a> {
+    _turn: MutexGuard<'a, ()>,
+    ended: &'a Notify,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.ended.notify_one();
+    }
 }
 
 impl Settlement {
@@ -371,7 +399,7 @@ impl Settlement {
             provider,
             account,
             wallet,
-            sending: Mutex::new(()),
+            sending: Line::default(),
         }
     }
 
@@ -900,11 +928,18 @@ impl Settlement {
             .map_err(Error::contract)
     }
 
+    /// Waits for a turn to send from this account to end, whether its transaction went out or
+    /// not: only the account's own sends spend its ETH. Turns that end while no one waits wake
+    /// the next wait, once. For one waiter.
+    pub async fn sent(&self) {
+        self.sending.ended.notified().await;
+    }
+
     pub async fn send_eth(&self, to: Address, wei: U256) -> Result<B256, Error> {
         let Some(account) = self.account else {
             return Err(Error::Config("a read-only connection cannot send".into()));
         };
-        let _sending = self.sending.lock().await;
+        let _sending = self.sending.turn().await;
         let tx = TransactionRequest::default()
             .with_from(account)
             .with_to(to)
@@ -926,7 +961,7 @@ impl Settlement {
             // Simulated before its turn, so a call that would fail never holds the line up.
             let failed = match call.estimate_gas().await {
                 Ok(_) => {
-                    let _sending = self.sending.lock().await;
+                    let _sending = self.sending.turn().await;
                     match send_at_fees(&self.provider, call.as_ref().clone()).await {
                         Ok(pending) => return confirmed(pending).await,
                         Err(e) => e,
@@ -1148,6 +1183,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_turn_to_send_wakes_the_wait_for_one_once() {
+        let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
+            eprintln!("skipped: anvil is not installed");
+            return;
+        };
+        let url = anvil.endpoint();
+        let to = Address::repeat_byte(7);
+        let woken = async |settlement: &Settlement| {
+            tokio::time::timeout(Duration::from_millis(300), settlement.sent())
+                .await
+                .is_ok()
+        };
+        let funded = Settlement::connect(
+            &url,
+            Address::ZERO,
+            PrivateKeySigner::from(anvil.keys()[0].clone()),
+        )
+        .unwrap();
+        assert!(!woken(&funded).await, "nothing was sent");
+        funded.send_eth(to, U256::from(1)).await.unwrap();
+        funded.send_eth(to, U256::from(1)).await.unwrap();
+        assert!(woken(&funded).await);
+        assert!(!woken(&funded).await, "two sends wake it once");
+        // An account with no ETH still takes its turn, and fails in it.
+        let empty = Settlement::connect(
+            &url,
+            Address::ZERO,
+            PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap(),
+        )
+        .unwrap();
+        assert!(empty.send_eth(to, U256::from(1)).await.is_err());
+        assert!(woken(&empty).await);
+    }
+
+    #[tokio::test]
     async fn a_call_that_would_fail_never_waits_for_the_line() {
         let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
             eprintln!("skipped: anvil is not installed");
@@ -1192,7 +1262,7 @@ mod tests {
             payout_note: [0; 32],
         };
 
-        let line = settlement.sending.lock().await;
+        let line = settlement.sending.turn().await;
         let refused = tokio::time::timeout(
             Duration::from_secs(30),
             settlement.claim(B256::ZERO, &terms, &share(1)),

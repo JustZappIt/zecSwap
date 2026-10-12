@@ -102,6 +102,7 @@ fn relayer(
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
+            gas_alerts: None,
         },
         account: key.address(),
         domain: Domain {

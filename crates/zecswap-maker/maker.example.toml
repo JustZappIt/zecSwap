@@ -95,13 +95,12 @@ tick = 15
 # return_key = "/etc/zecswap-maker/return-key.pem"
 # spent = "maker-data/spent-tokens.sqlite"
 
-# Telegram messages when an account's ETH on the settlement chain drops under `low_wei`, and again
-# once it is back at `recovery_wei`. List the maker's account and its relayer's.
+# Telegram messages when the maker's own account has under `low_wei` of ETH on the settlement
+# chain, and again once a top-up brings it to `recovery_wei`. Only its own sends spend it, so it
+# is read when the maker starts and after each send, and while it is low every
+# `interval_seconds` (60 to 3600) until it is topped up. The relayer watches its own account
+# with the same section in its config.
 # [gas_alerts]
-# interval_seconds = 300
-#
-# [[gas_alerts.accounts]]
-# label = "Maker"
-# address = "0x..."
 # low_wei = 20000000000000000       # 0.02 ETH
 # recovery_wei = 50000000000000000  # 0.05 ETH
+# interval_seconds = 300

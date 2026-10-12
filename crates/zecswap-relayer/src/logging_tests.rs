@@ -42,6 +42,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
+            gas_alerts: None,
         },
         account: Address::repeat_byte(2),
         domain: Domain {

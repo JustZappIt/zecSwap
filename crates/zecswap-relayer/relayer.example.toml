@@ -8,7 +8,8 @@
 #                         needed when `providers` names alchemy
 #   ZCASH_CMC_KEY         needed when `providers` names coinmarketcap
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  optional, both or neither, with [railgun_sends]: a
-#                         message for each private send and unshield once it mines
+#                         message for each private send and unshield once it mines, and with
+#                         [gas_alerts] when the relayer's own account runs low on ETH
 #
 # On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
 # the public mempool while its lock is held, but it invites griefing.
@@ -46,3 +47,13 @@ top_up_transactions = 8
 # max_gas_price_wei = 20000000000
 # fee = 250000
 # fee_gas = 2300000          # the funding (2.0M on Sepolia) and its ready
+
+# Telegram messages when the relayer's own account (RELAYER_PRIVATE_KEY's, which tops up the
+# others) has under `low_wei` of ETH, and again once a top-up brings it to `recovery_wei`. Only
+# its own sends spend it, so it is read when the relayer starts and after each send, and while it
+# is low every `interval_seconds` (60 to 3600) until it is topped up. Needs [railgun_sends],
+# whose journal queues the messages.
+# [gas_alerts]
+# low_wei = 20000000000000000       # 0.02 ETH
+# recovery_wei = 50000000000000000  # 0.05 ETH
+# interval_seconds = 300

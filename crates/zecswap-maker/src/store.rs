@@ -133,7 +133,6 @@ impl Store {
         }
         conn.execute_batch(reverse::SCHEMA)?;
         conn.execute_batch(zecswap_alerts::SCHEMA)?;
-        conn.execute_batch(notifications::SCHEMA)?;
         conn.execute_batch(transactions::SCHEMA)?;
         conn.execute_batch(flow::SCHEMA)?;
         conn.execute_batch(economics::SCHEMA)?;

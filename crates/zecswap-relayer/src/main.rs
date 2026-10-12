@@ -11,7 +11,8 @@ use zeroize::Zeroizing;
 /// Serves the relayer API. Its key comes from `RELAYER_PRIVATE_KEY`, and with `[railgun_sends]`
 /// its Railgun wallet's 64-byte BIP-39 seed from `RELAYER_RAILGUN_SEED`, in hex: never a config
 /// file, and never the maker's. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, both or neither,
-/// send a message for each Railgun send once it mines.
+/// send a message for each Railgun send once it mines, and with `[gas_alerts]` when the
+/// relayer's own account runs low on ETH and once it is topped up.
 #[derive(Parser)]
 #[command(about = "ZecSwap relayer: sends the transactions of users with no account on the chain")]
 struct Cli {
