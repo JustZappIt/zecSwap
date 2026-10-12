@@ -191,8 +191,8 @@ impl Maker {
         let network = config.network;
         anyhow::ensure!(
             network.ironwood(),
-            "this build's Zcash crates schedule no NU7 on {network}, and swaps use its Ironwood \
-             pool: update them once NU7 is scheduled there"
+            "this build's Zcash crates schedule no NU6.3 on {network}, whose Ironwood pool swaps \
+             use"
         );
         zecswap_core::SweepIntent::recipient(&config.sweep_to, network.zcash_type())
             .context("sweep_to")?;

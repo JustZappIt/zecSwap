@@ -99,10 +99,11 @@ impl Network {
         self.zcash().network_type()
     }
 
-    /// Whether the Zcash crates this build uses schedule NU7 here, whose Ironwood pool swaps use.
+    /// Whether the Zcash crates this build uses schedule NU6.3 here, which brought the Ironwood
+    /// pool swaps use.
     pub fn ironwood(self) -> bool {
         self.zcash()
-            .activation_height(NetworkUpgrade::Nu7)
+            .activation_height(NetworkUpgrade::Nu6_3)
             .is_some()
     }
 
@@ -261,11 +262,11 @@ mod tests {
     }
 
     #[test]
-    fn names_read_back_and_ironwood_is_scheduled_on_testnet() {
+    fn names_read_back_and_ironwood_is_scheduled_on_both() {
         for network in [Network::Testnet, Network::Mainnet] {
             assert_eq!(network.name().parse(), Ok(network));
+            assert!(network.ironwood());
         }
         assert!("main".parse::<Network>().is_err());
-        assert!(Network::Testnet.ironwood());
     }
 }
