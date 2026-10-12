@@ -28,6 +28,13 @@ pub const SCHEMA: &str = "
         next_send_at INTEGER NOT NULL DEFAULT 0
     );
     INSERT OR IGNORE INTO notification_delivery (singleton) VALUES (1);
+    -- Episodes that say so once when they start and once when they end: a low gas balance,
+    -- the maker's lasting errors.
+    CREATE TABLE IF NOT EXISTS notification_failures (
+        scope TEXT PRIMARY KEY,
+        active INTEGER NOT NULL,
+        generation INTEGER NOT NULL
+    );
 ";
 
 pub struct Notification {
@@ -190,7 +197,7 @@ fn retry(
     tx.commit()
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock is after 1970")

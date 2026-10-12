@@ -397,7 +397,7 @@ impl Settlement {
             .saturating_add(estimate / 5)
             .min(policy.max_gas_limit);
         require(afford(gas_limit), "the relayer is low on ETH")?;
-        let _sending = self.sending.lock().await;
+        let _sending = self.sending.turn().await;
         let nonce = self
             .provider
             .get_transaction_count(account)
@@ -512,7 +512,7 @@ impl Settlement {
         let account = self
             .account
             .ok_or_else(|| Error::Config("a read-only connection cannot send".into()))?;
-        let _sending = self.sending.lock().await;
+        let _sending = self.sending.turn().await;
         let next = self
             .provider
             .get_transaction_count(account)
@@ -702,7 +702,7 @@ pub(super) mod tests {
             settlement.send_transact(&policy, &transact, move |_, _| covered, |_| Ok(()))
         };
 
-        let line = settlement.sending.lock().await;
+        let line = settlement.sending.turn().await;
         let refused = tokio::time::timeout(Duration::from_secs(10), send(false)).await;
         assert!(
             matches!(

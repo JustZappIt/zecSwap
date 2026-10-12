@@ -28,6 +28,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
             fee_gas: 0,
         }),
         railgun_sends: None,
+        gas_alerts: None,
     };
     Relayer {
         funding: config.funding_policy(account, 11_155_111).unwrap(),

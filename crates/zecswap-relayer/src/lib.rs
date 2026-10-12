@@ -91,6 +91,10 @@ pub struct Config {
     /// their broadcaster, on whichever chain the contract is. Needs `RELAYER_RAILGUN_SEED`.
     #[serde(default)]
     pub railgun_sends: Option<RailgunSendsConfig>,
+    /// Telegram messages when the relayer's own account runs low on ETH and once it is topped
+    /// up; queued in the `railgun_sends` journal.
+    #[serde(default)]
+    pub gas_alerts: Option<zecswap_alerts::GasAlerts>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -278,6 +282,13 @@ impl Relayer {
             config.top_up_transactions > 0,
             "top_up_transactions must be positive"
         );
+        if let Some(alerts) = &config.gas_alerts {
+            alerts.check()?;
+            ensure!(
+                config.railgun_sends.is_some(),
+                "gas_alerts queue their messages in the railgun_sends journal"
+            );
+        }
         let lanes = Lanes::connect(&config.evm_rpc, config.contract, &key)?;
         let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
         let domain = Domain {
@@ -421,6 +432,13 @@ impl Relayer {
                     .as_ref()
                     .map(|sends| sends.policy.fee.to_string()),
             },
+            gas_alerts: self.config.gas_alerts.as_ref().map(|alerts| {
+                let enabled = self
+                    .sends
+                    .as_ref()
+                    .is_some_and(|sends| sends.telegram.enabled());
+                alerts.status(enabled, "Relayer", self.account)
+            }),
         })
     }
 

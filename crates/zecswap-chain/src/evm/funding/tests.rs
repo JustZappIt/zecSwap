@@ -345,7 +345,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
     let mut invalid = relay.clone();
     invalid._transactions[0].proof.a.x = U256::ZERO;
     let invalid = validate(&p, d, id, &invalid).unwrap();
-    let line = chain.sending.lock().await;
+    let line = chain.sending.turn().await;
     let refused = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         chain.sponsor_reverse_funding(&p, &invalid),

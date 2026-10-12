@@ -39,7 +39,7 @@ pub(crate) struct Sends {
     pub(crate) policy: SendPolicy,
     pub(crate) keys: Keys,
     journal: Journal,
-    telegram: Telegram,
+    pub(crate) telegram: Telegram,
     /// One send at a time, so a post repeated while the first runs finds it recorded.
     one_at_a_time: tokio::sync::Mutex<()>,
     /// When each long-unmined send's receipt was last looked for.
@@ -218,12 +218,28 @@ pub struct SendRecord {
 }
 
 impl Relayer {
-    /// Delivers the sends' Telegram messages, where alerts are on, for as long as the relayer
-    /// runs.
+    /// Delivers the relayer's Telegram messages, where alerts are on, for as long as it runs,
+    /// and with `[gas_alerts]` watches the ETH of its own account.
     pub async fn run_alerts(self: Arc<Self>) {
-        if let Some(sends) = &self.sends {
-            zecswap_alerts::run(&sends.journal.0, &sends.telegram).await;
-        }
+        let Some(sends) = &self.sends else {
+            return;
+        };
+        let gas = async {
+            if let Some(alerts) = &self.config.gas_alerts
+                && sends.telegram.enabled()
+            {
+                zecswap_alerts::gas::watch(
+                    &sends.journal.0,
+                    &self.settlement,
+                    alerts,
+                    "Relayer",
+                    self.config.network.name(),
+                    self.domain.chain_id,
+                )
+                .await;
+            }
+        };
+        tokio::join!(zecswap_alerts::run(&sends.journal.0, &sends.telegram), gas);
     }
 
     /// Records each send's receipt once it has mined and values its gas and fee, a bounded

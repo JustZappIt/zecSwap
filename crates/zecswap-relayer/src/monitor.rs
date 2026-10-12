@@ -69,6 +69,7 @@ pub struct MonitorSnapshot {
     fees: Fees,
     operations: BTreeMap<&'static str, OperationSnapshot>,
     last_failure: Option<Failure>,
+    gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
 }
 
 #[derive(Serialize)]
@@ -98,6 +99,7 @@ pub(crate) struct Deployment {
     pub(crate) token: Address,
     pub(crate) maker: Address,
     pub(crate) fees: Fees,
+    pub(crate) gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
 }
 
 impl Monitor {
@@ -183,6 +185,7 @@ impl Monitor {
                 })
                 .collect(),
             last_failure: state.last_failure,
+            gas_alerts: deployment.gas_alerts,
         }
     }
 }

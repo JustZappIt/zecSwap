@@ -80,6 +80,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,
+        gas_alerts: None,
     };
     let relayer_for = |config: Config| Relayer {
         config,

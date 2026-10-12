@@ -1,12 +1,14 @@
 //! Telegram alerts for the maker and the relayer: the bot's client, a durable queue of messages
-//! in each service's own SQLite database (`outbox`), and how the messages write amounts, times
-//! and transactions.
+//! in each service's own SQLite database (`outbox`), the gas of the account each sends from
+//! (`gas`), and how the messages write amounts, times and transactions.
 
+pub mod gas;
 mod outbox;
 mod telegram;
 
 use alloy_primitives::B256;
 
+pub use gas::{GasAlerts, GasAlertsStatus};
 pub use outbox::{
     Notification, NotificationStatus, SCHEMA, deliver, delivered, insert, run, status,
 };

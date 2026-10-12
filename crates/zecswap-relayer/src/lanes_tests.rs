@@ -32,6 +32,7 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
                 max_gas_price_wei: 50_000_000_000,
                 journal: "unused.sqlite".into(),
             }),
+            gas_alerts: None,
         },
         account: key.address(),
         domain: Domain {

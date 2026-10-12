@@ -757,28 +757,24 @@ lightwalletd sends nothing. The errors are a swap the watchtower cannot advance,
 panicking watchtower passes, and a failing Zcash sync. Protect `maker.sqlite` backups since
 they also contain public swap alert text.
 
-`[gas_alerts]` in the maker's configuration reads up to eight accounts' ETH on the settlement
-chain every `interval_seconds` (60 to 3600). It sends one message when an account drops under
-`low_wei`, with its balance and address, and one when it is back at `recovery_wei` or more; a
-first healthy reading sends nothing. Each network's maker lists its own account and its
-relayer's:
+`[gas_alerts]` watches the ETH of the account its service sends from: in the maker's
+configuration the maker's own, in the relayer's the relayer's own (`RELAYER_PRIVATE_KEY`'s, which
+tops up its other sending accounts; it needs `[railgun_sends]`, whose journal queues the
+messages). Only an account's own sends spend its ETH, so it is read when the service starts and
+each time one of its sends finishes, mined or failed, and not otherwise. It sends one message
+when the account drops under `low_wei`, with its balance and address, and one when it is back at
+`recovery_wei` or more; a first healthy reading sends nothing. A top-up comes from elsewhere and
+shows in none of its sends, so while the account is low it is also read every `interval_seconds`
+(60 to 3600) until it is topped up. Both services take the same section:
 
 ```toml
 [gas_alerts]
-interval_seconds = 300
-
-[[gas_alerts.accounts]]
-label = "Maker"
-address = "0x…"
 low_wei = 20000000000000000       # 0.02 ETH
 recovery_wei = 50000000000000000  # 0.05 ETH
-
-[[gas_alerts.accounts]]
-label = "Relayer"
-address = "0x…"
-low_wei = 20000000000000000
-recovery_wei = 50000000000000000
+interval_seconds = 300
 ```
+
+Each monitor's `gasAlerts` names the account it watches.
 
 `GET /v1/monitor` includes `notifications`: enabled state, pending count, oldest
 pending time, last acknowledged delivery time, and a sanitized delivery error.
@@ -786,8 +782,8 @@ It never includes the bot token or destination ID. The dashboard displays this a
 the Telegram alerts health check. Mainnet uses the same code: deploy its own maker
 with separate configuration/data. The bot/destination environment pair is its switch: give
 the mainnet maker and relayer the pair (the testnet's chat will do, since every message names
-its network and links its own chain's explorer and dashboard), and the maker a `[gas_alerts]`
-listing mainnet's accounts, then run `telegram-test`; without the pair neither sends anything.
+its network and links its own chain's explorer and dashboard), and each a `[gas_alerts]` for
+its own account, then run `telegram-test`; without the pair neither sends anything.
 Deduplication IDs include the deployment.
 
 Ethereum transaction references are indexed from the configured settlement contract's

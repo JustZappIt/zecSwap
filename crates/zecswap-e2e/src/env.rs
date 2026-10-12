@@ -778,6 +778,7 @@ async fn start_relayer(
             max_gas_price_wei: SEND_MAX_GAS_PRICE,
             journal: settings.work_dir.join(journal),
         }),
+        gas_alerts: None,
     };
     let railgun = sends.map(|(seed, _)| zecswap_railgun::Keys::from_seed(seed, 0));
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);

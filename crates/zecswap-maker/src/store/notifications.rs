@@ -7,15 +7,6 @@ use zecswap_alerts::{Notification, NotificationStatus};
 
 use super::Store;
 
-/// The maker's failure and gas episodes; the queue itself is `zecswap_alerts::SCHEMA`.
-pub(super) const SCHEMA: &str = "
-    CREATE TABLE IF NOT EXISTS notification_failures (
-        scope TEXT PRIMARY KEY,
-        active INTEGER NOT NULL,
-        generation INTEGER NOT NULL
-    );
-";
-
 impl Store {
     /// The database the alert queue is in, for its delivery.
     pub(crate) fn outbox(&self) -> &Mutex<Connection> {
@@ -51,42 +42,6 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
-    }
-
-    /// Persist a low/recovered episode and its message together. Repeated readings
-    /// and process restarts do not duplicate alerts; an initial healthy reading is silent.
-    pub(crate) fn gas_notification(
-        &self,
-        scope: &str,
-        low: bool,
-        mut event: Notification,
-    ) -> Result<bool> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        let generation: Option<u64> = if low {
-            tx.query_row(
-                "INSERT INTO notification_failures (scope, active, generation) VALUES (?1, 1, 1)
-                 ON CONFLICT(scope) DO UPDATE SET active = 1, generation = generation + 1
-                 WHERE active = 0 RETURNING generation",
-                [scope],
-                |row| row.get(0),
-            )
-            .optional()?
-        } else {
-            tx.query_row(
-                "UPDATE notification_failures SET active = 0 WHERE scope = ?1 AND active = 1 RETURNING generation",
-                [scope], |row| row.get(0),
-            ).optional()?
-        };
-        if let Some(generation) = generation {
-            event.key = format!(
-                "{scope}:{}:{generation}",
-                if low { "low" } else { "recovered" }
-            );
-            insert(&tx, Some(&event))?;
-        }
-        tx.commit()?;
-        Ok(generation.is_some())
     }
 
     pub(crate) fn notification_delivered(&self, key: &str) -> Result<bool> {

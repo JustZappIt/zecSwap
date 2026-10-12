@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::Serialize;
 use zecswap_api::server::MonitorToken;
 use zecswap_api::service::MakerInfo;
-use zecswap_chain::evm::{Address, B256};
+use zecswap_chain::evm::B256;
 use zecswap_chain::zcash::{AccountUuid, Funds, Wallet};
 
 use super::{Maker, unix_now};
@@ -59,7 +59,7 @@ pub(crate) struct MonitorSnapshot {
     notifications: crate::store::NotificationStatus,
     transactions: crate::store::TransactionStatus,
     zcash_flow: crate::store::FlowStatus,
-    gas_alerts: Option<GasAlerts>,
+    gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
     tokens: Option<Tokens>,
     policy: Policy,
     swaps: Vec<MonitorSwap>,
@@ -91,23 +91,6 @@ struct Inventory {
     zec_available_zat: Option<String>,
     zec_in_flight_zat: Option<String>,
     wallet_busy: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GasAlerts {
-    enabled: bool,
-    interval_seconds: u64,
-    accounts: Vec<GasAlertAccount>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GasAlertAccount {
-    label: String,
-    address: Address,
-    low_wei: String,
-    recovery_wei: String,
 }
 
 #[derive(Serialize)]
@@ -241,20 +224,11 @@ impl Maker {
                 zec_in_flight_zat: in_flight.map(|value| value.to_string()),
                 wallet_busy,
             },
-            gas_alerts: self.config.gas_alerts.as_ref().map(|alerts| GasAlerts {
-                enabled: self.telegram.enabled(),
-                interval_seconds: alerts.interval_seconds,
-                accounts: alerts
-                    .accounts
-                    .iter()
-                    .map(|account| GasAlertAccount {
-                        label: account.label.clone(),
-                        address: account.address,
-                        low_wei: account.low_wei.to_string(),
-                        recovery_wei: account.recovery_wei.to_string(),
-                    })
-                    .collect(),
-            }),
+            gas_alerts: self
+                .config
+                .gas_alerts
+                .as_ref()
+                .map(|alerts| alerts.status(self.telegram.enabled(), "Maker", self.account)),
             tokens,
             policy: Policy {
                 price_per_zec: pricing.price_per_zec.clone().unwrap_or_else(|| "0".into()),
