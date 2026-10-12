@@ -653,7 +653,8 @@ instead, so a flood of one kind never refuses another:
 | --- | --- |
 | A swap's relayer requests (fundings, locks, claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
 | The same requests without one | 2 a second shared; up to 20 more wait their turn |
-| Starting swaps: quotes and accepts | 2 a second, bursts of 20 |
+| Quotes | 2 a second, bursts of 30 |
+| Accepts | 10 at a time; 2 a second, bursts of 20 |
 | Private Railgun sends and withdrawals: `railgun/transact` | 2 a second, bursts of 20 |
 | The issuer's challenges and tokens | 2 a second, bursts of 20 |
 | Reverse swap status, which reads the chain on every request | 2 a second, bursts of 20 |
@@ -666,6 +667,13 @@ small allowance while apps that send none are about; once every app sends ticket
 allowance nginx answers `503` with `Retry-After` and the gateway's `unavailable` error, which
 clients take as a passing failure; the services' own `503`s pass through unchanged. It never
 answers `429`, which from the issuer means a device's tokens for the day are spent.
+`zecswap-cli` waits such a `503` out and sends the request again, for 90 seconds in all.
+
+A quote reserves nothing: it costs the maker two chain reads and a row. An accept spends the
+maker's gas on its `open` and answers once the open lands, and the maker's opens queue one a
+block, so ten accepts at a time finish within the three minutes a client waits for one; past
+them, an accept is turned away at the gateway before it costs anything, its quote still good.
+An accept paid with a token is posted twice, the first answered with the token's challenge.
 
 Keep the maker seed, root secret, and both databases together in protected backups. A disk
 on the VPS is persistent storage, not an off-host backup. Restoring an old snapshot also
