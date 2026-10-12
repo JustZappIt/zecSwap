@@ -2,6 +2,9 @@
 //   node vectors.cjs > ../tests/engine-vectors.json
 const {
   wallet,
+  transactOutput,
+  receiveOutput,
+  OutputType,
   deriveNodes,
   Mnemonic,
   decryptRandom,
@@ -56,7 +59,34 @@ async function main() {
     });
   }
 
-  process.stdout.write(`${JSON.stringify({ engine: '9.8.0', wallets, notes }, null, 2)}\n`);
+  // Transaction outputs from the third wallet to the first two: a broadcaster fee with the
+  // sender hidden and no memo, as the wallet SDK writes fees, and a transfer showing its sender
+  // with a memo, which the GCM tag covers too.
+  const outputs = [];
+  const sends = [
+    { receiver: 0, value: 250000n, outputType: OutputType.BroadcasterFee, senderRandom: hex(Buffer.alloc(15, 0x5a)).slice(2) },
+    { receiver: 1, value: 1234567n, outputType: OutputType.Transfer, memoText: 'zecswap vectors' },
+  ];
+  for (const [n, send] of sends.entries()) {
+    const receiver = wallets[send.receiver];
+    const random = hex(Buffer.alloc(16, 0x21 * (n + 1)));
+    const output = await transactOutput(wallets[2], receiver, { ...send, random, token: USDC_SEPOLIA });
+    const read = await receiveOutput(receiver, output);
+    if (read.value !== send.value || read.hash !== output.note.hash) {
+      throw new Error('the engine cannot read its own output');
+    }
+    outputs.push({
+      receiver: send.receiver,
+      commitment: word(output.note.hash),
+      token: `0x${read.tokenHash.replace(/^0x/, '').padStart(64, '0')}`,
+      value: send.value.toString(),
+      ciphertext: output.ciphertext,
+      blindedSenderViewingKey: output.blindedSenderViewingKey,
+      memo: output.memo,
+    });
+  }
+
+  process.stdout.write(`${JSON.stringify({ engine: '9.8.0', wallets, notes, outputs }, null, 2)}\n`);
 }
 
 main().catch((error) => {

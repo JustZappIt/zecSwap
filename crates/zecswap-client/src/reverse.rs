@@ -3,12 +3,11 @@ use anyhow::{Context, Result, ensure};
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::reverse::{Authorization, Quote, QuoteRequest, Refund};
-use zecswap_api::{Acceptance, relayer};
-use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, swap_id};
+use zecswap_api::{Acceptance, Network, relayer};
+use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, reverse_swap_id};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Wallet};
 use zecswap_core::{
-    Domain, JointAccount, NetworkType, Payout, SpendKey, SwapContext, UserSwapKeys,
-    derive_user_keys,
+    Domain, JointAccount, Payout, SpendKey, SwapContext, Terms, UserSwapKeys, derive_user_keys,
 };
 use zecswap_railgun::Keys as RailgunKeys;
 use zeroize::Zeroizing;
@@ -24,6 +23,9 @@ pub struct ReverseSwap {
     pub index: u32,
     pub quote: Quote,
     pub swap_id: B256,
+    /// The ticket the maker answered the accept with, once accepted.
+    #[serde(default)]
+    pub ticket: Option<String>,
 }
 
 /// A user with a wallet seed, which its swaps' keys derive from, refunded into the Railgun wallet
@@ -31,7 +33,7 @@ pub struct ReverseSwap {
 pub struct ReverseUser {
     seed: Zeroizing<Vec<u8>>,
     railgun: RailgunKeys,
-    network: NetworkType,
+    network: Network,
     settlement: Settlement,
     maker: MakerApi,
     relayer: RelayerApi,
@@ -44,7 +46,7 @@ impl ReverseUser {
     pub fn new(
         seed: &[u8],
         railgun_seed: &[u8],
-        network: NetworkType,
+        network: Network,
         settlement: Settlement,
         maker: MakerApi,
         relayer: RelayerApi,
@@ -65,6 +67,11 @@ impl ReverseUser {
 
     /// Persist this result and the spent index before accepting or funding it.
     pub async fn quote(&self, index: u32, units: u32) -> Result<ReverseSwap> {
+        let (chain_id, railgun) = (
+            self.settlement.chain_id().await?,
+            self.settlement.railgun().await?,
+        );
+        self.network.check(chain_id, railgun, self.token)?;
         let keys = self.keys(index)?;
         let note = self.railgun.note(&keys.note_entropy)?;
         let quote = self
@@ -76,15 +83,17 @@ impl ReverseUser {
             })
             .await?;
         let swap = ReverseSwap {
-            swap_id: swap_id(keys.auth.address().into(), &quote.terms.maker_share),
+            swap_id: reverse_swap_id(keys.auth.address().into(), &quote.terms.maker_share),
             quote,
             index,
+            ticket: None,
         };
         self.verify_quote(&swap).await?;
         Ok(swap)
     }
 
-    pub async fn accept(&self, swap: &ReverseSwap) -> Result<()> {
+    /// Persist `swap` again once accepted: it then holds the swap's ticket.
+    pub async fn accept(&self, swap: &mut ReverseSwap) -> Result<()> {
         self.verify_quote(swap).await?;
         let keys = self.keys(swap.index)?;
         let acceptance = Acceptance {
@@ -99,16 +108,24 @@ impl ReverseUser {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
+            token_request: None,
         };
+        let quote_id = swap.quote.terms.quote_id;
+        let accepted = self
+            .maker
+            .accept_reverse(quote_id, swap.swap_id, &acceptance)
+            .await?;
         ensure!(
-            self.maker
-                .accept_reverse(swap.quote.terms.quote_id, &acceptance)
-                .await?
-                .swap_id
-                == swap.swap_id,
+            accepted.swap_id == swap.swap_id,
             "maker reported a different reverse swap"
         );
+        swap.ticket = Some(accepted.ticket);
         Ok(())
+    }
+
+    /// As `User::collect_token`: the token handed back once the escrow is funded.
+    pub async fn collect_token(&self, swap: &ReverseSwap) -> Result<bool> {
+        self.maker.collect_reverse_token(swap.swap_id).await
     }
 
     /// Import before funding and persist the account/birthday so an interrupted scan resumes.
@@ -132,7 +149,10 @@ impl ReverseUser {
     pub async fn funding_calls(&self, swap: &ReverseSwap) -> Result<[(Address, Vec<u8>); 2]> {
         self.verify_quote(swap).await?;
         ensure!(
-            self.settlement.swap(swap.swap_id).await?.is_none(),
+            self.settlement
+                .swap(swap.swap_id, &self.terms(swap)?)
+                .await?
+                .is_none(),
             "reverse escrow already exists"
         );
         let now = self.settlement.now().await?;
@@ -188,20 +208,26 @@ impl ReverseUser {
             .auth
             .sign(&self.domain(swap).ready(&swap.swap_id, deadline));
         self.relayer
-            .ready_reverse(&Authorization {
-                swap_id: swap.swap_id,
-                deadline,
-                signature: signature.into(),
-            })
+            .ready_reverse(
+                &Authorization {
+                    swap_id: swap.swap_id,
+                    terms: (&self.terms(swap)?).into(),
+                    deadline,
+                    signature: signature.into(),
+                },
+                swap.ticket.as_deref(),
+            )
             .await?;
         Ok(())
     }
 
+    /// The escrow as the chain has it; an error unless it holds the quoted terms and refunds
+    /// to the quoted note.
     pub async fn state(&self, swap: &ReverseSwap) -> Result<OnChainSwap> {
         self.verify_quote(swap).await?;
         let chain = self
             .settlement
-            .swap(swap.swap_id)
+            .swap(swap.swap_id, &self.terms(swap)?)
             .await?
             .context("reverse escrow is not on-chain")?;
         let funding = self
@@ -209,21 +235,17 @@ impl ReverseUser {
             .reverse_funding(swap.swap_id)
             .await?
             .context("not a reverse escrow")?;
-        let keys = self.keys(swap.index)?;
         ensure!(
-            chain.maker == swap.quote.user
-                && chain.user == swap.quote.terms.maker
-                && chain.maker_share == keys.share.public()
-                && chain.user_share == swap.quote.terms.maker_share
-                && chain.token == self.token
-                && chain.amount == swap.quote.terms.amount
-                && chain.t0 == swap.quote.ready_deadline
-                && chain.t1 == swap.quote.refund_after
-                && chain.payout_note.is_none()
-                && funding.refund_note == swap.quote.refund_note,
-            "reverse escrow differs from the quote"
+            funding.refund_note == swap.quote.refund_note,
+            "reverse escrow refunds to another note"
         );
         Ok(chain)
+    }
+
+    /// What `openReverse` commits the escrow to, from the quote and our share.
+    pub fn terms(&self, swap: &ReverseSwap) -> Result<Terms> {
+        let keys = self.keys(swap.index)?;
+        Ok(swap.quote.open(keys.share.public()).terms())
     }
 
     pub async fn receive_key(&self, swap: &ReverseSwap) -> Result<SpendKey> {
@@ -264,8 +286,10 @@ impl ReverseUser {
         );
         let keys = self.keys(swap.index)?;
         let note = self.railgun.note(&keys.note_entropy)?;
+        let escrow = zecswap_api::Terms::from(&self.terms(swap)?);
         let payout = relayer::Payout {
             swap_id: swap.swap_id,
+            terms: escrow.clone(),
             note: (&note).into(),
             fee: terms.fee,
             signature: keys
@@ -278,21 +302,27 @@ impl ReverseUser {
                 .into(),
         };
         if chain.stage == Stage::Refunded {
-            self.relayer.reverse_refund_payout(&payout).await?;
+            self.relayer
+                .reverse_refund_payout(&payout, swap.ticket.as_deref())
+                .await?;
             return Ok(());
         }
         let now = self.settlement.now().await?;
         if chain.refund_lock_until <= now {
             let deadline = now + SIGNATURE_TTL;
             self.relayer
-                .lock_reverse_refund(&Authorization {
-                    swap_id: swap.swap_id,
-                    deadline,
-                    signature: keys
-                        .auth
-                        .sign(&self.domain(swap).lock_refund(&swap.swap_id, deadline))
-                        .into(),
-                })
+                .lock_reverse_refund(
+                    &Authorization {
+                        swap_id: swap.swap_id,
+                        terms: escrow,
+                        deadline,
+                        signature: keys
+                            .auth
+                            .sign(&self.domain(swap).lock_refund(&swap.swap_id, deadline))
+                            .into(),
+                    },
+                    swap.ticket.as_deref(),
+                )
                 .await?;
             return Ok(());
         }
@@ -301,11 +331,15 @@ impl ReverseUser {
             "refund lock expires too soon to reveal safely"
         );
         self.relayer
-            .refund_reverse(&Refund {
-                swap_id: swap.swap_id,
-                secret: keys.share.to_be_bytes().into(),
-                payout,
-            })
+            .refund_reverse(
+                &Refund {
+                    swap_id: swap.swap_id,
+                    terms: escrow,
+                    secret: keys.share.to_be_bytes().into(),
+                    payout,
+                },
+                swap.ticket.as_deref(),
+            )
             .await?;
         Ok(())
     }
@@ -330,7 +364,7 @@ impl ReverseUser {
             "quote uses another user or refund note"
         );
         ensure!(
-            swap.swap_id == swap_id(quote.user, &quote.terms.maker_share),
+            swap.swap_id == reverse_swap_id(quote.user, &quote.terms.maker_share),
             "wrong reverse swap id"
         );
         ensure!(
@@ -354,7 +388,12 @@ impl ReverseUser {
     }
 
     fn keys(&self, index: u32) -> Result<UserSwapKeys> {
-        Ok(derive_user_keys(&self.seed, self.network, 0, index)?)
+        Ok(derive_user_keys(
+            &self.seed,
+            self.network.zcash_type(),
+            0,
+            index,
+        )?)
     }
     fn domain(&self, swap: &ReverseSwap) -> Domain {
         Domain {

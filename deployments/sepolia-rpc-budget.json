@@ -1,0 +1,28 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T18:31:15Z",
+  "sourceCommit": "c42ac51",
+  "release": "/opt/zecswap/releases/20261012-rpc-budget-c42ac51",
+  "previousRelease": "/opt/zecswap/releases/20261012-concurrent-swaps-36a3c1a",
+  "backup": "/var/backups/zecswap/20261012-rpc-budget-c42ac51",
+  "makerSha256": "1cff05066e30724ea8fb4e76d8d4a1275f494859427930ad36519b04ccda79b5",
+  "relayerSha256": "f35ef7ecd1db7caa6781169a0d3d109a336f6838d06b918afb9261699cc93d2f",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "rpc": "eth-sepolia.g.alchemy.com, key f6773aad (since 17:53 UTC; key 3956e467 hit its account's monthly cap at 13:48 UTC)",
+  "changes": {
+    "maker": "each pass reads every swap it watches in one Multicall3 call, the block number once, and never again a swap whose claim or refund a finalized block holds; with nothing to read, one eth_chainId; sweeps and reverse status use the passes' reads; the observer reads each block once, the newest twelve again every 2 or 10 minutes, every 15 s while swaps are live and 90 s otherwise; RAILGUN read once, inventory for quotes every 30 s, the quotes' gas price once a minute; RPC endpoint logged at start, requests and compute units hourly, `rpc` in the monitor",
+    "relayer": "lane balances in one call, after each lane's send and every 2 minutes; the fees' gas price once a minute; RPC endpoint logged at start, requests and compute units hourly, `rpc` in the monitor",
+    "issuer": "0d4cdb3's binary, byte for byte; not restarted",
+    "config": "none"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "stagedChecksums": "matched before install",
+    "backups": "both configs, maker.sqlite and railgun-sends.sqlite, copied with both services stopped",
+    "started": "18:31:15 UTC, both logging `settlement RPC endpoint=eth-sepolia.g.alchemy.com, key f6773aad`",
+    "health": "maker /healthz 204 directly and through the public gateway; maker info and relayer terms through the gateway; dashboard checks all healthy",
+    "rpc": "the maker's first pass found the 42 swaps settled that day finalized and reads none since; its first 153 s after a later restart took 32 requests (620 compute units, most at startup) against 8.7 requests and about 180 compute units a second before; the relayer 30 requests (542) in 365 s",
+    "errorsAfterStart": 0
+  }
+}

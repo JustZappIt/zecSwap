@@ -35,6 +35,7 @@ contract SwapHandler is Test {
     uint256 internal nextKey;
 
     bytes32[] public ids;
+    mapping(bytes32 => ZecSwap.Terms) internal termsOf;
     mapping(bytes32 => Secrets) internal secrets;
     mapping(bytes32 => ZecSwap.Stage) internal settledAs;
 
@@ -76,43 +77,46 @@ contract SwapHandler is Test {
         uint64 t0 = uint64(block.timestamp + bound(t0Delay, 1, 2 hours));
         uint64 t1 = uint64(t0 + bound(window, 1, 4 hours));
         bytes32 note = shielded ? swaps.noteCommitment(npkOf(z.k), cipherOf(z.k)) : bytes32(0);
+        ZecSwap.Terms memory t = ZecSwap.Terms(
+            maker, address(usdc), amount, [e.x, e.y], [z.x, z.y], shielded ? auth : user, t0, t1, note
+        );
 
         vm.prank(maker);
-        bytes32 id =
-            swaps.open(address(usdc), amount, [e.x, e.y], [z.x, z.y], shielded ? auth : user, t0, t1, note);
+        bytes32 id = swaps.open(t.token, t.amount, t.makerKey, t.userKey, t.user, t.t0, t.t1, t.payoutNote);
         ids.push(id);
+        termsOf[id] = t;
         secrets[id] = Secrets(e.k, z.k);
         lockedAmount += amount;
     }
 
     function ready(uint256 i) external {
-        (bytes32 id,) = pick(i);
+        (bytes32 id,, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
         vm.prank(maker);
-        try swaps.ready(id) {} catch {}
+        try swaps.ready(id, t) {} catch {}
         observe(id);
     }
 
     function lockClaim(uint256 i) external {
-        (bytes32 id, ZecSwap.Swap memory s) = pick(i);
+        (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
         bool claimable =
-            s.stage == ZecSwap.Stage.Ready || (s.stage == ZecSwap.Stage.Open && block.timestamp >= s.t0);
+            s.stage == ZecSwap.Stage.Ready || (s.stage == ZecSwap.Stage.Open && block.timestamp >= t.t0);
         bool locked = block.timestamp < s.claimLockUntil || block.timestamp < s.refundLockUntil;
         bool makersTurn =
             s.claimLockUntil > s.refundLockUntil && block.timestamp < s.claimLockUntil + swaps.LOCK_DURATION();
         bool available = !locked && !makersTurn;
         bool locks;
-        if (s.payoutNote == 0) {
+        if (t.payoutNote == 0) {
             vm.prank(user);
-            try swaps.lockClaim(id) {
+            try swaps.lockClaim(id, t) {
                 locks = true;
             } catch {}
         } else {
             uint64 deadline = uint64(block.timestamp);
             bytes memory sig = sign(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
             vm.prank(relayer);
-            try swaps.lockClaimWithSig(id, deadline, sig) {
+            try swaps.lockClaimWithSig(id, t, deadline, sig) {
                 locks = true;
             } catch {}
         }
@@ -122,22 +126,22 @@ contract SwapHandler is Test {
     }
 
     function lockRefund(uint256 i) external {
-        (bytes32 id,) = pick(i);
+        (bytes32 id,, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
         vm.prank(maker);
-        try swaps.lockRefund(id) {} catch {}
+        try swaps.lockRefund(id, t) {} catch {}
         observe(id);
     }
 
     function claim(uint256 i, bool honest) external {
-        (bytes32 id, ZecSwap.Swap memory s) = pick(i);
+        (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
         bool held = unsettled(s) && block.timestamp < s.claimLockUntil;
         uint256 secret = honest ? secrets[id].user : secrets[id].maker;
-        try swaps.claim(id, secret) {
+        try swaps.claim(id, t, secret) {
             if (!held || !honest) revealWithoutLockSucceeded = true;
-            lockedAmount -= s.amount;
-            if (s.payoutNote != 0) unpaidAmount += s.amount;
+            lockedAmount -= t.amount;
+            if (t.payoutNote != 0) unpaidAmount += t.amount;
         } catch {
             if (held && honest) revealUnderLockFailed = true;
         }
@@ -145,13 +149,13 @@ contract SwapHandler is Test {
     }
 
     function refund(uint256 i, bool honest) external {
-        (bytes32 id, ZecSwap.Swap memory s) = pick(i);
+        (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
         bool held = unsettled(s) && block.timestamp < s.refundLockUntil;
         uint256 secret = honest ? secrets[id].maker : secrets[id].user;
-        try swaps.refund(id, secret) {
+        try swaps.refund(id, t, secret) {
             if (!held || !honest) revealWithoutLockSucceeded = true;
-            lockedAmount -= s.amount;
+            lockedAmount -= t.amount;
         } catch {
             if (held && honest) revealUnderLockFailed = true;
         }
@@ -161,25 +165,25 @@ contract SwapHandler is Test {
     /// A payout to the committed note, or with `honest` false to another, for a fee the user
     /// signed that leaves something to shield.
     function payout(uint256 i, bool honest, uint128 fee) external {
-        (bytes32 id, ZecSwap.Swap memory s) = pick(i);
-        if (id == 0 || s.payoutNote == 0) return;
-        fee = uint128(bound(fee, 0, s.amount - 1));
+        (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
+        if (id == 0 || t.payoutNote == 0) return;
+        fee = uint128(bound(fee, 0, t.amount - 1));
         uint256 z = secrets[id].user;
         bytes32 npk = honest ? npkOf(z) : npkOf(z ^ 1);
         bool payable_ = s.stage == ZecSwap.Stage.Claimed && !s.paidOut;
         uint256 shields = railgun.count();
         bytes memory sig = sign(keccak256(abi.encode(PAYOUT_TYPEHASH, id, relayer, fee)));
         vm.prank(relayer);
-        try swaps.payout(id, npk, cipherOf(z), fee, sig) {
+        try swaps.payout(id, t, npk, cipherOf(z), fee, sig) {
             MockRailgun.Shielded memory note = railgun.last();
-            uint120 value = uint120(s.amount - fee);
+            uint120 value = uint120(t.amount - fee);
             bool toItsNote = honest && payable_ && railgun.count() == shields + 1
                 && note.from == swaps.vaultOf(id) && note.npk == npkOf(z)
                 && note.ciphertextHash == keccak256(abi.encode(cipherOf(z)))
                 && note.value == value - value * railgun.FEE_BPS() / 10_000;
             if (!toItsNote) payoutMissedItsNote = true;
-            unpaidAmount -= s.amount;
-            paidOutAmount += s.amount;
+            unpaidAmount -= t.amount;
+            paidOutAmount += t.amount;
         } catch {
             if (honest && payable_) payoutRefused = true;
         }
@@ -197,10 +201,15 @@ contract SwapHandler is Test {
         return ids.length;
     }
 
-    function pick(uint256 i) internal view returns (bytes32 id, ZecSwap.Swap memory s) {
-        if (ids.length == 0) return (0, s);
+    function pick(uint256 i)
+        internal
+        view
+        returns (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t)
+    {
+        if (ids.length == 0) return (0, s, t);
         id = ids[i % ids.length];
         s = swaps.getSwap(id);
+        t = termsOf[id];
     }
 
     function observe(bytes32 id) internal {

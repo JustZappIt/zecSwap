@@ -1,0 +1,32 @@
+[package]
+name = "zecswap-issuer"
+description = "Signs each genuine device a day's Privacy Pass tokens, blind, for the maker and relayer to spend"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+der = { version = "0.8", features = ["oid"] }
+hex = "0.4"
+pem-rfc7468 = { version = "1", features = ["alloc"] }
+ring = "0.17"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zecswap-api = { path = "../zecswap-api", features = ["server"] }
+zecswap-tokens = { path = "../zecswap-tokens" }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

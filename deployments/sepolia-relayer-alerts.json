@@ -1,0 +1,27 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-12T04:48:38Z",
+  "sourceCommit": "0d4cdb3",
+  "release": "/opt/zecswap/releases/20261012-relayer-alerts-0d4cdb3",
+  "previousRelease": "/opt/zecswap/releases/20261011-lane-float-e4d43fc",
+  "backup": "/var/backups/zecswap/20261012-relayer-alerts-0d4cdb3",
+  "makerSha256": "b976b318b08667e8c64fb748cfe1b90de158a35341e9656b5306c216b42ffb24",
+  "relayerSha256": "8f789e72df87fb76728f5a82d36c860f6be1af3428aac81e3ee6ec0337009e60",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "changes": {
+    "relayer": "a Telegram message for each Railgun private send and unshield it broadcasts, once it mines, queued in its journal with the send's cost",
+    "maker": "its Telegram client and queue moved into the shared zecswap-alerts crate, unchanged",
+    "relayerUnit": "drop-in zecswap-relayer.service.d/telegram.conf: EnvironmentFile=/etc/zecswap-maker/telegram.env",
+    "makerConfig": "[gas_alerts] every 300 s for Maker 0x2bac02B5032e9092493814c705F156B49E288922 and Relayer 0xd9633572041886Fa7584a2E12F36C8C7f1126412: low under 5000000000000000 wei, recovered at 10000000000000000"
+  },
+  "validation": {
+    "preconditionsHeld": true,
+    "makerInfo": "testnet, chain 11155111, through nginx",
+    "relayerTerms": "payout fee 100000 through nginx",
+    "relayerAlerts": "alerts=true in its log; a labeled test message on its queue reached Telegram on the first attempt",
+    "makerMonitor": "gas alerts on for Maker and Relayer; alert queue empty, no error",
+    "gasReadings": "no failed readings; both accounts above 0.005 ETH (0.0118 and 0.0109 before the release), so no message",
+    "errorsAfterStart": 0
+  }
+}

@@ -24,6 +24,17 @@ impl SweepIntent {
         minimum_received: u64,
         maximum_fee: u64,
     ) -> Result<Self, Error> {
+        let intent = Self {
+            recipient: Self::recipient(address, network)?,
+            minimum_received,
+            maximum_fee,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    /// The Orchard receiver a sweep to `address` pays, if it is a unified address on `network`.
+    pub fn recipient(address: &str, network: NetworkType) -> Result<Address, Error> {
         let (actual_network, _, address) = unified::Address::decode(address)
             .map_err(|_| policy("sweep destination must be a unified address"))?;
         // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
@@ -33,7 +44,7 @@ impl SweepIntent {
         if actual_network != network {
             return Err(policy("sweep destination is on another network"));
         }
-        let receiver = address
+        address
             .items()
             .into_iter()
             .find_map(|receiver| match receiver {
@@ -42,14 +53,7 @@ impl SweepIntent {
                 }
                 _ => None,
             })
-            .ok_or_else(|| policy("sweep destination needs an Orchard receiver"))?;
-        let intent = Self {
-            recipient: receiver,
-            minimum_received,
-            maximum_fee,
-        };
-        intent.validate()?;
-        Ok(intent)
+            .ok_or_else(|| policy("sweep destination needs an Orchard receiver"))
     }
 
     fn validate(&self) -> Result<(), Error> {

@@ -93,9 +93,6 @@ object ReverseAtomicSwap {
         intent: SweepIntent,
     ): ByteArray = AtomicSwap.signRefund(key, makerShare, makerSecret, pczt, intent)
 
-    /** Reveal only under an on-chain refund lock with enough time left for inclusion. */
-    fun refundSecret(key: SwapKey): ByteArray = AtomicSwap.claimSecret(key)
-
     private fun signAction(
         key: SwapKey,
         deployment: Deployment,

@@ -13,6 +13,10 @@ pub enum ErrorCode {
     Internal,
     NotFound,
     MethodNotAllowed,
+    /// Spend a token from the issuer the `WWW-Authenticate` challenge names (RFC 9577).
+    TokenRequired,
+    /// A note the transaction spends is spent, or a transaction already sent spends it.
+    AlreadySpent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,13 +24,6 @@ pub enum ErrorCode {
 pub struct ErrorResponse {
     pub code: ErrorCode,
     pub error: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ZcashNetwork {
-    Mainnet,
-    Testnet,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +34,9 @@ pub struct MakerInfo {
     pub chain_id: u64,
     pub contract: Address,
     pub token: Address,
-    pub zcash_network: ZcashNetwork,
+    pub zcash_network: crate::Network,
     pub reverse_enabled: bool,
+    /// Where accepts take tokens, the key the maker hands them back under (base64url SPKI):
+    /// one for everyone, which wallets pin.
+    pub token_return_key: Option<String>,
 }

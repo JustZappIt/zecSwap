@@ -1,0 +1,52 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "makerUrl": "https://zecswap-testnet.pepeman931.workers.dev/maker",
+  "relayerUrl": "https://zecswap-testnet.pepeman931.workers.dev/relayer",
+  "issuerUrl": "https://zecswap-testnet.pepeman931.workers.dev/issuer",
+  "servicesSince": "2026-10-07T19:02:27Z",
+  "servicesSourceCommit": "9b52dfc4897c8f370e07439f072455375008b764",
+  "release": "/opt/zecswap/releases/20261007-tokens-9b52dfc",
+  "previousRelease": "/opt/zecswap/releases/20261007-terms-hash-9459be3",
+  "backup": "/var/backups/zecswap/20261007-tokens-9b52dfc",
+  "makerSha256": "66694f0f87fa7de29b9dd6f2d0148b4678fd6535148fe288d4d9d4fa2e683062",
+  "issuerSha256": "8a99fe8d56a328c382f395eee134613c36df7937b5b7a33a1d9cc53ec5f8574f",
+  "relayerSha256": "da4228a3cf85473590fbe1764cd3f70f0727193ff2792affebed259dce4b6665",
+  "relayer": "unchanged binary from 9459be3, not restarted",
+  "gatewayWorkerVersion": "1e82ab5d-7797-43ef-ba01-e0500a975b27",
+  "tokens": {
+    "issuer": "zecswap-testnet-issuer",
+    "origin": "maker",
+    "tokensPerDay": 3,
+    "attestation": "insecure-test",
+    "issuerTokenKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEAqAp6ClskrSdfUjiFvS2H9eTxKKNxrtVPM-n0n8WCgCj508sXiyQj21W9Dpjki-JYLbYS7xkHaTCuplU7-Kg6EFK_xwFB-BmQZcW9qk1GTYcZAqJ5YmfttMFHMDsdroUq5v6RnQxLRINIh5UIiFgn_516Wp2CcizaU-lwuwP4f8hp-0cLvynQ119pUTIfwgaYhrRaxngHFu0JnQF6l4AK4rhtIt6g7AG_bSSV06cYowKuOVEncE45CaUDOUJbP18MfRSP42HPnWZ0-h6n3_uBYvxHYsKp7KQ5_Hr-QpOafUoXhFANv4mfpk3MUQxo2m7vZZAMaFa9ELsIIiaLkACGhQIDAQAB",
+    "makerReturnKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEA5boFzxSM2UDd-NfwWUnT_lVo23Td6wOH5twYjLo2wLDEWmGKSNBgdZy3t3JC2JkzD8j9rVRdehpll_i3GRKmUq0wr6xkHHuHxswr3TehMUqUrztg-nxDS4U2f0V0yYno3I5YPo2SByOz_-jHNWM6Mlx-TZsWzALQTb3NmRXdynqecz3-8hqd_OPhUJtH7M3pK9ikkUbSzV1ofXkyM6FnaNAGkHZ1kAMEF2pGe69tOJJqGq6wpTuZMtzaaxu9t1C4xoR7R7pbdkjPM_Wxd15LoXa1N26V-PToIeD06VmwX51VjrO_2VHWFat4Rtu7eLPeiEX-5kKsyvCY7EhpkNK1DQIDAQAB",
+    "spent": "/var/lib/zecswap-maker/spent-tokens.sqlite"
+  },
+  "freshMakerStore": "the previous store held no swap and three quotes; it is in the backup",
+  "app": "zapp-android feature/terms-hash b9e77d165 pins both keys",
+  "validation": {
+    "linuxBuildFromCommittedCrates": true,
+    "uploadedBinaryChecksumVerified": true,
+    "nginxConfigurationTest": true,
+    "publicMakerHealth": 204,
+    "publicMakerInfoShowsReturnKey": true,
+    "publicIssuerTokenKey": 200,
+    "unpaidAcceptAnswers401WithTodaysChallenge": 20733,
+    "liveForwardSwap": {
+      "swapId": "0xb709c357367ab633728cf8a413092faebf8384c9ea77f14a92a05090e60a1c96",
+      "tokenFromIssuerOverTor": true,
+      "tokenHandedBackAfterDeposit": true,
+      "statusReadsToCollect": 1,
+      "paidOut": "0xaf7300946a44be8f74a63eb7ca899884c77536b549101b7d32062aec6f4ef087"
+    },
+    "liveReverseSwap": {
+      "swapId": "0x464e937b1f2bc84a47ea3549b4cb34c6d225b1ad0221d6c825c57b086b34e50e",
+      "paidWithAHeldIssuerToken": true,
+      "tokenHandedBackOnceFunded": true,
+      "statusReadsToCollect": 2,
+      "makerClaimed": "0x7fd330d16b24c5665e5a5479cc312b454ed4d4e344cdd4d66f714b05a922748e"
+    },
+    "returnedTokenSpent": false
+  }
+}

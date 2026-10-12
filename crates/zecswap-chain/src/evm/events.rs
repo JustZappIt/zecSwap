@@ -30,23 +30,6 @@ impl SwapEventKind {
             Self::Refunded => "refunded",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Opened => "Escrow opened / funded",
-            Self::Ready => "Ready to claim",
-            Self::ClaimLocked => "Claim lock",
-            Self::Claimed => "Escrow claimed",
-            Self::PaidOut => "Railgun payout",
-            Self::Rescued => "Railgun payout recovery",
-            Self::RefundLocked => "Refund lock",
-            Self::Refunded => "Escrow refunded",
-        }
-    }
-
-    pub fn notify(self) -> bool {
-        !matches!(self, Self::Ready | Self::ClaimLocked | Self::RefundLocked)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +104,17 @@ impl Settlement {
             .map_err(Error::contract)?
             .ok_or_else(|| Error::Contract("block unavailable".into()))?;
         Ok(block.header.timestamp)
+    }
+
+    /// The timestamp of the block `hash` names; none for a block the node doesn't know, such
+    /// as one a reorganisation dropped.
+    pub async fn block_time(&self, hash: B256) -> Result<Option<u64>, Error> {
+        Ok(self
+            .provider
+            .get_block_by_hash(hash)
+            .await
+            .map_err(Error::contract)?
+            .map(|block| block.header.timestamp))
     }
 
     /// Ten-block windows also work with providers that cap log ranges on their free tier.

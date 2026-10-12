@@ -5,7 +5,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-pub(crate) struct Telegram {
+pub struct Telegram {
     credentials: Option<Credentials>,
     client: Client,
     base: String,
@@ -16,7 +16,7 @@ struct Credentials {
     chat: Zeroizing<String>,
 }
 
-pub(crate) struct SendError {
+pub struct SendError {
     pub message: String,
     pub retry_after: Option<u64>,
 }
@@ -48,7 +48,7 @@ struct Parameters {
 }
 
 impl Telegram {
-    pub(crate) fn from_env() -> Result<Self> {
+    pub fn from_env() -> Result<Self> {
         let token = std::env::var("TELEGRAM_BOT_TOKEN").ok().map(Zeroizing::new);
         let chat = std::env::var("TELEGRAM_CHAT_ID").ok().map(Zeroizing::new);
         Self::new(
@@ -57,7 +57,7 @@ impl Telegram {
         )
     }
 
-    pub(crate) fn new(token: Option<&str>, chat: Option<&str>) -> Result<Self> {
+    pub fn new(token: Option<&str>, chat: Option<&str>) -> Result<Self> {
         let credentials = match (token, chat) {
             (None, None) => None,
             (Some(token), Some(chat)) => {
@@ -91,11 +91,11 @@ impl Telegram {
         })
     }
 
-    pub(crate) fn enabled(&self) -> bool {
+    pub fn enabled(&self) -> bool {
         self.credentials.is_some()
     }
 
-    pub(crate) async fn send(&self, text: &str) -> std::result::Result<i64, SendError> {
+    pub async fn send(&self, text: &str) -> std::result::Result<i64, SendError> {
         let credentials = self
             .credentials
             .as_ref()
