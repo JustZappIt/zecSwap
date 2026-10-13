@@ -15,7 +15,8 @@ providers = ["coinmarketcap", "alchemy"]
 fee_margin_bps = 1000
 claim_margin = 300
 # ETH each sending account keeps, in its largest transactions at the fee cap: 0.0044 ETH in all
-# at 0.12 gwei. `drain-lanes` takes it back.
+# at 0.12 gwei, filled only from what the relayer's own account holds beyond as many payouts,
+# and handed back above twice that once gas falls. `drain-lanes` takes it all back.
 top_up_transactions = 2
 
 [reverse_funding]
