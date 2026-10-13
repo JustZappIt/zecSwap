@@ -144,7 +144,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   lanes' floats follow). alloy's gas filler tipped the median of the last ten blocks'
   20th-percentile tips: Sepolia's bots tip a flat gwei, so it flipped between 0.001 and 1 gwei
   (1 gwei half the time), and swaps whose quotes charged $0.001 of gas paid up to $0.95 for an
-  open and $3.09 for a refund payout. Railgun sends and fundings already paid `eth_gasPrice`.
+  open and $3.09 for a refund payout. Railgun sends already paid `eth_gasPrice`. Since
+  2026-10-13 every send tips at least 0.02 gwei (`MIN_TIP_WEI`: mainnet nodes suggest none when
+  blocks are quiet), and fundings pay these fees too, the tip raised to a proof's
+  `minGasPrice` (`funding_fees`): the first mainnet funding, at the bare `eth_gasPrice`, never
+  mined. A funding posted again while the first may still land gets its hash (`fund_once`).
   The maker's ledger credits a sponsored funding's fee to whichever relayer account sent it
   (`evm::paid_to`: the fee goes to the relayer's own account, the funding lane sends it), and
   zapp-dashboard counts the accounts the relayer's monitor names as the relayer's. On the
@@ -159,7 +163,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   allowance (`$zecswap_tickets_required` turns away unticketed ones once apps send tickets).
   `network = "testnet" | "mainnet"` in the maker's, relayer's and issuer's configs
   (`zecswap_api::Network`) fixes the Zcash network, chains, Railgun, USDC and lightwalletd, and
-  each refuses to start on another's; mainnet waits on NU7 in the zcash crates.
+  each refuses to start on another's. Mainnet runs on the pinned crates (Ironwood came with
+  NU6.3), but they schedule NU7 on testnet alone: move to crates that schedule it on mainnet
+  before it activates there (2026-10-12, mainnet beta: `deploy/mainnet/`, `scripts/
+  deploy-contract.sh`, `scripts/mainnet-secrets.sh`; `withdraw-inventory all --to` and the
+  relayer's `drain-lanes --to` take funds out).
 - The relayer's queues (2026-10-11): a request that would fail never holds up another. Every send
   is simulated before it takes its account's turn (`Settlement::submit`, Railgun sends, fundings)
   and retries wait outside it. Locks the contract would refuse are refused untried (`check_lock`),
@@ -169,7 +177,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
   `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
-  now (the base fee twice over and the tip), after each lane's send and every 2 minutes. The
+  now (the base fee twice over and the tip), after each lane's send and every 2 minutes, from
+  what it holds beyond as many payouts (`PAYOUT_GAS`); a lane holding over twice its float hands
+  the rest back while none of its sends is pending (`Settlement::send_eth_above`). On mainnet on
+  2026-10-12 a brief gas spike filled the funding lane to 0.0081 ETH and left the own account
+  0.0002, under a payout's gas, until it fell. The
   monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
   the account that signed them, so older journal entries still resolve. Still open: sending
   without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared
