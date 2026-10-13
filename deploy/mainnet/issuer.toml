@@ -21,6 +21,6 @@ packages = ["xyz.justzappit.zapp"]
 # key signs builds handed out directly; Play re-signs its installs with the app signing key.
 signing_digests = [
     "800c61a4611125fbf0ddc3d1abfe22cff7ead765e84204d6dbe562390802dfd4",
-    "<Play Console's app signing key certificate SHA-256>",
+    "b780758764d7e4abd5838d9e593e9becd5e5649376f01413c3b675bd041e3d83",
 ]
 min_security_level = "trusted-environment"
