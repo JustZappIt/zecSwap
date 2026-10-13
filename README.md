@@ -10,6 +10,19 @@ Running in beta on Ethereum mainnet:
 [`0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D`](https://etherscan.io/address/0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D#code),
 source verified on Etherscan.
 
+## How a swap works
+
+The normal path of a ZEC to USDC swap, start to finish.
+[The full explainer](https://claude.ai/artifact/RY2zKsM5x7Yc1nyBn23gRg) adds the deadlines, the
+locks, what happens when something goes wrong, and the USDC to ZEC direction.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/swap-flow-dark.png">
+  <img alt="Sequence diagram of a ZEC to USDC swap between you (Zapp), Zcash, the Ethereum contract and the maker, in thirteen steps from quote to the maker spending the ZEC" src="docs/images/swap-flow-light.png">
+</picture>
+
+## Layout
+
 | Path | What it is |
 |---|---|
 | `crates/zecswap-core` | Split-key primitives: joint account, proofs of knowledge, seed-derived shares, PCZT signing with `±(e + z)` |
