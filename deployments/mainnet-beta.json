@@ -37,11 +37,11 @@
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "<workers vpc service id>",
   "worker": "zecswap-mainnet",
-  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-tip-0d65f96",
+  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-lanes-cc17701",
   "makerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
-  "relayerSha256": "09e699967d90eefbbc9eca0b4a5d04a4e9d0455219d48fe770d6aa87efda64e0",
+  "relayerSha256": "8130d29b089b19eff65d0033145cdc1df6bdc15908e5d43ba204aea43ec8c9b6",
   "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
-  "inventory": "49932010",
+  "inventory": "136408198",
   "inventoryTransactions": [
     {
       "approve": "0xab7f2ac97f6f230453f41c5aa3e576d1ea69195eaf15ec2b0c648f5a47d91abd",
@@ -50,6 +50,14 @@
     {
       "deposit": "0x546ce8b024d37079160b8d75b39d566681713ae259308da5bdd948cbfcaec6bd",
       "block": 26178696
+    },
+    {
+      "approve": "0xa5bb25fe3decf02f709e1159dfa56fdef7c404adbbad981586eefcb6c7edeb21",
+      "block": 26180861
+    },
+    {
+      "deposit": "0x0b3b3afcdbc33a3afe5da04ebbe76285ab5d4faa1b879ad51f8256573ea25df3",
+      "block": 26180862
     }
   ],
   "limits": {
@@ -83,7 +91,18 @@
     }
   },
   "zcashConfirmations": 2,
-  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-beta-7cc2ffd",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-tip-0d65f96",
   "minTipGwei": 0.02,
-  "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout"
+  "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout",
+  "laneFloats": {
+    "reason": "at 00:11 UTC on 2026-10-13 a brief gas spike topped the funding lane up to 0.0081 ETH and left the relayer's own account 0.000198, under a payout's gas, while the lanes held 0.0173 ETH",
+    "fix": "cc17701: the own account keeps two payouts' gas before topping up any lane, and a lane above twice its float hands the rest back",
+    "takenBackAtStart": {
+      "claims": "907885561880960",
+      "locks": "962157128348500",
+      "sends": "5785255716000000",
+      "funding": "6942684352000000"
+    },
+    "ownAccountAfter": "0.034796 ETH, the owner's 0.02 included"
+  }
 }
