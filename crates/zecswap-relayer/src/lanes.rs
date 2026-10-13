@@ -16,6 +16,9 @@ use crate::{Config, Relayer};
 
 /// A bound on a lock's or claim's gas, Sepolia's repriced state included.
 pub(crate) const SETTLEMENT_GAS: u64 = 1_000_000;
+/// A bound on a payout's gas, the largest send of the relayer's own account: 0.88M on Ethereum,
+/// 1.23M on Sepolia's repriced state.
+pub(crate) const PAYOUT_GAS: u64 = 1_500_000;
 /// Lanes are topped up after each of their sends, which alone spend their ETH, and this often
 /// besides, as the fee cap their float is kept at follows the base fee.
 const TOP_UP_INTERVAL: Duration = Duration::from_secs(120);
@@ -136,10 +139,13 @@ impl Relayer {
         }
     }
 
-    /// Tops up each lane under half of what `top_up_transactions` of its largest transactions
-    /// must hold at the fee cap sends are filled with now. Every balance is read in one call.
+    /// Keeps each lane at what `top_up_transactions` of its largest transactions must hold at
+    /// the fee cap sends are filled with now: tops up one under half of it, from what the
+    /// relayer's own account holds beyond as many payouts, and takes back what one holds beyond
+    /// twice it, filled while gas cost more. Every balance is read in one call.
     pub(crate) async fn top_up(&self) -> anyhow::Result<Vec<(&'static str, U256)>> {
         let fee = U256::from(self.settlement.max_fee_per_gas().await?);
+        let transactions = U256::from(self.config.top_up_transactions);
         let lanes = self.lanes.used(&self.config);
         let mut owners = lanes
             .iter()
@@ -147,27 +153,36 @@ impl Relayer {
             .collect::<anyhow::Result<Vec<_>>>()?;
         owners.push(self.account);
         let mut balances = self.settlement.eth_balances(&owners).await?;
-        let mut own = balances
+        let own = balances
             .pop()
             .context("no balance for the relayer's own account")?;
-        let mut sent = Vec::new();
-        for ((lane, _, gas), (account, balance)) in
+        // Payouts, rescues and refund payouts go from the own account: a lane never takes their ETH.
+        let mut spare = own.saturating_sub(fee * U256::from(PAYOUT_GAS) * transactions);
+        let mut short = Vec::new();
+        for ((lane, settlement, gas), (account, balance)) in
             lanes.into_iter().zip(owners.into_iter().zip(balances))
         {
-            let keep = fee * U256::from(gas) * U256::from(self.config.top_up_transactions);
-            if balance >= keep / U256::from(2) {
-                continue;
+            let keep = fee * U256::from(gas) * transactions;
+            if balance > keep * U256::from(2) {
+                if let Some(amount) = settlement.send_eth_above(self.account, keep).await? {
+                    info!(lane, %account, %amount, "took back a lane's ETH");
+                    spare += amount;
+                }
+            } else if balance < keep / U256::from(2) {
+                short.push((lane, account, keep - balance));
             }
-            let amount = keep - balance;
-            if own < amount {
+        }
+        let mut sent = Vec::new();
+        for (lane, account, amount) in short {
+            if spare < amount {
                 warn!(
                     lane,
-                    "the relayer's own account has too little ETH to top this lane up"
+                    "the relayer's own account has too little ETH beyond its payouts' to top this lane up"
                 );
                 continue;
             }
             self.settlement.send_eth(account, amount).await?;
-            own -= amount;
+            spare -= amount;
             info!(lane, %account, %amount, "topped up a lane");
             sent.push((lane, amount));
         }

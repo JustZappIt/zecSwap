@@ -173,7 +173,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   Railgun sends; fundings, derived from `RELAYER_PRIVATE_KEY`, whose own account still sends what
   users sign for (payouts, rescues, refund payouts) and tops the others up to
   `top_up_transactions` (8) of their largest transactions at the fee cap sends are filled with
-  now (the base fee twice over and the tip), after each lane's send and every 2 minutes. The
+  now (the base fee twice over and the tip), after each lane's send and every 2 minutes, from
+  what it holds beyond as many payouts (`PAYOUT_GAS`); a lane holding over twice its float hands
+  the rest back while none of its sends is pending (`Settlement::send_eth_above`). On mainnet on
+  2026-10-12 a brief gas spike filled the funding lane to 0.0081 ETH and left the own account
+  0.0002, under a payout's gas, until it fell. The
   monitor lists them (`accounts`); the dashboard doesn't read their balances yet. Send fates use
   the account that signed them, so older journal entries still resolve. Still open: sending
   without waiting for receipts, with re-pricing of stuck transactions; the gateway's shared

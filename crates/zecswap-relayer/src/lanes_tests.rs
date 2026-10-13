@@ -6,7 +6,7 @@ use alloy_primitives::{Bytes, U256};
 use zecswap_chain::evm::railgun::Signed;
 
 use super::*;
-use crate::lanes::{Lanes, derive};
+use crate::lanes::{Lanes, PAYOUT_GAS, SETTLEMENT_GAS, derive};
 
 const CONTRACT: Address = Address::repeat_byte(1);
 
@@ -147,4 +147,68 @@ async fn lanes_are_kept_in_eth_from_the_relayers_own_account() {
 
     let poor = relayer_on(&url, &PrivateKeySigner::random());
     assert!(poor.top_up().await.unwrap().is_empty());
+}
+
+/// With no base fee, the fee cap is the tip alone and holds still from block to block.
+fn steady_anvil() -> Option<alloy::node_bindings::AnvilInstance> {
+    let anvil = Anvil::new().args(["--base-fee", "0"]).try_spawn();
+    if anvil.is_err() {
+        eprintln!("skipped: anvil is not installed");
+    }
+    anvil.ok()
+}
+
+#[tokio::test]
+async fn the_relayers_own_account_keeps_its_payouts_eth_from_the_lanes() {
+    let Some(anvil) = steady_anvil() else {
+        return;
+    };
+    let url = anvil.endpoint();
+    let funder = Settlement::connect(
+        &url,
+        CONTRACT,
+        PrivateKeySigner::from(anvil.keys()[0].clone()),
+    )
+    .unwrap();
+    let key = PrivateKeySigner::random();
+    let relayer = relayer_on(&url, &key);
+    let fee = U256::from(relayer.settlement.max_fee_per_gas().await.unwrap());
+    let float = |gas: u64| fee * U256::from(gas) * U256::from(8);
+    let (payouts, claims) = (float(PAYOUT_GAS), float(SETTLEMENT_GAS));
+
+    funder
+        .send_eth(key.address(), payouts + claims / U256::from(2))
+        .await
+        .unwrap();
+    assert!(relayer.top_up().await.unwrap().is_empty());
+    funder.send_eth(key.address(), claims).await.unwrap();
+    assert_eq!(relayer.top_up().await.unwrap(), [("claims", claims)]);
+    assert!(relayer.settlement.eth_balance(key.address()).await.unwrap() >= payouts);
+}
+
+#[tokio::test]
+async fn a_lane_filled_while_gas_cost_more_hands_back_all_but_its_float() {
+    let Some(anvil) = steady_anvil() else {
+        return;
+    };
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let relayer = relayer_on(&anvil.endpoint(), &key);
+    let balance = async |account: Address| relayer.settlement.eth_balance(account).await.unwrap();
+    relayer.top_up().await.unwrap();
+    let fee = U256::from(relayer.settlement.max_fee_per_gas().await.unwrap());
+    let float = fee * U256::from(SETTLEMENT_GAS) * U256::from(8);
+    let claims = relayer.lanes.claims.account().unwrap();
+    assert_eq!(balance(claims).await, float);
+
+    // As if filled while gas cost five times what it does now.
+    let extra = float * U256::from(4);
+    relayer.settlement.send_eth(claims, extra).await.unwrap();
+    let own = balance(key.address()).await;
+    assert!(relayer.top_up().await.unwrap().is_empty());
+    assert_eq!(balance(key.address()).await, own + extra);
+    // Handing it back took its gas from the float, which still needs no topping up.
+    let left = balance(claims).await;
+    assert!(left < float && left >= float / U256::from(2));
+    assert!(relayer.top_up().await.unwrap().is_empty());
+    assert_eq!(balance(claims).await, left);
 }
