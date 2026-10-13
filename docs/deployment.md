@@ -679,8 +679,9 @@ and ports of their own (`zecswap-mainnet-*`, 127.0.0.1:8797-8799 behind nginx on
 issuer's production packages and signing digests; a Worker of its own
 (`deploy/worker/wrangler.mainnet.jsonc`) on a VPC service of its own through the droplet's
 tunnel; mainnet observability labels
-([observability.md](observability.md)); deposits counted at the wallet's default of 10
-confirmations; and the dashboard's mainnet environment. Funding sponsorship has no aggregate
+([observability.md](observability.md)); deposits counted at 2 confirmations, the owner's choice
+for the beta's small swaps (the wallets' default is 10); and the dashboard's mainnet environment.
+Funding sponsorship has no aggregate
 budget, which matters more on mainnet.
 
 Funds leave a mainnet deployment by these routes alone. `max_awaiting_deposit = 0` and a restart
