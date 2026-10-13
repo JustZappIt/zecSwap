@@ -338,7 +338,7 @@ impl Relayer {
         }
         let steps = Steps::default();
         steps
-            .note_earlier(&[&settlement, &lanes.claims, &lanes.locks])
+            .note_earlier(&[&settlement, &lanes.claims, &lanes.locks, &lanes.funding])
             .await?;
         let relayer = Self {
             config,

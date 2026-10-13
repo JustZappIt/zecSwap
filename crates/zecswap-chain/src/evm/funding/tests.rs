@@ -1,7 +1,8 @@
 use super::super::railgun::tests::amplifying;
 use super::super::tests::creation;
-use super::super::{PrivateKeySigner, deploy, reverse_funding_calls};
+use super::super::{MIN_TIP_WEI, PrivateKeySigner, deploy, eip1559, reverse_funding_calls};
 use super::*;
+use alloy::consensus::Transaction as _;
 use alloy::node_bindings::Anvil;
 use std::path::Path;
 use zecswap_core::{NetworkType, derive_maker_share, derive_user_keys};
@@ -414,6 +415,13 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         .unwrap()
         .await
         .unwrap();
+    let sent = chain
+        .provider
+        .get_transaction_by_hash(hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(sent.max_priority_fee_per_gas().unwrap() >= MIN_TIP_WEI);
     let swap = chain.swap(id, &terms.terms()).await.unwrap().unwrap();
     assert_eq!(swap.maker, Address::from(terms.user));
     assert_eq!(swap.user, p.maker);
@@ -446,4 +454,15 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         chain.provider.get_transaction_count(sponsor).await.unwrap(),
         nonce + 1
     );
+}
+
+#[test]
+fn fundings_tip_at_least_the_floor_and_a_proofs_minimum_gas_price() {
+    let base = 100_000_000;
+    let quiet = funding_fees(eip1559(base, 0), 0);
+    assert_eq!(quiet.max_priority_fee_per_gas, MIN_TIP_WEI);
+    assert_eq!(quiet.max_fee_per_gas, 2 * base + MIN_TIP_WEI);
+    let bound = funding_fees(eip1559(base, 0), 1_000_000_000);
+    assert_eq!(bound.max_priority_fee_per_gas, 1_000_000_000);
+    assert_eq!(bound.max_fee_per_gas, 2 * base + 1_000_000_000);
 }

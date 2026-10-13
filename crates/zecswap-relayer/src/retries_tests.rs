@@ -4,9 +4,10 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use alloy::network::EthereumWallet;
+use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::node_bindings::{Anvil, AnvilInstance};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
@@ -146,7 +147,12 @@ impl Deployment {
         let lanes = &relayer.lanes;
         relayer
             .steps
-            .note_earlier(&[&relayer.settlement, &lanes.claims, &lanes.locks])
+            .note_earlier(&[
+                &relayer.settlement,
+                &lanes.claims,
+                &lanes.locks,
+                &lanes.funding,
+            ])
             .await
             .unwrap();
         Arc::new(relayer)
@@ -450,4 +456,77 @@ async fn a_step_sent_before_answers_until_it_is_known_not_to_have_landed() {
             .await,
     );
     chain.mine_every(1).await;
+}
+
+#[tokio::test]
+async fn a_funding_posted_again_while_the_first_may_land_gets_its_hash_and_sends_nothing() {
+    let Some(chain) = deployment().await else {
+        return;
+    };
+    let relayer = chain.relayer().await;
+    let lane = relayer.lanes.funding.account().unwrap();
+    chain
+        .chain
+        .raw_request::<_, ()>(
+            "anvil_setBalance".into(),
+            (lane, U256::from(10u128.pow(18))),
+        )
+        .await
+        .unwrap();
+    // A funding's stand-in: a transfer from the funding account, its hash back before it mines.
+    let key = crate::lanes::derive(&chain.relayer_key, "funding").unwrap();
+    let wallet = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(key))
+        .connect_http(chain.url.parse().unwrap())
+        .erased();
+    let sends = AtomicUsize::new(0);
+    let fund = || async {
+        sends.fetch_add(1, Ordering::SeqCst);
+        let request = TransactionRequest::default()
+            .with_to(Address::repeat_byte(9))
+            .with_value(U256::from(1));
+        let pending = wallet.send_transaction(request).await.unwrap();
+        Ok::<_, RelayerError>(Some(*pending.tx_hash()))
+    };
+    let id = B256::repeat_byte(5);
+
+    chain.mine_every(0).await;
+    let first = relayer
+        .fund_once(id, &relayer.lanes.funding, fund())
+        .await
+        .unwrap();
+    assert!(first.is_some());
+    let again = relayer
+        .fund_once(id, &relayer.lanes.funding, fund())
+        .await
+        .unwrap();
+    assert_eq!(again, first);
+    // A restarted relayer, which knows nothing of it, waits for it to mine.
+    let restarted = chain.relayer().await;
+    let waits = restarted
+        .fund_once(id, &restarted.lanes.funding, fund())
+        .await;
+    assert!(matches!(waits, Err(RelayerError::Unsettled(_))));
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.sent(lane).await, (1, 0));
+
+    // Once it landed, the escrow on chain answers.
+    chain.mine().await;
+    let escrow = async { Ok(None) };
+    assert_eq!(
+        relayer
+            .fund_once(id, &relayer.lanes.funding, escrow)
+            .await
+            .unwrap(),
+        None
+    );
+    let escrow = async { Ok(None) };
+    assert_eq!(
+        restarted
+            .fund_once(id, &restarted.lanes.funding, escrow)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(chain.sent(lane).await, (1, 1));
 }

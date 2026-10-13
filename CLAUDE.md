@@ -144,7 +144,11 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   lanes' floats follow). alloy's gas filler tipped the median of the last ten blocks'
   20th-percentile tips: Sepolia's bots tip a flat gwei, so it flipped between 0.001 and 1 gwei
   (1 gwei half the time), and swaps whose quotes charged $0.001 of gas paid up to $0.95 for an
-  open and $3.09 for a refund payout. Railgun sends and fundings already paid `eth_gasPrice`.
+  open and $3.09 for a refund payout. Railgun sends already paid `eth_gasPrice`. Since
+  2026-10-13 every send tips at least 0.02 gwei (`MIN_TIP_WEI`: mainnet nodes suggest none when
+  blocks are quiet), and fundings pay these fees too, the tip raised to a proof's
+  `minGasPrice` (`funding_fees`): the first mainnet funding, at the bare `eth_gasPrice`, never
+  mined. A funding posted again while the first may still land gets its hash (`fund_once`).
   The maker's ledger credits a sponsored funding's fee to whichever relayer account sent it
   (`evm::paid_to`: the fee goes to the relayer's own account, the funding lane sends it), and
   zapp-dashboard counts the accounts the relayer's monitor names as the relayer's. On the

@@ -73,6 +73,7 @@ pub(crate) enum Step {
     Ready,
     Refund,
     RefundPayout,
+    Funding,
 }
 
 /// The transaction the relayer sent for each one-time step of a swap.
@@ -213,5 +214,32 @@ impl Relayer {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Sends a swap's escrow funding from `sender`, whose hash comes back before it is mined: a
+    /// repeat while that one may still land gets its hash and sends nothing. On mainnet an app
+    /// posted its first funding three times in 20 s, and the relayer signed two.
+    pub(crate) async fn fund_once(
+        &self,
+        swap_id: B256,
+        sender: &Settlement,
+        send: impl Future<Output = Result<Option<B256>>>,
+    ) -> Result<Option<B256>> {
+        if let Some(sent) = self.steps.get(swap_id, Step::Funding) {
+            match sender.transaction_status(sent.tx).await? {
+                Status::Pending => return Ok(Some(sent.tx)),
+                Status::Unknown if sent.at.elapsed() < MISSING_FOR => return Ok(Some(sent.tx)),
+                // Landed, reverted or gone: the escrow on chain decides, or a new send.
+                Status::Mined { .. } | Status::Unknown => {
+                    self.steps.forget(swap_id, Step::Funding);
+                }
+            }
+        }
+        self.steps.after_earlier(sender).await?;
+        let sent = send.await?;
+        if let Some(tx) = sent {
+            self.steps.record(swap_id, Step::Funding, tx, false);
+        }
+        Ok(sent)
     }
 }
