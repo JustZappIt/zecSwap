@@ -22,11 +22,17 @@
   "sweepTo": "the maker's own ZEC inventory, until the owner names a wallet of their own",
   "relayAdapt": "0xAc9f360Ae85469B27aEDdEaFC579Ef2d052aD405",
   "vaultLogic": "0x8156F44d3bab244d3d3FDc4ac24e9e97D1E1Ec48",
+  "etherscan": "source verified on 2026-10-12 for the contract and its vault logic, from sourceCommit",
   "issuer": {
     "name": "zecswap-mainnet-issuer",
     "tokenKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEAuA8Rq3Fo644QG48Kmxsyg1UFAKd-kfsS9t7BgPVwJqXHIEmlH4gS1UaxDBdu7awf0n9lv7yYozNTE5PysBh01LBhGbcIMWyTSNXkF2l1Mi0AOVVhVJZr-KTyr0u6ZFI2EGRVxT1BF2B4QgzQgJ64xqj-tzX_ctpwYQiE1Gf74zG4Yd0mdEbDjTYhgzoaR0lV5uHHSnVN2fmnlskAkZl6mfrJKfcfivp-UQ8qgBEs-7ke67lMhMyC3BxoDG7qoY0B4eIQRQ_-fu3eYT1RifuO5LgvMYkzRe58X63emOvYls19En0Vbkeq2Y73kMRA2AOYMp5gD3DyF4t5LM535p4-GQIDAQAB",
     "returnKey": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEArte6ewR0iOfbhxrByZ1vj_MMkKiQLQ-2R3OdCyHeKr_G4FrsCHvLhJ0uuu5r-papDogiMb_btM5-nPaOWzC1olxbmEUypJWgz-yCXD3K4wp_jgeqlP7EnlJE3IT5iTwv_S1hK5yV4Fka5mRoyhvZlhvDW3eCWoMix15Fp-TD3AGm7GttqzW4QyLXV_mQcnqlWPwuCacmTYch93eMZ7CaTHHRMmsfqR7_kZdskZh_JM55_lw_puDvvdRtu4vYItvo5wMI5mkwmSEwi6UahZDx_OI8IAF2JpeqRIKwbhT6FVGwahDeu6PRTww71C0i13EOwC3GQ85pxDRIAzF01W14wQIDAQAB",
-    "status": "keys made; serves once the app's signing digest is in its config"
+    "status": "keys made; off until the owner's phone runs a release build, as the debug build it runs gets no tokens",
+    "android": {
+      "package": "xyz.justzappit.zapp",
+      "uploadKeySha256": "800c61a4611125fbf0ddc3d1abfe22cff7ead765e84204d6dbe562390802dfd4",
+      "playAppSigningSha256": "not yet given: Play Console, App integrity, App signing key certificate"
+    }
   },
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "01a131a5-5a4f-7091-983f-e9265396c33a",
