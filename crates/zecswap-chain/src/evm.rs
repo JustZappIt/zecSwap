@@ -1110,6 +1110,32 @@ impl Settlement {
             return Err(Error::Config("a read-only connection cannot send".into()));
         };
         let _sending = self.sending.turn().await;
+        self.transfer(account, to, wei).await
+    }
+
+    /// Sends `to` what this account holds above `keep`, if anything, unless a transaction of its
+    /// own is pending: its balance doesn't show what that one spends yet.
+    pub async fn send_eth_above(&self, to: Address, keep: U256) -> Result<Option<U256>, Error> {
+        let Some(account) = self.account else {
+            return Err(Error::Config("a read-only connection cannot send".into()));
+        };
+        let _sending = self.sending.turn().await;
+        let count = || self.provider.get_transaction_count(account);
+        let (mined, sent) =
+            tokio::try_join!(count().latest(), count().pending()).map_err(Error::contract)?;
+        if sent != mined {
+            return Ok(None);
+        }
+        let balance = self.eth_balance(account).await?;
+        let Some(wei) = balance.checked_sub(keep).filter(|wei| !wei.is_zero()) else {
+            return Ok(None);
+        };
+        self.transfer(account, to, wei).await?;
+        Ok(Some(wei))
+    }
+
+    /// Sends `wei` from `account` in a turn its caller holds.
+    async fn transfer(&self, account: Address, to: Address, wei: U256) -> Result<B256, Error> {
         let tx = TransactionRequest::default()
             .with_from(account)
             .with_to(to)
@@ -1199,10 +1225,19 @@ async fn fees(provider: &DynProvider) -> Result<Eip1559Estimation, Error> {
         .get_max_priority_fee_per_gas()
         .await
         .map_err(Error::contract)?;
-    Ok(Eip1559Estimation {
+    Ok(eip1559(base_fee, tip))
+}
+
+/// The least a send tips. Ethereum's nodes suggest no tip at all when blocks are quiet, and on
+/// 2026-10-12 a mainnet claim sent so, its share already public, waited 6m41s to be mined.
+const MIN_TIP_WEI: u128 = 20_000_000;
+
+fn eip1559(base_fee: u128, suggested_tip: u128) -> Eip1559Estimation {
+    let tip = suggested_tip.max(MIN_TIP_WEI);
+    Eip1559Estimation {
         max_fee_per_gas: base_fee * EIP1559_BASE_FEE_MULTIPLIER + tip,
         max_priority_fee_per_gas: tip,
-    })
+    }
 }
 
 fn signing_provider(
@@ -1401,6 +1436,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eth_above_a_floor_waits_out_the_accounts_pending_transactions() {
+        let Ok(anvil) = Anvil::new().try_spawn() else {
+            eprintln!("skipped: anvil is not installed");
+            return;
+        };
+        let to = Address::repeat_byte(7);
+        let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+        let account = key.address();
+        let settlement = Settlement::connect(&anvil.endpoint(), Address::ZERO, key).unwrap();
+        let automine = async |on: bool| {
+            settlement
+                .provider
+                .raw_request::<_, serde_json::Value>("evm_setAutomine".into(), (on,))
+                .await
+                .unwrap();
+        };
+        let held = async || settlement.eth_balance(account).await.unwrap();
+
+        automine(false).await;
+        let tx = TransactionRequest::default()
+            .with_from(account)
+            .with_to(to)
+            .with_value(U256::from(1));
+        let _ = send_at_fees(&settlement.provider, tx).await.unwrap();
+        assert_eq!(
+            settlement.send_eth_above(to, U256::ZERO).await.unwrap(),
+            None
+        );
+
+        automine(true).await;
+        settlement
+            .provider
+            .raw_request::<_, serde_json::Value>("evm_mine".into(), ())
+            .await
+            .unwrap();
+        let before = held().await;
+        let keep = before / U256::from(2);
+        assert_eq!(
+            settlement.send_eth_above(to, keep).await.unwrap(),
+            Some(before - keep)
+        );
+        // Its gas came out of what it kept.
+        assert!(held().await < keep);
+        assert_eq!(settlement.send_eth_above(to, keep).await.unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn a_call_that_would_fail_never_waits_for_the_line() {
         let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
             eprintln!("skipped: anvil is not installed");
@@ -1473,6 +1555,17 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn sends_tip_at_least_the_floor_and_whatever_more_the_node_suggests() {
+        let base = 116_000_000;
+        let quiet = eip1559(base, 0);
+        assert_eq!(quiet.max_priority_fee_per_gas, MIN_TIP_WEI);
+        assert_eq!(quiet.max_fee_per_gas, 2 * base + MIN_TIP_WEI);
+        let busy = eip1559(base, 2_000_000_000);
+        assert_eq!(busy.max_priority_fee_per_gas, 2_000_000_000);
+        assert_eq!(busy.max_fee_per_gas, 2 * base + 2_000_000_000);
     }
 
     #[test]

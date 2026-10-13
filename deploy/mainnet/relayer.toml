@@ -1,0 +1,38 @@
+# The mainnet beta's relayer. Its secrets come from /etc/zecswap-mainnet-relayer/secrets.env
+# (scripts/mainnet-secrets.sh). Replace every <...>, then install as
+# /etc/zecswap-mainnet-relayer/config.toml, root:zecswap-mainnet-relayer, 0640.
+network = "mainnet"
+evm_rpc = "<the mainnet Alchemy app's URL>"
+contract = "<deployments/mainnet-beta.json's contract>"
+token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+maker = "<the maker's address>"
+listen = "127.0.0.1:8798"
+# Every fee is the larger of its floor ($0.50) and its gas at the price now, 10% on top.
+fee = 500000
+# Measured on a mainnet fork on 2026-10-12: claim lock 48k, claim 237k, payout into Railgun 875k.
+fee_gas = 1300000
+providers = ["coinmarketcap", "alchemy"]
+fee_margin_bps = 1000
+claim_margin = 300
+# ETH each sending account keeps, in its largest transactions at the fee cap: 0.0044 ETH in all
+# at 0.12 gwei, filled only from what the relayer's own account holds beyond as many payouts,
+# and handed back above twice that once gas falls. `drain-lanes` takes it all back.
+top_up_transactions = 2
+
+[reverse_funding]
+max_gas_limit = 4000000
+max_gas_price_wei = 20000000000
+fee = 500000
+fee_gas = 2300000
+
+[railgun_sends]
+fee = 500000
+max_gas_limit = 3000000
+max_gas_price_wei = 20000000000
+journal = "/var/lib/zecswap-mainnet-relayer/railgun-sends.sqlite"
+
+# Funded with 0.006 ETH, of which the sending accounts keep 0.0044; a swap burns 0.00015.
+[gas_alerts]
+low_wei = 1000000000000000
+recovery_wei = 2000000000000000
+interval_seconds = 300

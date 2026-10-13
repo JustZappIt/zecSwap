@@ -10,7 +10,10 @@ use zecswap_core::{Domain, ReverseOpen, signer};
 
 use super::canonical::{self, Malformed, Shape};
 use super::railgun::{IRelayAdapt, MAX_CALLDATA_BYTES, MAX_TRANSACTIONS, TRANSACTION, erc20};
-use super::{Address, B256, IErc20, IZecSwap, Settlement, U256, reverse_swap_id, share_from_words};
+use super::{
+    Address, B256, Eip1559Estimation, IErc20, IZecSwap, Settlement, U256, reverse_swap_id,
+    share_from_words,
+};
 use crate::Error;
 
 /// `openReverse`, the longest call a funding makes, is 548 bytes.
@@ -322,14 +325,14 @@ impl Settlement {
             self.now().await? < terms.deadline,
             "funding deadline passed",
         )?;
-        let gas_price = self
-            .provider
-            .get_gas_price()
-            .await
-            .map_err(|_| Error::Contract("funding gas price unavailable".into()))?
-            .max(request.min_gas_price);
+        let fees = funding_fees(
+            super::fees(&self.provider)
+                .await
+                .map_err(|_| Error::Contract("funding gas price unavailable".into()))?,
+            request.min_gas_price,
+        );
         require(
-            gas_price <= policy.max_gas_price_wei,
+            fees.max_fee_per_gas <= policy.max_gas_price_wei,
             "network gas price exceeds sponsorship limit",
         )?;
         let mut tx = TransactionRequest::default()
@@ -339,7 +342,8 @@ impl Settlement {
             .with_input(request.data.clone())
             .with_chain_id(request.chain_id)
             .with_gas_limit(policy.max_gas_limit)
-            .with_gas_price(gas_price);
+            .with_max_fee_per_gas(fees.max_fee_per_gas)
+            .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
         // Pending-state simulation runs real proof, nullifier, signature and token checks.
         // Never surface raw RPC errors: they can contain the complete private payload.
         let estimate = self.provider.estimate_gas(tx.clone()).await.map_err(|_| {
@@ -373,6 +377,17 @@ fn inner<C: SolCall>(call: &IRelayAdapt::Call, args: &[Shape], invalid: &'static
             Malformed::Noncanonical | Malformed::TooLong => "noncanonical funding call",
         })
     })
+}
+
+/// The fees every send pays, tip floor included, with the tip raised to a proof's minimum gas
+/// price: Railgun checks it against what the transaction pays, the base fee and the tip. Sent at
+/// the node's gas price alone, the first mainnet funding was never mined.
+fn funding_fees(fees: Eip1559Estimation, min_gas_price: u128) -> Eip1559Estimation {
+    let tip = fees.max_priority_fee_per_gas.max(min_gas_price);
+    Eip1559Estimation {
+        max_fee_per_gas: fees.max_fee_per_gas - fees.max_priority_fee_per_gas + tip,
+        max_priority_fee_per_gas: tip,
+    }
 }
 
 fn require(condition: bool, reason: &'static str) -> Result<()> {

@@ -59,6 +59,9 @@ def run(config, alloy):
             f"case=migration_error WARN schemerz: migration failed txid={tx} id={swap}",
             "case=idle 2026-10-02T16:23:20Z  INFO schemerz: Migrating everything",
         ])
+        # Testnet floods past its burst, then mainnet logs: mainnet's own bucket lets all of it through.
+        lines.extend(f"case=flood{i:03} INFO testnet flood txid={tx} id={swap}" for i in range(700))
+        lines.extend(f"case=mainnet{i:02} INFO env=mainnet txid={tx} id={swap}" for i in range(20))
         (d / "fixtures.log").write_text("\n".join(lines) + "\n")
         source = f'''logging {{
  level = "info"
@@ -70,7 +73,16 @@ local.file "known_secrets" {{
 }}
 loki.source.file "fixtures" {{
  targets = [{{__path__ = "{d}/fixtures.log", app = "zecswap", environment = "testnet", service = "synthetic"}}]
+ forward_to = [loki.process.environment.receiver]
+}}
+loki.process "environment" {{
  forward_to = [loki.process.bridge.receiver]
+ stage.regex {{
+  expression = `\\benv=(?P<env>mainnet)\\b`
+ }}
+ stage.labels {{
+  values = {{environment = "env"}}
+ }}
 }}
 loki.echo "test" {{}}
 '''
@@ -82,7 +94,7 @@ loki.echo "test" {{}}
                                   "--storage.path=" + str(d / "state"), str(d / "config.alloy")], env=env, stdout=out, stderr=out)
             try:
                 for _ in range(150):
-                    if p.poll() is not None or "case=migration_error" in (d / "output").read_text():
+                    if p.poll() is not None or "case=mainnet19" in (d / "output").read_text():
                         break
                     time.sleep(0.2)
             finally:
@@ -109,7 +121,14 @@ loki.echo "test" {{}}
                 metadata = json.loads(parsed["structured_metadata"])
                 assert metadata.get("swap_id") == swap and metadata.get("transaction_hash") == tx, (parsed["entry"].split()[0], metadata)
         assert known not in output, "A secret leaked from a nested tracing span"
-        print(json.dumps({"passed": len(fixtures) + 6, "public_hashes_preserved": True, "alloy_version": "1.20.1"}))
+        flood = sum("case=flood" in line for line in output.splitlines())
+        assert 0 < flood < 700, f"The testnet flood was not limited ({flood} of 700 lines arrived)"
+        mainnet = [json.loads(line) for line in output.splitlines() if "case=mainnet" in line]
+        assert len(mainnet) == 20, f"Mainnet lines were dropped behind testnet's ({len(mainnet)} of 20 arrived)"
+        for entry in mainnet:
+            labels = entry.get("labels", {})
+            assert (labels.get("environment") == "mainnet") if isinstance(labels, dict) else 'environment="mainnet"' in labels, labels
+        print(json.dumps({"passed": len(fixtures) + 8, "public_hashes_preserved": True, "alloy_version": "1.20.1"}))
 
 
 if __name__ == "__main__":

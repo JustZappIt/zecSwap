@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use zecswap_api::Network;
-use zecswap_chain::evm::Settlement;
+use zecswap_chain::evm::{Address, Settlement};
 use zecswap_maker::{Config, Maker, Secrets, api};
 
 #[derive(Parser)]
@@ -34,9 +34,33 @@ enum Command {
         #[arg(long)]
         mint: bool,
     },
-    /// Moves `amount` base units of the payout token from the contract inventory to the maker's
-    /// account.
-    WithdrawInventory { amount: u128 },
+    /// Moves `amount` base units of the payout token from the contract inventory, or `all` that
+    /// no swap holds, to the maker's account or `--to` another address.
+    WithdrawInventory {
+        amount: Amount,
+        #[arg(long)]
+        to: Option<Address>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Amount {
+    All,
+    Units(u128),
+}
+
+impl std::str::FromStr for Amount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "all" {
+            return Ok(Amount::All);
+        }
+        value
+            .parse()
+            .map(Amount::Units)
+            .map_err(|_| format!("{value} is neither `all` nor a number of base units"))
+    }
 }
 
 #[tokio::main]
@@ -56,7 +80,9 @@ async fn main() -> Result<()> {
         }
         // Needs only the EVM key, so it also empties a retired deployment, whose store a newer
         // build may refuse.
-        Command::WithdrawInventory { amount } => return withdraw_inventory(&config, amount).await,
+        Command::WithdrawInventory { amount, to } => {
+            return withdraw_inventory(&config, amount, to).await;
+        }
         _ => {}
     }
     let token = config.token;
@@ -99,11 +125,20 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn withdraw_inventory(config: &Config, amount: u128) -> Result<()> {
+async fn withdraw_inventory(config: &Config, amount: Amount, to: Option<Address>) -> Result<()> {
     let key = Secrets::from_env()?.evm_key;
     let account = key.address();
     let settlement = Settlement::connect(&config.evm_rpc, config.contract, key)?;
-    settlement.withdraw(config.token, amount, account).await?;
+    let amount = match amount {
+        Amount::Units(units) => units,
+        Amount::All => settlement.balance_of(account, config.token).await?,
+    };
+    if amount == 0 {
+        bail!("the inventory holds nothing that no swap holds");
+    }
+    let to = to.unwrap_or(account);
+    let hash = settlement.withdraw(config.token, amount, to).await?;
+    info!("withdrew {amount} to {to} in {hash}");
     let inventory = settlement.balance_of(account, config.token).await?;
     info!("inventory is now {inventory}");
     Ok(())

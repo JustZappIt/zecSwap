@@ -35,12 +35,14 @@ impl Relayer {
                 request.data,
             )
             .map_err(map_error)?;
+        let lane = &self.lanes.funding;
         let tx = self
-            .lanes
-            .funding
-            .sponsor_reverse_funding(&policy, &validated)
-            .await
-            .map_err(map_error)?;
+            .fund_once(request.swap_id, lane, async {
+                lane.sponsor_reverse_funding(&policy, &validated)
+                    .await
+                    .map_err(map_error)
+            })
+            .await?;
         Ok(Sent {
             transactions: tx.into_iter().collect(),
         })

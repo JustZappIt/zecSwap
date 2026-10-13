@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use alloy_primitives::Address;
 use anyhow::{Context as _, Result, ensure};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::info;
 use zecswap_railgun::Keys;
 use zecswap_relayer::{Config, Relayer, api};
@@ -18,6 +19,19 @@ use zeroize::Zeroizing;
 struct Cli {
     #[arg(long, default_value = "relayer.toml")]
     config: PathBuf,
+    /// Serves the relayer API unless given.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Sends the ETH of every account derived from the relayer's key, all but its gas, to `--to`.
+    /// Stop the relayer first, or it tops them up again.
+    DrainLanes {
+        #[arg(long)]
+        to: Address,
+    },
 }
 
 #[tokio::main]
@@ -34,6 +48,9 @@ async fn main() -> Result<()> {
     )
     .parse()
     .context("RELAYER_PRIVATE_KEY")?;
+    if let Some(Command::DrainLanes { to }) = cli.command {
+        return zecswap_relayer::drain_lanes(&config, &key, to).await;
+    }
     let railgun = match config.railgun_sends {
         Some(_) => Some(railgun_keys()?),
         None => None,

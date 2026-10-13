@@ -1,25 +1,26 @@
 # Bridge service logs
 
-The VPS `<droplet ip>` runs **only Grafana Alloy**, sending maker, relayer and token
-issuer journald logs to [Grafana Cloud](https://<stack>.grafana.net).
+The VPS `<droplet ip>` runs **only Grafana Alloy**, sending the mainnet maker's, relayer's
+and token issuer's journald logs to [Grafana Cloud](https://<stack>.grafana.net)
+(testnet's stopped on 2026-10-12; see [Mainnet logs](#mainnet-logs-2026-10-12)).
 The final scope is deliberately logs only, following the request to keep setup
 simple. Host metrics, tracing and custom dashboards are not enabled.
 
 ## Viewing failures
 
-Ready-to-open views (last 24 hours): [Maker logs](https://<stack>.grafana.net/explore?schemaVersion=1&panes=%7B%22logs%22%3A%7B%22datasource%22%3A%22grafanacloud-logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%7Bapp%3D%5C%22zecswap%5C%22%2Cenvironment%3D%5C%22testnet%5C%22%2Cservice%3D%5C%22zecswap-maker%5C%22%7D%22%2C%22queryType%22%3A%22range%22%2C%22datasource%22%3A%7B%22type%22%3A%22loki%22%2C%22uid%22%3A%22grafanacloud-logs%22%7D%2C%22editorMode%22%3A%22code%22%2C%22direction%22%3A%22backward%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-24h%22%2C%22to%22%3A%22now%22%7D%7D%7D), [Relayer API logs](https://<stack>.grafana.net/explore?schemaVersion=1&panes=%7B%22logs%22%3A%7B%22datasource%22%3A%22grafanacloud-logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%7Bapp%3D%5C%22zecswap%5C%22%2Cenvironment%3D%5C%22testnet%5C%22%2Cservice%3D%5C%22zecswap-relayer%5C%22%7D%22%2C%22queryType%22%3A%22range%22%2C%22datasource%22%3A%7B%22type%22%3A%22loki%22%2C%22uid%22%3A%22grafanacloud-logs%22%7D%2C%22editorMode%22%3A%22code%22%2C%22direction%22%3A%22backward%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-24h%22%2C%22to%22%3A%22now%22%7D%7D%7D).
+Ready-to-open views (last 24 hours): [Maker logs](https://<stack>.grafana.net/explore?schemaVersion=1&panes=%7B%22logs%22%3A%7B%22datasource%22%3A%22grafanacloud-logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%7Bapp%3D%5C%22zecswap%5C%22%2Cenvironment%3D%5C%22mainnet%5C%22%2Cservice%3D%5C%22zecswap-maker%5C%22%7D%22%2C%22queryType%22%3A%22range%22%2C%22datasource%22%3A%7B%22type%22%3A%22loki%22%2C%22uid%22%3A%22grafanacloud-logs%22%7D%2C%22editorMode%22%3A%22code%22%2C%22direction%22%3A%22backward%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-24h%22%2C%22to%22%3A%22now%22%7D%7D%7D), [Relayer API logs](https://<stack>.grafana.net/explore?schemaVersion=1&panes=%7B%22logs%22%3A%7B%22datasource%22%3A%22grafanacloud-logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%7Bapp%3D%5C%22zecswap%5C%22%2Cenvironment%3D%5C%22mainnet%5C%22%2Cservice%3D%5C%22zecswap-relayer%5C%22%7D%22%2C%22queryType%22%3A%22range%22%2C%22datasource%22%3A%7B%22type%22%3A%22loki%22%2C%22uid%22%3A%22grafanacloud-logs%22%7D%2C%22editorMode%22%3A%22code%22%2C%22direction%22%3A%22backward%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-24h%22%2C%22to%22%3A%22now%22%7D%7D%7D).
 
 Open [Explore](https://<stack>.grafana.net/explore), select
 `grafanacloud-<stack>-logs`, choose a time range, and run:
 
 ```logql
-{app="zecswap",environment="testnet",service=~"zecswap-maker|zecswap-relayer"}
+{app="zecswap",environment="mainnet",service=~"zecswap-maker|zecswap-relayer"}
 ```
 
 Add a filter for failures:
 
 ```logql
-{app="zecswap",environment="testnet",service=~"zecswap-maker|zecswap-relayer"}
+{app="zecswap",environment="mainnet",service=~"zecswap-maker|zecswap-relayer"}
   |~ "(?i)error|warn|failed|panic|timeout|unavailable"
 ```
 
@@ -28,7 +29,7 @@ The token issuer and the six-hourly refresh of its attestation status list log a
 and status list reloads); its refusals are counted in its monitor, not logged:
 
 ```logql
-{app="zecswap",environment="testnet",service="zecswap-issuer"}
+{app="zecswap",environment="mainnet",service="zecswap-issuer"}
 ```
 
 Watchtower activity uses `|~ "(?i)watchtower|deposit|claim|refund|opened swap"`.
@@ -42,24 +43,25 @@ method (`methods`), their total and the compute units Alchemy bills for them
 (`compute_units`):
 
 ```logql
-{app="zecswap",environment="testnet"} |= "RPC requests in the last period"
+{app="zecswap",environment="mainnet"} |= "RPC requests in the last period"
 ```
 
 Public IDs are searchable as structured metadata, outside the indexed selector:
 
 ```logql
-{app="zecswap",environment="testnet"} | swap_id="PUBLIC_SWAP_ID"
-{app="zecswap",environment="testnet"} | transaction_hash="PUBLIC_TX_HASH"
-{app="zecswap",environment="testnet"} |= "PUBLIC_TX_HASH"
+{app="zecswap",environment="mainnet"} | swap_id="PUBLIC_SWAP_ID"
+{app="zecswap",environment="mainnet"} | transaction_hash="PUBLIC_TX_HASH"
+{app="zecswap",environment="mainnet"} |= "PUBLIC_TX_HASH"
 ```
 
 Only `app`, `environment`, `network`, `evm_chain`, `instance`, and `service`
 are emitted as indexed labels; Grafana Cloud also adds a matching `service_name`.
-Current values include `testnet`, `zcash-testnet`, `sepolia`,
-and `bridge-vps-147-182-158-187`. Future mainnet must use its own service readers
-and explicit `mainnet` / `zcash-mainnet` / `ethereum` labels. Never relabel the
-existing testnet reader as mainnet. Hashes, swap IDs and addresses must not become
-indexed labels.
+Mainnet's services (`zecswap-mainnet-*`, beside testnet's on the same host) are read with the
+labels `mainnet`, `zcash-mainnet` and `ethereum`, under testnet's service names, on
+`bridge-vps-147-182-158-187`. Testnet's readers, labelled `testnet`, `zcash-testnet` and
+`sepolia`, are off since 2026-10-12; restored, a query differs only in `environment`. Never
+relabel a testnet reader as mainnet. Hashes, swap IDs and addresses must not become indexed
+labels.
 
 ## Free plan and resource limits
 
@@ -73,18 +75,19 @@ See [Grafana pricing](https://grafana.com/pricing/) and
 
 Alloy is capped at 5% of one CPU, 128 MiB memory, zero swap, low CPU/I/O priority,
 and one Go processor. Its Go memory target is 64 MiB; cgroup memory pressure starts
-at 96 MiB. Logs use a 64 KiB batch with bounded retries, with no log WAL. Its four
-journal cursors occupy a private **8 MiB maximum RAM-only, nonswappable filesystem**.
+at 96 MiB. Logs use a 64 KiB batch with bounded retries, with no log WAL. Its journal
+cursors, one a reader, occupy a private **8 MiB maximum RAM-only, nonswappable filesystem**.
 There is no persistent telemetry spool or local Grafana/Loki/Prometheus database.
 The pinned Alloy executable itself takes about 545 MiB of disk; the download archive
 was removed. Existing journal retention and bridge storage are unchanged.
 
-A shared limit allows two lines/second (burst 100) and drops lines over 8 KiB.
-This bounds a worst-case continuous stream below roughly 44 GB of log text per
-31-day month; normal bridge volume is far smaller. Bursts, oversized messages,
-prolonged outages and collector stops may lose telemetry. On restart the RAM-only
-cursors reset: maker logs replay at most five minutes, and the usually idle relayer
-replays at most three hours. Duplicates are possible.
+Each environment has a limit of its own, one line a second with bursts of 500, so testnet,
+if its readers return, never drops mainnet's lines; lines over 8 KiB are dropped. With both,
+they bound a worst-case continuous stream below roughly 44 GB of log text per 31-day month;
+normal volume is far smaller (about a hundred lines an hour from each maker on 2026-10-12).
+Bursts, oversized messages, prolonged outages and collector stops may lose telemetry. On
+restart the RAM-only cursors reset: the maker replays at most two hours (a few hundred lines,
+within its burst), the usually idle relayer at most three. Duplicates are possible.
 
 A small systemd watchdog checks host memory and the existing lightweight maker
 `/healthz` and relayer `/v1/terms` endpoints every 30 seconds. It stops only Alloy
@@ -123,8 +126,9 @@ were not expanded. Both tokens are constrained by the ingestion-only policy. Do 
 Git, dashboard variables or tickets.
 
 Redaction happens before forwarding and field extraction. It removes exact known
-bridge secrets, authenticated Alchemy URLs, authorization headers, CMC/Telegram
-keys, seeds/mnemonics, private and viewing keys, while preserving public hashes.
+bridge secrets (`configure.py` reads every `/etc/zecswap-*` and `/etc/zecswap-mainnet-*`
+service's environment files and configs), authenticated Alchemy URLs, authorization headers,
+CMC/Telegram keys, seeds/mnemonics, private and viewing keys, while preserving public hashes.
 After rotating bridge secrets, run `configure.py` and restart only Alloy to refresh
 its exact-secret patterns. Unknown unlabelled secrets or novel encodings cannot be
 reliably recognized by a regex; avoid logging secrets at source and extend the
@@ -301,3 +305,29 @@ one) and the watchdog units. Run `test_redaction.py` against the new config befo
 The gateway gives `GET /maker/v1/monitor`, `/relayer/v1/monitor` and `/issuer/v1/monitor`
 (and their subpaths) their own allowance, one a second with a burst of ten, so a dashboard
 polling them can't use up the apps' reads.
+
+## Mainnet logs (2026-10-12)
+
+Mainnet's maker, relayer and issuer ran from 20:10 UTC with no logs in Grafana: Alloy read
+testnet's units alone, and its redaction knew testnet's secrets alone. At 21:29 UTC Alloy took
+readers for the `zecswap-mainnet-*` units (labels in [the label section](#viewing-failures)),
+`configure.py` added the mainnet services' secrets (27 of 27 env-file secrets of both networks
+are in the patterns), and the shared limit of two lines a second became one a second for each
+environment. `test_redaction.py` now floods testnet past its burst and checks that mainnet's
+lines after it all arrive: the old configuration lost all 20, the new one passes all 35 checks.
+On its first start the mainnet readers sent everything mainnet had logged, 302 lines from its
+start, the first mainnet swap's included; Alloy sent 358 lines with none dropped.
+
+Rollback, as root: `cp /root/zecswap-observability-backup-20261012T212734Z/* /opt/zecswap-observability/`,
+`install -m 0600 /etc/alloy/redact.regex.bak-20261012T212734Z /etc/alloy/redact.regex`, then
+`python3 /opt/zecswap-observability/install.py` and `systemctl restart alloy`
+(`/root/alloy-config-backup-20261012T212915Z` holds the config that ran before).
+
+At 21:53 UTC the owner had testnet's readers taken out: its redeploys left no logs worth
+keeping, so Alloy reads mainnet's units alone and the testnet lines already in Grafana age out
+with its 14-day retention, by 2026-10-26. The first start after it sent 191 lines, none
+dropped. To collect testnet's logs again, restore the config that read both networks and
+restart Alloy: `cp /root/alloy-config-backup-20261012T215324Z/config.alloy
+/opt/zecswap-observability/`, `python3 /opt/zecswap-observability/install.py`,
+`systemctl restart alloy` (`/root/zecswap-observability-backup-20261012T215250Z` holds the
+whole directory from before).
