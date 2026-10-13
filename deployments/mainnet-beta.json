@@ -37,9 +37,9 @@
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "<workers vpc service id>",
   "worker": "zecswap-mainnet",
-  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-lanes-cc17701",
+  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-funding-cc8e06e",
   "makerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
-  "relayerSha256": "8130d29b089b19eff65d0033145cdc1df6bdc15908e5d43ba204aea43ec8c9b6",
+  "relayerSha256": "285976bfc72d313330b58dc2d2a45ae87a8b4a8d7685ea693f8169611385e9d1",
   "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
   "inventory": "136408198",
   "inventoryTransactions": [
@@ -88,10 +88,22 @@
       "paidOut": "0x1e764b5a34882890da4b4c607395fe77919bd03a3d9a99def5cfa4f31c29d51d",
       "payout": "2.0 USDC to the swap's vault; 0.5 to the relayer; 1.49625 shielded into Railgun; 0.00375 Railgun's fee",
       "sweep": "e97a17d01a46ebb129eae8fae54a426c84e348ac98111b4f2aebc3d56632c464"
+    },
+    "liveReverseSwap": {
+      "swapId": "0x36976980d00a16a9482151974992c18578cf6d94ce5bba7f5b769269620e9525",
+      "direction": "USDC to ZEC, funded from the owner's Railgun balance through the relayer",
+      "amount": "2.0 USDC for 0.00140252 ZEC, at 2 confirmations",
+      "funded": "0x65db248f76cef9fac05c2d67758033d59cb70a299cf9beb92425f784e2f42dd1",
+      "makerDeposit": "f58d82d743fdc5db11feb77d70a7dc0f5d28ac236cc44135d56c0c86466edc3e",
+      "ready": "0xabc01e073a0cfcf8367266a1dda413c42b754e75c7c88f7f37883aa65298d658",
+      "claimLocked": "0x2cfc9c2551e7fefff1e68876608302faf146ba555a6d7f26e8eb7dcab5a1c7e3",
+      "claimed": "0x16b8a494fcc7901032fa0ee921014e720bf1350c4a906732aff31dc1b7746dbd",
+      "accepted": "2026-10-13 03:45:14 UTC",
+      "settled": "2026-10-13 03:57:43 UTC"
     }
   },
   "zcashConfirmations": 2,
-  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-tip-0d65f96",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-lanes-cc17701",
   "minTipGwei": 0.02,
   "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout",
   "laneFloats": {
@@ -104,5 +116,9 @@
       "funding": "6942684352000000"
     },
     "ownAccountAfter": "0.034796 ETH, the owner's 0.02 included"
+  },
+  "fundingFees": {
+    "reason": "the first mainnet funding went out at the bare eth_gasPrice, 0.068 gwei, as 0x6d088b28\u2026dc79 and never mined; the app posted it twice more and the relayer signed a second at the same nonce, 0x65db248f\u2026, which did",
+    "fix": "cc8e06e: fundings pay EIP-1559 fees tipping at least 0.02 gwei, and a funding posted again while the first may land gets its hash"
   }
 }
