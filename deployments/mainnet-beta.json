@@ -31,7 +31,7 @@
     "android": {
       "package": "xyz.justzappit.zapp",
       "uploadKeySha256": "800c61a4611125fbf0ddc3d1abfe22cff7ead765e84204d6dbe562390802dfd4",
-      "playAppSigningSha256": "not yet given: Play Console, App integrity, App signing key certificate"
+      "playAppSigningSha256": "b780758764d7e4abd5838d9e593e9becd5e5649376f01413c3b675bd041e3d83"
     }
   },
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
