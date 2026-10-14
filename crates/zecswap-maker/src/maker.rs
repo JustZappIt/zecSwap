@@ -780,12 +780,14 @@ impl Maker {
                     }
                 }
                 let wallet = zcash.wallet()?;
+                let all = wallet.funds_by_account()?;
+                let funds = |account| all.get(&account).copied().unwrap_or_default();
                 let mut snapshots = HashMap::new();
                 for swap in self.store.watched_swaps()? {
                     snapshots.insert(
                         swap.zcash_account,
                         WalletSnapshot {
-                            funds: wallet.funds(swap.zcash_account)?,
+                            funds: funds(swap.zcash_account),
                             sweep: swap
                                 .sweep
                                 .map(|txid| {
@@ -802,7 +804,7 @@ impl Maker {
                     snapshots.insert(
                         swap.account,
                         WalletSnapshot {
-                            funds: wallet.funds(swap.account)?,
+                            funds: funds(swap.account),
                             sweep: None,
                         },
                     );
