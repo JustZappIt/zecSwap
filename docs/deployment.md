@@ -235,6 +235,12 @@ status read, and a reverse swap (`0x464e937b…`) on a token it held, handed bac
 funded. No returned token has been spent yet: that waits until a device's three issued tokens for
 the day are gone.
 
+Since 2026-10-14 04:42 UTC the testnet maker asks for no tokens, as the owner asked, so any phone,
+emulator or the CLI can swap there: its `[tokens]` table is commented out, the config with it is
+`/etc/zecswap-maker/config.toml.bak-20261013-tokens`, and public info no longer shows
+`tokenReturnKey`. The app posts an accept without a token first, so it needed no change. The issuer
+still runs; uncomment the table and restart the maker to ask for tokens again.
+
 Rollback files are in `/var/backups/zecswap/20261007-tokens-9b52dfc` (root-only): the maker config,
 the previous `maker.sqlite`, the nginx site, `previous-current`, and the two public keys. Disable and
 stop `zecswap-issuer`, restore the config as `root:zecswap-maker` `0640` and the store, point
@@ -603,6 +609,32 @@ Rollback files are in `/var/backups/zecswap/20261012-rpc-budget-c42ac51` (root-o
 `maker-config.toml`, `relayer-config.toml`, `maker.sqlite`, `railgun-sends.sqlite` and
 `previous-current`. Point `/opt/zecswap/current` back at the previous release and restart the maker
 and relayer; the stores didn't change, so they stay.
+
+## October 14 testnet inventory and monitor
+
+At 17:45 UTC the maker, stopped for a minute, minted 1,000 test USDC and deposited them
+(`add-inventory 1000000000 --mint`: mint `0xa49773c5…`, approve `0x5e83a9ab…`, deposit
+`0x97ae7f45…`, Sepolia blocks 11914834–11914836), taking its inventory from 28.642822 to
+1,028.642822. ZEC → USDC swaps had had room for one at the 20 USDC cap.
+
+The dashboard's maker telemetry check then failed now and then ("Unavailable, timed out, or
+invalid response"). With its Zcash wallet idle, the maker took about 9 seconds to answer its
+monitor, against the dashboard's 12: every read took a wallet summary, which covers every account,
+once for each of the 50 swaps it lists, again for the inventory and for each unsettled swap. With
+the wallet busy it skipped them all and answered in 0.05 s, so the check came and went. The
+watchtower likewise took a summary per watched swap after each sync, holding the wallet meanwhile.
+
+At 20:17 UTC the testnet maker restarted on a build of `1765bb6` in
+`/opt/zecswap/releases/20261014-monitor-funds-1765bb6`, now `/opt/zecswap/current`, which reads
+every account's funds from one summary. The relayer and issuer are the previous release's, byte for
+byte, and did not restart; no swap was in progress and no config changed. Six monitor reads ten
+seconds apart then took 0.15–0.51 s, the dashboard's check read healthy at 561 ms, and the maker
+logged no warning or error. [sepolia-monitor-funds.json](../deployments/sepolia-monitor-funds.json)
+records the checksums. The mainnet maker still reads funds the old way.
+
+Rollback files are in `/var/backups/zecswap/20261014-monitor-funds-1765bb6` (root-only):
+`maker-config.toml` and `previous-current`. Point `/opt/zecswap/current` back at the previous
+release and restart the maker; the store didn't change.
 
 ## Deployment sequence
 

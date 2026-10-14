@@ -147,6 +147,26 @@ fn an_imported_joint_account_is_recognised_by_its_key() {
 }
 
 #[test]
+fn one_summary_reads_every_accounts_funds() {
+    let (_dir, mut wallet) = previous_swap(true);
+    let accounts = [
+        import_at(&mut wallet, &random_joint(), 4_395_106),
+        import_at(&mut wallet, &random_joint(), 4_395_106),
+    ];
+    wallet
+        .db
+        .update_chain_tip(BlockHeight::from_u32(4_395_106))
+        .unwrap();
+    let all = wallet.funds_by_account().unwrap();
+    assert_eq!(all.len(), accounts.len());
+    for account in accounts {
+        assert_eq!(all[&account], wallet.funds(account).unwrap());
+    }
+    wallet.forget(accounts[0]).unwrap();
+    assert_eq!(wallet.funds(accounts[0]).unwrap(), Funds::default());
+}
+
+#[test]
 fn a_birthday_above_the_tip_imports_and_syncs_from_the_next_block() {
     // Scanned to 4,395,105, so the import needs no rewind of the note trees.
     let (_dir, mut wallet) = previous_swap(true);
