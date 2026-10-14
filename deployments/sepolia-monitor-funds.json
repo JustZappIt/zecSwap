@@ -1,0 +1,30 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-14T20:17:18Z",
+  "sourceCommit": "1765bb6",
+  "release": "/opt/zecswap/releases/20261014-monitor-funds-1765bb6",
+  "previousRelease": "/opt/zecswap/releases/20261012-rpc-budget-c42ac51",
+  "backup": "/var/backups/zecswap/20261014-monitor-funds-1765bb6",
+  "makerSha256": "732f4ccac8f527b5f6e038e199b202f27adcd1eb77e8535161d84c66dcc5e133",
+  "relayerSha256": "f35ef7ecd1db7caa6781169a0d3d109a336f6838d06b918afb9261699cc93d2f",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "restarted": ["maker"],
+  "changes": {
+    "maker": "reads every account's Zcash funds from one wallet summary, once per monitor read and once per sync, where it took one per listed or watched swap (about 52 a monitor read)"
+  },
+  "validation": {
+    "monitorBefore": "8.9 s with the wallet idle, 0.05 s with it busy; the dashboard's check failed past its 12 s limit",
+    "monitorAfter": "0.15–0.51 s over six reads ten seconds apart",
+    "dashboard": "maker telemetry healthy at 561 ms",
+    "journal": "no warning or error after the restart"
+  },
+  "inventoryMint": {
+    "at": "2026-10-14T17:45:49Z",
+    "amountUsdc": "1000",
+    "mint": "0xa49773c507e7a171848118582ae651483d71fd0ae08aa08f96641cd68cb3abef",
+    "approve": "0x5e83a9aba2ec8bcaf0accc0259de1568d6e93e455abe6e67d4080b59c73a9bfe",
+    "deposit": "0x97ae7f45b4ad73ed65cbcc22b2084b0e5aba2a79bf712ef2e56a333edcca8051",
+    "inventoryAfter": "1028.642822"
+  }
+}
