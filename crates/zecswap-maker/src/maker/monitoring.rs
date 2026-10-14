@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -174,18 +175,18 @@ impl Maker {
         let runtime = self.monitoring.state.lock().unwrap().clone();
         let reserved = self.reverse_reserved()?;
         let (funds, in_flight, wallet_busy) = match self.zcash.try_lock() {
-            Ok(zcash) => match zcash.wallet() {
-                Ok(wallet) => {
-                    self.wallet_funds(&mut swaps, wallet);
+            Ok(zcash) => match zcash.wallet().map(Wallet::funds_by_account) {
+                Ok(Ok(all)) => {
+                    Self::wallet_funds(&mut swaps, &all);
                     (
                         self.inventory
                             .as_ref()
-                            .and_then(|(account, _)| wallet.funds(*account).ok()),
-                        self.in_flight(wallet)?,
+                            .map(|(account, _)| all.get(account).copied().unwrap_or_default()),
+                        Some(self.in_flight(&all)?),
                         false,
                     )
                 }
-                Err(_) => (None, None, false),
+                _ => (None, None, false),
             },
             Err(_) => (runtime.cached_funds, None, true),
         };
@@ -281,9 +282,9 @@ impl Maker {
             return Ok(None);
         }
         if let Ok(zcash) = self.zcash.try_lock()
-            && let Ok(wallet) = zcash.wallet()
+            && let Ok(Ok(all)) = zcash.wallet().map(Wallet::funds_by_account)
         {
-            self.wallet_funds(&mut swaps, wallet);
+            Self::wallet_funds(&mut swaps, &all);
         }
         let failed = self
             .monitoring
@@ -300,12 +301,13 @@ impl Maker {
         }))
     }
 
-    fn wallet_funds(&self, swaps: &mut [MonitorSwap], wallet: &Wallet) {
+    fn wallet_funds(swaps: &mut [MonitorSwap], all: &HashMap<AccountUuid, Funds>) {
         for swap in swaps {
-            if let Some(funds) = uuid::Uuid::parse_str(&swap.account)
-                .ok()
-                .and_then(|account| wallet.funds(AccountUuid::from_uuid(account)).ok())
-            {
+            if let Ok(account) = uuid::Uuid::parse_str(&swap.account) {
+                let funds = all
+                    .get(&AccountUuid::from_uuid(account))
+                    .copied()
+                    .unwrap_or_default();
                 swap.zec_total_zat = Some(funds.total.to_string());
                 swap.zec_spendable_zat = Some(funds.spendable.to_string());
             }
@@ -313,17 +315,17 @@ impl Maker {
     }
 
     /// ZEC in the joint accounts of every unsettled swap: users' deposits the maker has yet to
-    /// sweep, and its own deposits users have yet to claim. Unknown if any account can't be read.
-    fn in_flight(&self, wallet: &Wallet) -> Result<Option<u64>> {
+    /// sweep, and its own deposits users have yet to claim.
+    fn in_flight(&self, all: &HashMap<AccountUuid, Funds>) -> Result<u64> {
         let forward = self.store.unsettled_swaps()?;
         let reverse = self.store.pending_reverse_swaps()?;
         Ok(forward
             .iter()
             .map(|swap| swap.zcash_account)
             .chain(reverse.iter().map(|swap| swap.account))
-            .map(|account| wallet.funds(account).map(|funds| funds.total))
-            .sum::<Result<u64, _>>()
-            .ok())
+            .filter_map(|account| all.get(&account))
+            .map(|funds| funds.total)
+            .sum())
     }
 
     fn records(&self, swaps: &mut [MonitorSwap], failed: &[B256]) -> Result<()> {
