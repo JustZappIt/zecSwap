@@ -278,7 +278,8 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   - Spam: with `[tokens]`, each accept spends a Privacy Pass token (`docs/tokens.md`).
     The issuer's `android-key` mode checks Android hardware key attestation (one key per
     install), and the hosted testnet issuer runs it since 2026-10-08; `insecure-test` starts
-    only with `allow_insecure = true`.
+    only with `allow_insecure = true`. The hosted testnet maker asks for no tokens since
+    2026-10-14 (the owner's call, so any phone can swap; `docs/deployment.md` says how to undo).
 - Tokens count walk-aways (2026-10-07): a device walks away from at most `tokens_per_day` swaps
   a day (3) and makes as many as it pays into. The gate holds an accept's token while it runs
   and keeps it only once the quote is taken (`Spend::keep`): a refused accept leaves it

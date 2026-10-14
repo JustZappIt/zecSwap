@@ -235,6 +235,12 @@ status read, and a reverse swap (`0x464e937b…`) on a token it held, handed bac
 funded. No returned token has been spent yet: that waits until a device's three issued tokens for
 the day are gone.
 
+Since 2026-10-14 04:42 UTC the testnet maker asks for no tokens, as the owner asked, so any phone,
+emulator or the CLI can swap there: its `[tokens]` table is commented out, the config with it is
+`/etc/zecswap-maker/config.toml.bak-20261013-tokens`, and public info no longer shows
+`tokenReturnKey`. The app posts an accept without a token first, so it needed no change. The issuer
+still runs; uncomment the table and restart the maker to ask for tokens again.
+
 Rollback files are in `/var/backups/zecswap/20261007-tokens-9b52dfc` (root-only): the maker config,
 the previous `maker.sqlite`, the nginx site, `previous-current`, and the two public keys. Disable and
 stop `zecswap-issuer`, restore the config as `root:zecswap-maker` `0640` and the store, point
