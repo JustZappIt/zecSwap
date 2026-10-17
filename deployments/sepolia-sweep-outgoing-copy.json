@@ -1,0 +1,28 @@
+{
+  "chainId": 11155111,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "since": "2026-10-17T22:59Z",
+  "sourceCommit": "05cab29",
+  "source": "1765bb6 with 1faaf63 applied",
+  "release": "/opt/zecswap/releases/20261017-sweep-outgoing-copy-05cab29",
+  "previousRelease": "/opt/zecswap/releases/20261014-monitor-funds-1765bb6",
+  "backup": "/var/backups/zecswap/20261017-sweep-outgoing-copy-05cab29",
+  "makerSha256": "7dba650b757e8e5bc8b5f0732e008035e749ce80c622b17f926559cbf71bf280",
+  "previousMakerSha256": "732f4ccac8f527b5f6e038e199b202f27adcd1eb77e8535161d84c66dcc5e133",
+  "relayerSha256": "f35ef7ecd1db7caa6781169a0d3d109a336f6838d06b918afb9261699cc93d2f",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "restarted": ["maker"],
+  "changes": {
+    "maker": "its sweeps carry no outgoing copy, which each swap's user could read with the joint viewing key to learn where the maker's ZEC went and how much"
+  },
+  "validation": {
+    "before": "release, release maker and running maker as recorded; health 204",
+    "after": "health 204 with the staged maker running; info: testnet, chain 11155111, this contract, reverse on; no warning or error in 45 s",
+    "publicGateway": "maker health 204 and the same info through the Worker",
+    "liveSuite": {
+      "happy": "maker sweeps af07fe737cd8b7b09ba5f914b27275d0f455bfbfc5cec115b70c784730377cb1 and 936e1ce2339934e0dfb8a07b419cebbcaf6641ee1b6e61984cfd74863fb89886",
+      "underpaid": "refund sweep 1daac90a0d26749674769f9cf6724ffce58de2572e194ec931af4ab19786a323",
+      "neverClaimed": "refund sweep 36d2893059ee8c96f6d847fa004c56f4563b4c9230eb5c6d39e549127c64a8ca"
+    }
+  }
+}

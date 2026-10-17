@@ -37,6 +37,8 @@ posted again never sends a second transaction or answers `500`, and the gateway 
 at a time ([October 12 concurrent swaps](#october-12-concurrent-swaps)). Since 18:31 UTC a pass
 reads all its swaps in one call and never again one a finalized block holds settled, and both
 services log and export what they ask their RPC ([October 12 RPC budget](#october-12-rpc-budget)).
+Since about 22:59 UTC on October 17 the maker's sweeps carry no outgoing copy a swap's user could
+read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-an-outgoing-copy)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -234,6 +236,12 @@ issuer over Tor, which the maker handed back after the deposit and the phone col
 status read, and a reverse swap (`0x464e937b…`) on a token it held, handed back once the escrow was
 funded. No returned token has been spent yet: that waits until a device's three issued tokens for
 the day are gone.
+
+Since 2026-10-14 04:42 UTC the testnet maker asks for no tokens, as the owner asked, so any phone,
+emulator or the CLI can swap there: its `[tokens]` table is commented out, the config with it is
+`/etc/zecswap-maker/config.toml.bak-20261013-tokens`, and public info no longer shows
+`tokenReturnKey`. The app posts an accept without a token first, so it needed no change. The issuer
+still runs; uncomment the table and restart the maker to ask for tokens again.
 
 Rollback files are in `/var/backups/zecswap/20261007-tokens-9b52dfc` (root-only): the maker config,
 the previous `maker.sqlite`, the nginx site, `previous-current`, and the two public keys. Disable and
@@ -603,6 +611,68 @@ Rollback files are in `/var/backups/zecswap/20261012-rpc-budget-c42ac51` (root-o
 `maker-config.toml`, `relayer-config.toml`, `maker.sqlite`, `railgun-sends.sqlite` and
 `previous-current`. Point `/opt/zecswap/current` back at the previous release and restart the maker
 and relayer; the stores didn't change, so they stay.
+
+## October 14 testnet inventory and monitor
+
+At 17:45 UTC the maker, stopped for a minute, minted 1,000 test USDC and deposited them
+(`add-inventory 1000000000 --mint`: mint `0xa49773c5…`, approve `0x5e83a9ab…`, deposit
+`0x97ae7f45…`, Sepolia blocks 11914834–11914836), taking its inventory from 28.642822 to
+1,028.642822. ZEC → USDC swaps had had room for one at the 20 USDC cap.
+
+The dashboard's maker telemetry check then failed now and then ("Unavailable, timed out, or
+invalid response"). With its Zcash wallet idle, the maker took about 9 seconds to answer its
+monitor, against the dashboard's 12: every read took a wallet summary, which covers every account,
+once for each of the 50 swaps it lists, again for the inventory and for each unsettled swap. With
+the wallet busy it skipped them all and answered in 0.05 s, so the check came and went. The
+watchtower likewise took a summary per watched swap after each sync, holding the wallet meanwhile.
+
+At 20:17 UTC the testnet maker restarted on a build of `1765bb6` in
+`/opt/zecswap/releases/20261014-monitor-funds-1765bb6`, now `/opt/zecswap/current`, which reads
+every account's funds from one summary. The relayer and issuer are the previous release's, byte for
+byte, and did not restart; no swap was in progress and no config changed. Six monitor reads ten
+seconds apart then took 0.15–0.51 s, the dashboard's check read healthy at 561 ms, and the maker
+logged no warning or error. [sepolia-monitor-funds.json](../deployments/sepolia-monitor-funds.json)
+records the checksums. The mainnet maker still reads funds the old way.
+
+Rollback files are in `/var/backups/zecswap/20261014-monitor-funds-1765bb6` (root-only):
+`maker-config.toml` and `previous-current`. Point `/opt/zecswap/current` back at the previous
+release and restart the maker; the store didn't change.
+
+## October 17 sweeps without an outgoing copy
+
+Both sides of a swap hold its joint account's viewing key, and every sweep from a joint account
+sealed its output's outgoing copy under that account's outgoing key. So each swap's user could
+read where the maker swept its ZEC, a claimed deposit or a refunded reverse escrow, and how much:
+the maker's `sweep_to`, on mainnet its own ZEC inventory, or any wallet named there later. Since
+`1faaf63` (`fix/sweep-outgoing-copy`) a sweep carries no outgoing copy. The live suite's `happy`,
+`underpaid` and `never-claimed` passed with it on Base Sepolia and the Zcash testnet on October 16
+and 17; its makers' sweeps `af07fe73…` and `936e1ce2…` and the CLI's refund sweeps `1daac90a…`
+and `36d28930…` were mined.
+
+At about 22:59 UTC the testnet maker restarted on a build of `05cab29`, the `1765bb6` it ran with
+`1faaf63` applied, in `/opt/zecswap/releases/20261017-sweep-outgoing-copy-05cab29`, now
+`/opt/zecswap/current`. At about 23:00 UTC the mainnet maker restarted on a build of `1faaf63`,
+the `cc8e06e` code it ran with the fix, in
+`/opt/zecswap-mainnet/releases/20261017-sweep-outgoing-copy-1faaf63`, now
+`/opt/zecswap-mainnet/current`; it still reads funds the old way. On both networks the relayer
+and issuer are the previous release's, byte for byte, and did not restart; no config changed.
+
+Before changing anything, the deploy checked the staged checksums and, on each network, that the
+release, its maker and the running maker were the recorded ones and that health answered 204.
+After each restart it saw health 204 with the staged maker running, the maker's info naming its
+network, chain and contract, and no warning or error in the next 45 seconds; both public gateways
+then answered health and info the same.
+[sepolia-sweep-outgoing-copy.json](../deployments/sepolia-sweep-outgoing-copy.json) and
+[mainnet-beta.json](../deployments/mainnet-beta.json) record the checksums.
+
+The app's own sweeps still carry the copy: Zcash SDK 3.2.1, which builds them, always keeps it.
+Until the app sweeps each refund and reverse swap's ZEC to a never-used address, the maker can
+read the address it goes to, today the wallet's receive address.
+
+Rollback files are in `/var/backups/zecswap/20261017-sweep-outgoing-copy-05cab29` and
+`/var/backups/zecswap-mainnet/20261017-sweep-outgoing-copy-1faaf63` (root-only):
+`maker-config.toml` and `previous-current`. Point the network's current link back at the release
+`previous-current` names and restart its maker; the stores didn't change.
 
 ## Deployment sequence
 
