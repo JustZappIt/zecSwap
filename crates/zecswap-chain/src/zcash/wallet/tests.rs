@@ -1,14 +1,28 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use orchard::builder::BundleType;
+use orchard::bundle::BundleVersion;
+use orchard::keys::Scope;
+use orchard::note_encryption::COMPACT_NOTE_SIZE;
+use orchard::value::NoteValue;
+use orchard::{Anchor, Bundle};
 use tempfile::TempDir;
 use zcash_client_backend::data_api::WalletCommitmentTrees;
-use zcash_client_backend::data_api::chain::{ChainState, CommitmentTreeRoot};
+use zcash_client_backend::data_api::chain::{
+    BlockCache, ChainState, CommitmentTreeRoot, scan_cached_blocks,
+};
+use zcash_client_backend::proto::compact_formats::{
+    ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx,
+};
+use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::memo::MemoBytes;
 use zecswap_core::{SecretShare, ViewingKeys};
 
 use super::*;
 
 const TIP: u32 = 4_395_130;
+const DEPOSIT: u64 = 1_000_000;
 
 fn random_joint() -> JointAccount {
     JointAccount::derive(
@@ -24,10 +38,7 @@ fn import_at(wallet: &mut Wallet, joint: &JointAccount, birthday: u32) -> Accoun
         UnifiedFullViewingKey::decode(&wallet.network, &joint.ufvk(wallet.network.network_type()))
             .unwrap();
     let birthday = AccountBirthday::from_parts(
-        ChainState::empty(
-            BlockHeight::from_u32(birthday - 1),
-            zcash_primitives::block::BlockHash([0; 32]),
-        ),
+        ChainState::empty(BlockHeight::from_u32(birthday - 1), BlockHash([0; 32])),
         None,
     );
     wallet
@@ -237,4 +248,119 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
     assert!(!wallet.is_mined(txid).unwrap());
     assert!(!wallet.is_confirmed(txid).unwrap());
     assert!(!wallet.is_confirmed(TxId::from_bytes([2; 32])).unwrap());
+}
+
+/// `TIP` holding an Ironwood deposit of `DEPOSIT` to `to`, as lightwalletd serves it, and the
+/// block after it.
+fn deposit_blocks(to: orchard::Address) -> Vec<CompactBlock> {
+    let version = BundleVersion::ironwood_v3();
+    let mut builder = orchard::builder::Builder::new(
+        BundleType::DEFAULT,
+        version,
+        version.default_flags(),
+        Anchor::empty_tree(),
+    )
+    .unwrap();
+    builder
+        .add_output(
+            None,
+            to,
+            NoteValue::from_raw(DEPOSIT),
+            MemoBytes::empty().into_bytes(),
+        )
+        .unwrap();
+    let (bundle, meta): (Bundle<_, i64>, _) =
+        builder.build(&mut UnwrapErr(SysRng)).unwrap().unwrap();
+    let action = &bundle.actions()[meta.output_action_index(0).unwrap()];
+    let note = action.encrypted_note();
+    let deposit = CompactTx {
+        txid: vec![9; 32],
+        ironwood_actions: vec![CompactOrchardAction {
+            nullifier: action.nullifier().to_bytes().to_vec(),
+            cmx: action.cmx().to_bytes().to_vec(),
+            ephemeral_key: note.epk_bytes.to_vec(),
+            ciphertext: note.enc_ciphertext.0[..COMPACT_NOTE_SIZE].to_vec(),
+        }],
+        ..Default::default()
+    };
+    [vec![deposit], vec![]]
+        .into_iter()
+        .zip(0u8..)
+        .map(|(vtx, i)| CompactBlock {
+            height: u64::from(TIP + u32::from(i)),
+            hash: vec![i + 1; 32],
+            prev_hash: vec![i; 32],
+            vtx,
+            chain_metadata: Some(ChainMetadata {
+                ironwood_commitment_tree_size: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_other_side_cannot_read_where_a_sweep_went() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork)
+        .unwrap()
+        .with_confirmations(NonZeroU32::new(1).unwrap());
+    let (e, z) = (
+        SecretShare::random(UnwrapErr(SysRng)),
+        SecretShare::random(UnwrapErr(SysRng)),
+    );
+    let joint = JointAccount::derive(
+        &e.public(),
+        &z.public(),
+        &ViewingKeys::random(UnwrapErr(SysRng)),
+    )
+    .unwrap();
+    let account = import_at(&mut wallet, &joint, TIP);
+    wallet
+        .blocks
+        .insert(deposit_blocks(joint.deposit_address()))
+        .await
+        .unwrap();
+    wallet
+        .db
+        .update_chain_tip(BlockHeight::from_u32(TIP + 1))
+        .unwrap();
+    scan_cached_blocks(
+        &wallet.network,
+        &wallet.blocks,
+        &mut wallet.db,
+        BlockHeight::from_u32(TIP),
+        &ChainState::empty(BlockHeight::from_u32(TIP - 1), BlockHash([0; 32])),
+        2,
+    )
+    .unwrap();
+    assert_eq!(wallet.funds(account).unwrap().spendable, DEPOSIT);
+
+    let home = random_joint();
+    let to = home
+        .unified_address(wallet.network.network_type())
+        .parse()
+        .unwrap();
+    let key = joint.spend_key(&e, &z).unwrap();
+    let txid = wallet
+        .sweep(&Prover::default(), account, &key, &to)
+        .unwrap();
+
+    let tx = wallet.db.get_transaction(txid).unwrap().unwrap();
+    let bundles = [tx.orchard_bundle(), tx.ironwood_bundle()];
+    let received: u64 = bundles
+        .iter()
+        .flatten()
+        .flat_map(|bundle| bundle.decrypt_outputs_with_keys(&[home.fvk().to_ivk(Scope::External)]))
+        .map(|(_, _, note, _, _)| note.value().inner())
+        .sum();
+    assert_eq!(received, DEPOSIT - wallet.fee(txid).unwrap().unwrap());
+    let joint_ovks = [Scope::External, Scope::Internal].map(|scope| joint.fvk().to_ovk(scope));
+    for bundle in bundles.iter().flatten() {
+        assert!(
+            bundle.recover_outputs_with_ovks(&joint_ovks).is_empty(),
+            "the joint viewing key reads where the sweep went"
+        );
+    }
 }

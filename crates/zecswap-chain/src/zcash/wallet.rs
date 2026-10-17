@@ -344,7 +344,9 @@ impl Wallet {
             320_000,
         )?;
         let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key), &intent)?);
-        self.store_proposal(prover, account, &proposal, sign)
+        // Both sides hold the joint viewing key: its outgoing key would show each side where
+        // the other's sweep went.
+        self.store_proposal(prover, account, &proposal, OvkPolicy::Discard, sign)
     }
 
     /// Stores a transaction paying every `(address, zatoshis)` from a seed-derived account;
@@ -385,7 +387,7 @@ impl Wallet {
         )
         .map_err(Error::wallet)?;
         let ask = SpendAuthorizingKey::from(usk.orchard());
-        self.store_proposal(prover, account, &proposal, |pczt| {
+        self.store_proposal(prover, account, &proposal, OvkPolicy::Sender, |pczt| {
             sign_own_spends(pczt, &ask)
         })
     }
@@ -483,6 +485,7 @@ impl Wallet {
         prover: &Prover,
         account: AccountUuid,
         proposal: &Proposal<StandardFeeRule, ReceivedNoteId>,
+        ovk_policy: OvkPolicy,
         sign: impl FnOnce(Pczt) -> Result<Pczt, Error>,
     ) -> Result<TxId, Error> {
         let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
@@ -491,7 +494,7 @@ impl Wallet {
             &SystemClock,
             &mut UnwrapErr(SysRng),
             account,
-            OvkPolicy::Sender,
+            ovk_policy,
             proposal,
             None,
             BundlePadding::DEFAULT,
