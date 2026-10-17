@@ -99,6 +99,17 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Sweeps hide where they go (2026-10-16): both sides hold a joint account's viewing key, and a
+  sweep sealed its outputs' outgoing copy under that account's outgoing key, so the maker could
+  read the user's own address from a refund or reverse receive sweep, and users the maker's
+  `sweep_to`. `Wallet::sweep` now builds with `OvkPolicy::Discard` (`pay` keeps `Sender`).
+  Nothing read the copy: the wallet records its sends from the PCZT and the signer checks
+  outputs with each note's own key (`the_other_side_cannot_read_where_a_sweep_went`). The CLI
+  sweeps back to a fresh address, as the live suite already did. Both networks' makers run it
+  since 2026-10-17 23:00 UTC (`docs/deployment.md`, October 17). Android's SDK 3.2.1 fixes
+  `Sender`, so the app must sweep to a never-used address each time (`docs/local/android.md`
+  section 4); it still sweeps to the wallet's receive address (zapp-android's
+  `JointAccounts.build`).
 - RPC budget (2026-10-12): the Alchemy account the maker, the relayer, `.env.testnet` and the
   Android dev builds share hit its 30M CU monthly cap at 13:48 UTC (the cap is per account, not
   per key). Nearly all of it was the maker: every swap settled in the last day was read three
