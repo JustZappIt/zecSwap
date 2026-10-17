@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -196,21 +197,31 @@ impl Wallet {
     }
 
     pub fn funds(&self, account: AccountUuid) -> Result<Funds, Error> {
+        Ok(self
+            .funds_by_account()?
+            .remove(&account)
+            .unwrap_or_default())
+    }
+
+    /// Every account's funds. A wallet summary costs as much for one account as for all, so
+    /// reading several accounts takes this once rather than `funds` for each.
+    pub fn funds_by_account(&self) -> Result<HashMap<AccountUuid, Funds>, Error> {
         let summary = self.db.get_wallet_summary(self.confirmations)?;
-        let Some(balance) = summary
-            .as_ref()
-            .and_then(|s| s.account_balances().get(&account))
-        else {
-            return Ok(Funds::default());
-        };
-        let pools = [balance.orchard_balance(), balance.ironwood_balance()];
-        Ok(Funds {
-            total: pools.iter().map(|pool| u64::from(pool.total())).sum(),
-            spendable: pools
-                .iter()
-                .map(|pool| u64::from(pool.spendable_value()))
-                .sum(),
-        })
+        Ok(summary
+            .iter()
+            .flat_map(|summary| summary.account_balances())
+            .map(|(account, balance)| {
+                let pools = [balance.orchard_balance(), balance.ironwood_balance()];
+                let funds = Funds {
+                    total: pools.iter().map(|pool| u64::from(pool.total())).sum(),
+                    spendable: pools
+                        .iter()
+                        .map(|pool| u64::from(pool.spendable_value()))
+                        .sum(),
+                };
+                (*account, funds)
+            })
+            .collect())
     }
 
     /// The account's Orchard-only unified address.
