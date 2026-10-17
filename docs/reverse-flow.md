@@ -25,7 +25,8 @@ a funding notification nor a reported ZEC transaction is proof that the other si
    The second authorization signs `Ready` and submits it to `POST /v1/reverse/ready` on the
    independent relayer. Do not offer this action based only on maker progress.
 6. The maker takes a claim lock and reveals its share, crediting USDC to its inventory.
-   The app reads and verifies that share, combines it with its own, and sweeps ZEC home.
+   The app reads and verifies that share, combines it with its own, and sweeps ZEC home, to
+   a never-used address: the maker holds the joint viewing key.
    `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
 
 The escrow's terms keep the contract's original roles: `Terms.maker` is the USDC side and
