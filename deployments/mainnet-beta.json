@@ -37,8 +37,8 @@
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "<workers vpc service id>",
   "worker": "zecswap-mainnet",
-  "release": "/opt/zecswap-mainnet/releases/20261012-mainnet-funding-cc8e06e",
-  "makerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
+  "release": "/opt/zecswap-mainnet/releases/20261017-sweep-outgoing-copy-1faaf63",
+  "makerSha256": "3699a9dfb0d2d85785045e51a2f9ccab672b42ab2d68cf2272be87b8b2846969",
   "relayerSha256": "285976bfc72d313330b58dc2d2a45ae87a8b4a8d7685ea693f8169611385e9d1",
   "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
   "inventory": "136408198",
@@ -103,7 +103,7 @@
     }
   },
   "zcashConfirmations": 2,
-  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-lanes-cc17701",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-funding-cc8e06e",
   "minTipGwei": 0.02,
   "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout",
   "laneFloats": {
@@ -120,5 +120,12 @@
   "fundingFees": {
     "reason": "the first mainnet funding went out at the bare eth_gasPrice, 0.068 gwei, as 0x6d088b28\u2026dc79 and never mined; the app posted it twice more and the relayer signed a second at the same nonce, 0x65db248f\u2026, which did",
     "fix": "cc8e06e: fundings pay EIP-1559 fees tipping at least 0.02 gwei, and a funding posted again while the first may land gets its hash"
+  },
+  "sweeps": {
+    "reason": "every sweep from a joint account sealed its output's outgoing copy under the account's outgoing key, which each swap's user holds, so users could read the maker's sweep_to (its ZEC inventory) and the amounts",
+    "fix": "1faaf63: sweeps carry no outgoing copy; the maker alone restarted, at about 23:00 UTC on 2026-10-17, its relayer and issuer the previous release's byte for byte",
+    "previousMakerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
+    "backup": "/var/backups/zecswap-mainnet/20261017-sweep-outgoing-copy-1faaf63",
+    "validation": "before: release, release maker and running maker as recorded, health 204; after: health 204 with the staged maker running, info mainnet, chain 1, this contract, reverse on, no warning or error in 45 s; health and info the same through the Worker"
   }
 }

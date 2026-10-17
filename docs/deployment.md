@@ -37,6 +37,8 @@ posted again never sends a second transaction or answers `500`, and the gateway 
 at a time ([October 12 concurrent swaps](#october-12-concurrent-swaps)). Since 18:31 UTC a pass
 reads all its swaps in one call and never again one a finalized block holds settled, and both
 services log and export what they ask their RPC ([October 12 RPC budget](#october-12-rpc-budget)).
+Since about 22:59 UTC on October 17 the maker's sweeps carry no outgoing copy a swap's user could
+read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-an-outgoing-copy)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -635,6 +637,42 @@ records the checksums. The mainnet maker still reads funds the old way.
 Rollback files are in `/var/backups/zecswap/20261014-monitor-funds-1765bb6` (root-only):
 `maker-config.toml` and `previous-current`. Point `/opt/zecswap/current` back at the previous
 release and restart the maker; the store didn't change.
+
+## October 17 sweeps without an outgoing copy
+
+Both sides of a swap hold its joint account's viewing key, and every sweep from a joint account
+sealed its output's outgoing copy under that account's outgoing key. So each swap's user could
+read where the maker swept its ZEC, a claimed deposit or a refunded reverse escrow, and how much:
+the maker's `sweep_to`, on mainnet its own ZEC inventory, or any wallet named there later. Since
+`1faaf63` (`fix/sweep-outgoing-copy`) a sweep carries no outgoing copy. The live suite's `happy`,
+`underpaid` and `never-claimed` passed with it on Base Sepolia and the Zcash testnet on October 16
+and 17; its makers' sweeps `af07fe73…` and `936e1ce2…` and the CLI's refund sweeps `1daac90a…`
+and `36d28930…` were mined.
+
+At about 22:59 UTC the testnet maker restarted on a build of `05cab29`, the `1765bb6` it ran with
+`1faaf63` applied, in `/opt/zecswap/releases/20261017-sweep-outgoing-copy-05cab29`, now
+`/opt/zecswap/current`. At about 23:00 UTC the mainnet maker restarted on a build of `1faaf63`,
+the `cc8e06e` code it ran with the fix, in
+`/opt/zecswap-mainnet/releases/20261017-sweep-outgoing-copy-1faaf63`, now
+`/opt/zecswap-mainnet/current`; it still reads funds the old way. On both networks the relayer
+and issuer are the previous release's, byte for byte, and did not restart; no config changed.
+
+Before changing anything, the deploy checked the staged checksums and, on each network, that the
+release, its maker and the running maker were the recorded ones and that health answered 204.
+After each restart it saw health 204 with the staged maker running, the maker's info naming its
+network, chain and contract, and no warning or error in the next 45 seconds; both public gateways
+then answered health and info the same.
+[sepolia-sweep-outgoing-copy.json](../deployments/sepolia-sweep-outgoing-copy.json) and
+[mainnet-beta.json](../deployments/mainnet-beta.json) record the checksums.
+
+The app's own sweeps still carry the copy: Zcash SDK 3.2.1, which builds them, always keeps it.
+Until the app sweeps each refund and reverse swap's ZEC to a never-used address, the maker can
+read the address it goes to, today the wallet's receive address.
+
+Rollback files are in `/var/backups/zecswap/20261017-sweep-outgoing-copy-05cab29` and
+`/var/backups/zecswap-mainnet/20261017-sweep-outgoing-copy-1faaf63` (root-only):
+`maker-config.toml` and `previous-current`. Point the network's current link back at the release
+`previous-current` names and restart its maker; the stores didn't change.
 
 ## Deployment sequence
 
