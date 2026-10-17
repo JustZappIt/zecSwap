@@ -182,7 +182,7 @@ async fn sweep_back(ctx: &mut Session, user: &User, run: &mut Run) -> Result<()>
     .await?;
     // Nothing left means an earlier run already swept it.
     if ctx.wallet.funds(account)?.total > 0 {
-        let home: ZcashAddress = ctx.wallet.address(ctx.account()?)?.parse()?;
+        let home: ZcashAddress = ctx.wallet.fresh_address(ctx.account()?)?.parse()?;
         let txid = ctx.wallet.sweep(&ctx.prover, account, &key, &home)?;
         ctx.broadcast(txid).await?;
         println!("swept the deposit back in {txid}; waiting for it to be mined");
