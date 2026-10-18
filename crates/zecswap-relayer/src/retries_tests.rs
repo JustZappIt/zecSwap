@@ -127,6 +127,7 @@ impl Deployment {
             reverse_funding: None,
             railgun_sends: None,
             gas_alerts: None,
+            deposits: None,
         };
         let key = &self.relayer_key;
         let relayer = Relayer {
@@ -141,6 +142,8 @@ impl Deployment {
             monitor: crate::monitor::Monitor::new(MonitorToken::default()),
             sends: None,
             funding: None,
+
+            deposits: None,
             pricing: None,
             history: None,
         };

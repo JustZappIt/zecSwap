@@ -23,12 +23,14 @@ pub(crate) const PAYOUT_GAS: u64 = 1_500_000;
 /// besides, as the fee cap their float is kept at follows the base fee.
 const TOP_UP_INTERVAL: Duration = Duration::from_secs(120);
 
-/// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings.
+/// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings; deposits,
+/// whose fees in the relayer's token collect in their account.
 pub(crate) struct Lanes {
     pub(crate) claims: Settlement,
     pub(crate) locks: Settlement,
     pub(crate) sends: Settlement,
     pub(crate) funding: Settlement,
+    pub(crate) deposits: Settlement,
 }
 
 impl Lanes {
@@ -60,6 +62,7 @@ impl Lanes {
             locks: lane("locks")?,
             sends: lane("sends")?,
             funding: lane("funding")?,
+            deposits: lane("deposits")?,
         })
     }
 
@@ -75,25 +78,38 @@ impl Lanes {
         if let Some(funding) = &config.reverse_funding {
             used.push(("funding", &self.funding, funding.max_gas_limit));
         }
+        if let Some(deposits) = &config.deposits {
+            used.push(("deposits", &self.deposits, deposits.max_gas_limit));
+        }
         used
+    }
+
+    fn all(&self) -> [(&'static str, &Settlement); 5] {
+        [
+            ("claims", &self.claims),
+            ("locks", &self.locks),
+            ("sends", &self.sends),
+            ("funding", &self.funding),
+            ("deposits", &self.deposits),
+        ]
     }
 }
 
-/// Sends each lane's ETH, all but its gas, to `to`. Run with the relayer stopped: its next top-up
-/// would fill them again.
+/// Sends each lane's tokens, the deposit fees it collected, and then its ETH, all but its gas, to
+/// `to`. Run with the relayer stopped: its next top-up would fill them again.
 pub async fn drain_lanes(
     config: &Config,
     key: &PrivateKeySigner,
     to: Address,
 ) -> anyhow::Result<()> {
     let lanes = Lanes::connect(&config.evm_rpc, config.contract, key)?;
-    for (lane, settlement) in [
-        ("claims", &lanes.claims),
-        ("locks", &lanes.locks),
-        ("sends", &lanes.sends),
-        ("funding", &lanes.funding),
-    ] {
+    for (lane, settlement) in lanes.all() {
         let account = settlement.account().context("a lane sends")?;
+        let tokens = settlement.token_balance(config.token, account).await?;
+        if tokens > 0 {
+            let hash = settlement.transfer_token(config.token, to, tokens).await?;
+            info!(lane, %account, tokens, %hash, "drained a lane's tokens");
+        }
         let balance = settlement.eth_balance(account).await?;
         // Twice a transfer's gas at today's cap, so a base fee that rises meanwhile still fits.
         let gas = U256::from(2 * 21_000) * U256::from(settlement.max_fee_per_gas().await?);
@@ -135,6 +151,7 @@ impl Relayer {
                 () = self.lanes.locks.sent() => {}
                 () = self.lanes.sends.sent() => {}
                 () = self.lanes.funding.sent() => {}
+                () = self.lanes.deposits.sent() => {}
             }
         }
     }
@@ -189,13 +206,14 @@ impl Relayer {
         Ok(sent)
     }
 
-    /// Sends recorded before the lanes were signed by the relayer's own account.
+    /// The account that signed a recorded send: sends recorded before the lanes were signed by
+    /// the relayer's own account.
     pub(crate) fn sender_of(&self, signed: &Signed) -> &Settlement {
-        if signed.signer() == self.lanes.sends.account() {
-            &self.lanes.sends
-        } else {
-            &self.settlement
-        }
+        let signer = signed.signer();
+        [&self.lanes.sends, &self.lanes.deposits]
+            .into_iter()
+            .find(|lane| signer.is_some() && signer == lane.account())
+            .unwrap_or(&self.settlement)
     }
 
     pub(crate) fn lane_accounts(&self) -> BTreeMap<&'static str, Address> {

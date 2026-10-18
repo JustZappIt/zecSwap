@@ -28,10 +28,10 @@ const SETTLED_DEPTH: u64 = 12;
 /// Seconds before a recorded transaction no node knows is broadcast again.
 const REBROADCAST_AFTER: u64 = 60;
 /// Seconds between looks for the receipt of a send this long unmined: a dropped one never mines.
-const UNMINED_RECHECK: u64 = 600;
-/// Seconds after a send that reverted before the relayer sends its notes again: the gas of one
-/// failed send an hour is the most a set of notes can cost it.
-const REVERTED_COOLDOWN: u64 = 3600;
+pub(crate) const UNMINED_RECHECK: u64 = 600;
+/// Seconds after a send that reverted before the relayer sends its notes, or another deposit of
+/// its address, again: the gas of one failed send an hour is the most either can cost it.
+pub(crate) const REVERTED_COOLDOWN: u64 = 3600;
 /// The most sends one export carries; older ones need a later `since`.
 const LEDGER_LIMIT: usize = 1000;
 
@@ -53,10 +53,11 @@ pub enum Sending {
 }
 
 /// What became of a recorded send.
-enum Fate {
-    /// Pending, or mined and spending its notes.
-    Sent,
-    /// Mined, and spent nothing.
+pub(crate) enum Fate {
+    Pending,
+    /// Mined, and done what it does.
+    Landed,
+    /// Mined, and did nothing.
     Reverted,
     /// Can never land: its nonce went to another transaction.
     Dead,
@@ -221,31 +222,39 @@ impl Relayer {
     /// Delivers the relayer's Telegram messages, where alerts are on, for as long as it runs,
     /// and with `[gas_alerts]` watches the ETH of its own account.
     pub async fn run_alerts(self: Arc<Self>) {
-        let Some(sends) = &self.sends else {
-            return;
+        let sends = async {
+            let Some(sends) = &self.sends else {
+                return;
+            };
+            let gas = async {
+                if let Some(alerts) = &self.config.gas_alerts
+                    && sends.telegram.enabled()
+                {
+                    zecswap_alerts::gas::watch(
+                        &sends.journal.0,
+                        &self.settlement,
+                        alerts,
+                        "Relayer",
+                        self.config.network.name(),
+                        self.domain.chain_id,
+                    )
+                    .await;
+                }
+            };
+            tokio::join!(zecswap_alerts::run(&sends.journal.0, &sends.telegram), gas);
         };
-        let gas = async {
-            if let Some(alerts) = &self.config.gas_alerts
-                && sends.telegram.enabled()
-            {
-                zecswap_alerts::gas::watch(
-                    &sends.journal.0,
-                    &self.settlement,
-                    alerts,
-                    "Relayer",
-                    self.config.network.name(),
-                    self.domain.chain_id,
-                )
-                .await;
+        let deposits = async {
+            if let Some(deposits) = &self.deposits {
+                zecswap_alerts::run(deposits.outbox(), &deposits.telegram).await;
             }
         };
-        tokio::join!(zecswap_alerts::run(&sends.journal.0, &sends.telegram), gas);
+        tokio::join!(sends, deposits);
     }
 
     /// Records each send's receipt once it has mined and values its gas and fee, a bounded
     /// number a pass, for as long as the relayer runs.
     pub async fn run_costs(self: Arc<Self>) {
-        if self.sends.is_none() {
+        if self.sends.is_none() && self.deposits.is_none() {
             return;
         }
         loop {
@@ -271,6 +280,11 @@ impl Relayer {
     }
 
     pub(crate) async fn cost_pass(&self) -> anyhow::Result<()> {
+        self.send_cost_pass().await?;
+        self.deposit_cost_pass().await
+    }
+
+    async fn send_cost_pass(&self) -> anyhow::Result<()> {
         let Some(sends) = &self.sends else {
             return Ok(());
         };
@@ -407,8 +421,8 @@ impl Relayer {
         let _one = sends.one_at_a_time.lock().await;
         let id = transact.id();
         if let Some(entry) = sends.journal.find(chain_id, id)? {
-            match self.fate(&entry).await? {
-                Fate::Sent | Fate::Reverted => {
+            match self.fate(&entry.signed, entry.sent_at).await? {
+                Fate::Pending | Fate::Landed | Fate::Reverted => {
                     return Ok(Sending::Again(Sent {
                         transactions: vec![entry.signed.hash],
                     }));
@@ -420,8 +434,8 @@ impl Relayer {
         let nullifiers = transact.nullifiers();
         let (mut spending, mut unknown, mut cooling) = (Vec::new(), false, 0);
         for entry in sends.journal.spending(chain_id, &nullifiers)? {
-            match self.fate(&entry).await? {
-                Fate::Sent => spending.push(entry.signed.hash),
+            match self.fate(&entry.signed, entry.sent_at).await? {
+                Fate::Pending | Fate::Landed => spending.push(entry.signed.hash),
                 Fate::Reverted => {
                     let left = (entry.sent_at + REVERTED_COOLDOWN).saturating_sub(now());
                     cooling = cooling.max(left);
@@ -467,29 +481,44 @@ impl Relayer {
         }))
     }
 
-    async fn fate(&self, entry: &Entry) -> Result<Fate> {
-        let chain = self.sender_of(&entry.signed);
-        Ok(match chain.transaction_status(entry.signed.hash).await? {
-            Status::Pending | Status::Mined { succeeded: true } => Fate::Sent,
+    /// What became of a send `signed` recorded at `sent_at`, asking the account that signed it.
+    pub(crate) async fn fate(&self, signed: &Signed, sent_at: u64) -> Result<Fate> {
+        let chain = self.sender_of(signed);
+        Ok(match chain.transaction_status(signed.hash).await? {
+            Status::Pending => Fate::Pending,
+            Status::Mined { succeeded: true } => Fate::Landed,
             Status::Mined { succeeded: false } => Fate::Reverted,
-            Status::Unknown if chain.nonce_taken(entry.signed.nonce, SETTLED_DEPTH).await? => {
-                Fate::Dead
-            }
+            Status::Unknown if chain.nonce_taken(signed.nonce, SETTLED_DEPTH).await? => Fate::Dead,
             Status::Unknown
-                if now().saturating_sub(entry.sent_at) >= REBROADCAST_AFTER
-                    && chain.rebroadcast(&entry.signed).await? =>
+                if now().saturating_sub(sent_at) >= REBROADCAST_AFTER
+                    && chain.rebroadcast(signed).await? =>
             {
-                Fate::Sent
+                Fate::Pending
             }
             Status::Unknown => Fate::Unknown,
         })
     }
+
+    /// Counts a request that may have answered with what it sent before, which isn't counted
+    /// again.
+    pub(crate) fn observe_sending(
+        self: &Arc<Self>,
+        operation: &'static str,
+        result: Result<Sending>,
+    ) -> Result<Sent> {
+        match result {
+            Ok(Sending::Again(sent)) => Ok(sent),
+            Ok(Sending::New(sent)) => self.observe(operation, Ok(sent)),
+            Err(error) => self.observe(operation, Err(error)),
+        }
+    }
 }
 
-fn refused(error: SendError) -> RelayerError {
+pub(crate) fn refused(error: SendError) -> RelayerError {
     match error {
         SendError::Rejected(reason) => RelayerError::Rejected(reason.into()),
         SendError::Spent => RelayerError::Spent(Vec::new()),
+        SendError::Later(later) => crate::deposits::later(later),
         SendError::Chain(error) => error.into(),
         SendError::Unknown(_) => unsettled(),
     }
@@ -753,7 +782,7 @@ impl Journal {
     }
 }
 
-fn word(row: &Row<'_>, index: usize) -> rusqlite::Result<B256> {
+pub(crate) fn word(row: &Row<'_>, index: usize) -> rusqlite::Result<B256> {
     let bytes: Vec<u8> = row.get(index)?;
     B256::try_from(bytes.as_slice()).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Blob, e.into())

@@ -25,6 +25,19 @@ pub(crate) enum SwapFee {
     Payout,
     /// Paid by a reverse swap's funding: the funding and its ready.
     Funding,
+    /// Kept from a deposit, before its percentage: a first deposit from an address.
+    Deposit,
+}
+
+impl SwapFee {
+    /// How long a quote is honored: a swap's for as long as it runs, a deposit's for as long as
+    /// a send's rate, time enough to sign and post.
+    fn validity(self) -> u64 {
+        match self {
+            SwapFee::Payout | SwapFee::Funding => SWAP_FEE_VALIDITY,
+            SwapFee::Deposit => SEND_FEE_VALIDITY,
+        }
+    }
 }
 
 pub(crate) struct GasPricing {
@@ -33,6 +46,7 @@ pub(crate) struct GasPricing {
     pub(crate) rates: Quoted,
     pub(crate) payouts: Quoted,
     pub(crate) fundings: Quoted,
+    pub(crate) deposits: Quoted,
     gas_price: Mutex<Option<(u64, u128)>>,
 }
 
@@ -75,6 +89,7 @@ impl GasPricing {
             rates: Quoted::default(),
             payouts: Quoted::default(),
             fundings: Quoted::default(),
+            deposits: Quoted::default(),
             gas_price: Mutex::default(),
         })
     }
@@ -126,13 +141,13 @@ impl GasPricing {
             return (floor, false);
         };
         let quote = gas_fee(gas, gas_price, rate).max(floor);
-        self.quoted(fee).record(now, SWAP_FEE_VALIDITY, quote);
+        self.quoted(fee).record(now, fee.validity(), quote);
         (quote, true)
     }
 
-    /// The least a swap fee signed or proved now must pay: the lowest quoted within
-    /// `SWAP_FEE_VALIDITY`, now's included. With nothing priced or quoted it is `floor`: a claim
-    /// is never held up for want of a price.
+    /// The least a swap fee signed or proved now must pay: the lowest quoted within its validity,
+    /// now's included. With nothing priced or quoted it is `floor`: a claim is never held up for
+    /// want of a price.
     pub(crate) async fn honored_fee(
         &self,
         fee: SwapFee,
@@ -143,7 +158,7 @@ impl GasPricing {
     ) -> u128 {
         let (current, priced) = self.quote_fee(fee, now, floor, gas, gas_price).await;
         self.quoted(fee)
-            .lowest(now, SWAP_FEE_VALIDITY, priced.then_some(current))
+            .lowest(now, fee.validity(), priced.then_some(current))
             .map_or(floor, |least| least.max(floor))
     }
 
@@ -151,6 +166,7 @@ impl GasPricing {
         match fee {
             SwapFee::Payout => &self.payouts,
             SwapFee::Funding => &self.fundings,
+            SwapFee::Deposit => &self.deposits,
         }
     }
 

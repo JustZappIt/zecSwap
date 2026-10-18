@@ -81,6 +81,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         reverse_funding: None,
         railgun_sends: None,
         gas_alerts: None,
+        deposits: None,
     };
     let relayer_for = |config: Config| Relayer {
         config,
@@ -94,6 +95,8 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         funding: None,
+
+        deposits: None,
         pricing: None,
         history: None,
     };
