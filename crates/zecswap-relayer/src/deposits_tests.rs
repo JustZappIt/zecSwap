@@ -511,6 +511,11 @@ async fn what_the_relayer_cant_stand_behind_is_refused_before_it_reads_the_chain
             .unwrap()
             .contains("fetch the terms again")
     );
+    let mut extra = serde_json::to_value(&good).unwrap();
+    extra["gasPrice"] = serde_json::json!("1");
+    let (status, _, body) = post(&relayer, "/v1/deposits/shield", &extra).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "invalidRequest");
     assert_eq!(
         relayer.rpc_meter().usage().total(),
         before,
