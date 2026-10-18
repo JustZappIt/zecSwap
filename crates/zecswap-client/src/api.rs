@@ -7,7 +7,9 @@ use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
+use zecswap_api::relayer::{
+    Claim, Conflict, LockClaim, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
+};
 use zecswap_api::service::{ErrorCode, ErrorResponse};
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status, TICKET_HEADER};
 
@@ -160,9 +162,78 @@ pub enum Broadcast {
     Retry(String),
 }
 
+/// What a relayer made of a deposit posted to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deposited {
+    /// Submitted, in these transactions; the same request posted again names the same ones.
+    Sent(Vec<B256>),
+    /// Refused: nothing was sent, and nothing will be. A fee or validity gone stale is signed
+    /// again from the terms.
+    Refused(String),
+    /// The authorization is used, or another of the same address is on its way: follow the
+    /// relayer's transactions named, or with none, the chain.
+    Conflict(Vec<B256>),
+    /// Not now, or not known yet: post the same request again later, no sooner than `after`
+    /// where the relayer said.
+    Retry {
+        reason: String,
+        after: Option<Duration>,
+    },
+}
+
 impl RelayerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("relayer", url).map(Self)
+    }
+
+    /// Posts a deposit address's signed shield. Persist `request` before posting it, and post the
+    /// same bytes again while the answer is `Retry`.
+    pub async fn shield_deposit(&self, request: &ShieldDeposit) -> Deposited {
+        self.deposit("/v1/deposits/shield", request).await
+    }
+
+    /// Posts a deposit address's signed rescue, as `shield_deposit`.
+    pub async fn rescue_deposit(&self, request: &RescueDeposit) -> Deposited {
+        self.deposit("/v1/deposits/rescue", request).await
+    }
+
+    /// A `503` asking a short wait is waited out and posted again as the gateway's are, for up to
+    /// `BUSY_PATIENCE` in all; one asking longer comes back as `Retry`.
+    async fn deposit(&self, path: &str, request: &impl Serialize) -> Deposited {
+        let url = format!("{}{path}", self.0.url);
+        let response = match self.0.send(|| self.0.http.post(&url).json(request)).await {
+            Ok(response) => response,
+            Err(e) => {
+                return Deposited::Retry {
+                    reason: e.to_string(),
+                    after: None,
+                };
+            }
+        };
+        let (status, after) = (response.status(), retry_after(&response));
+        let body = response.text().await.unwrap_or_default();
+        if status.is_success() {
+            return match serde_json::from_str::<Sent>(&body) {
+                Ok(sent) => Deposited::Sent(sent.transactions),
+                Err(e) => Deposited::Retry {
+                    reason: format!("an unreadable answer: {e}"),
+                    after: None,
+                },
+            };
+        }
+        if status == StatusCode::CONFLICT
+            && let Ok(conflict) = serde_json::from_str::<Conflict>(&body)
+        {
+            return Deposited::Conflict(conflict.transactions);
+        }
+        let error = serde_json::from_str::<ErrorResponse>(&body).map_or(body, |e| e.error);
+        if status.is_client_error() {
+            return Deposited::Refused(error);
+        }
+        Deposited::Retry {
+            reason: format!("relayer answered {status}: {error}"),
+            after,
+        }
     }
 
     /// Gives each request `timeout` to answer, rather than three minutes.
@@ -250,7 +321,7 @@ impl RelayerApi {
         match (status, error) {
             (StatusCode::CONFLICT, Some(e)) if e.code == ErrorCode::AlreadySpent => {
                 Broadcast::Spent(
-                    serde_json::from_str::<AlreadySpent>(&body)
+                    serde_json::from_str::<Conflict>(&body)
                         .map(|spent| spent.transactions)
                         .unwrap_or_default(),
                 )
@@ -372,8 +443,8 @@ impl Endpoint {
     }
 
     /// Sends what `request` builds, and again while the answer is a `503` asking to come back
-    /// shortly: given before the request reaches the service, so sending it again sends nothing
-    /// twice.
+    /// shortly: the gateway's, given before the request reaches the service, or the relayer's,
+    /// whose requests send nothing twice.
     async fn send(
         &self,
         request: impl Fn() -> reqwest::RequestBuilder,

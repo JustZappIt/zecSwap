@@ -1,3 +1,4 @@
+mod deposit;
 mod store;
 mod swap;
 
@@ -75,6 +76,26 @@ enum Command {
         #[arg(long, env = "ZECSWAP_DEVICE", default_value = "zecswap-cli")]
         device: String,
     },
+    /// Shields this seed's deposit addresses' tokens into its Railgun wallet through a relayer,
+    /// resuming an unfinished shield, then shows the address to deposit to next.
+    Deposit {
+        #[arg(long, env = "ZECSWAP_RELAYER_URL")]
+        relayer: String,
+        /// The chain's RPC.
+        #[arg(long, env = "EVM_RPC_URL")]
+        rpc: String,
+        /// The Deposits contract.
+        #[arg(long, env = "ZECSWAP_DEPOSITS")]
+        contract: Address,
+        #[arg(long, env = "ZECSWAP_TOKEN")]
+        token: Address,
+        /// The most the relayer may keep, in token base units, before its percentage.
+        #[arg(long, default_value_t = 1_000_000)]
+        max_fee: u128,
+        /// The most the relayer may keep of a deposit besides, in basis points.
+        #[arg(long, default_value_t = 50)]
+        max_fee_bps: u32,
+    },
 }
 
 pub(crate) struct Session {
@@ -134,6 +155,26 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let network = cli.network;
     std::fs::create_dir_all(&cli.data_dir)?;
+    // Deposits never touch Zcash.
+    if let Command::Deposit {
+        relayer,
+        rpc,
+        contract,
+        token,
+        max_fee,
+        max_fee_bps,
+    } = cli.command
+    {
+        let args = deposit::DepositArgs {
+            relayer,
+            rpc,
+            contract,
+            token,
+            max_fee,
+            max_fee_bps,
+        };
+        return deposit::run(&Store::new(&cli.data_dir), network, args).await;
+    }
     let lightwalletd = cli.lightwalletd.as_deref();
     let mut ctx = Session {
         network,
@@ -191,6 +232,7 @@ async fn main() -> Result<()> {
             };
             swap::run(&mut ctx, args).await
         }
+        Command::Deposit { .. } => unreachable!(),
     }
 }
 

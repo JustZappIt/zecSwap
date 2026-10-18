@@ -96,6 +96,7 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
         reverse_funding: None,
         railgun_sends: None,
         gas_alerts: None,
+        deposits: None,
     };
     let relayer = zecswap_relayer::Relayer::new(config, relayer_key.clone(), None)
         .await
