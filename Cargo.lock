@@ -7113,6 +7113,7 @@ dependencies = [
 name = "zecswap-core"
 version = "0.1.0"
 dependencies = [
+ "bip32",
  "blake2b_simd",
  "ff 0.14.0",
  "group 0.14.0",
@@ -7123,6 +7124,9 @@ dependencies = [
  "pczt",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
+ "secp256k1 0.33.1",
+ "serde",
+ "serde_json",
  "sha3",
  "shardtree",
  "zcash_address",
