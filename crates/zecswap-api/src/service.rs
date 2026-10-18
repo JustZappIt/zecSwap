@@ -17,6 +17,8 @@ pub enum ErrorCode {
     TokenRequired,
     /// A note the transaction spends is spent, or a transaction already sent spends it.
     AlreadySpent,
+    /// A deposit's authorization is used, or another of its address's is on its way.
+    Conflict,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

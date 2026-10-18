@@ -31,6 +31,47 @@ pub struct Terms {
     /// Absent when the relayer sends no private Railgun sends or withdrawals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub railgun_sends: Option<RailgunSendTerms>,
+    /// Absent when the relayer takes no deposits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deposits: Option<DepositTerms>,
+}
+
+/// What the relayer takes to shield a deposit address's tokens into its owner's Railgun balance
+/// (`POST /v1/deposits/shield`), and to shield again what Railgun sent back to its vault
+/// (`POST /v1/deposits/rescue`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepositTerms {
+    /// The Deposits contract: every authorization's `to`.
+    pub contract: Address,
+    /// The account the relayer sends deposits from: an authorization's nonce commits to it, and
+    /// its fee goes there.
+    pub relayer: Address,
+    pub token: Address,
+    /// Token base units of the fee before its percentage, as a decimal string: the floor, or
+    /// where the relayer prices gas, a deposit's gas at the gas price and ETH price now if more.
+    /// A rescue pays this alone.
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    /// The fee's part in basis points of what is deposited (`deposit_fee`).
+    pub fee_bps: u32,
+    /// Until when `fee` is honored, where gas prices it: an authorization signed with it is
+    /// taken until then though gas rose since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_expires_at: Option<u64>,
+    /// The least a deposit moves, in token base units, as a decimal string.
+    #[serde(with = "decimal")]
+    pub min_value: u128,
+    /// The latest an authorization's `validBefore` may be, in seconds from now.
+    pub max_validity: u64,
+    /// The highest gas price the relayer pays, as a decimal string: above it deposits wait.
+    #[serde(with = "decimal")]
+    pub max_gas_price_wei: u128,
+}
+
+/// What a deposit of `value` pays: the terms' `fee` and its `fee_bps` part of `value`, rounded up.
+pub fn deposit_fee(fee: u128, fee_bps: u32, value: u128) -> u128 {
+    fee.saturating_add(value.saturating_mul(fee_bps.into()).div_ceil(10_000))
 }
 
 /// What the relayer takes to send a wallet's own Railgun transaction (`POST /v1/railgun/transact`)
@@ -156,16 +197,60 @@ pub struct RailgunTransact {
     pub value: u128,
 }
 
-/// `409` from `POST /v1/railgun/transact`: a note the transaction spends is spent, or a
-/// transaction the relayer sent spends it. `transactions` names the relayer's own that do, pending
-/// or mined; it is empty when the notes went in one the relayer did not send or no longer
-/// remembers.
+/// `409`: what the request asks is done, or under way in another transaction. From
+/// `POST /v1/railgun/transact` (`alreadySpent`): a note the transaction spends is spent, or a
+/// transaction the relayer sent spends it. From `POST /v1/deposits/*` (`conflict`): the
+/// authorization is used, or another of the same deposit address is on its way. `transactions`
+/// names the relayer's own that do it, pending or mined; it is empty when that is one the relayer
+/// did not send or no longer remembers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AlreadySpent {
+pub struct Conflict {
     pub code: crate::service::ErrorCode,
     pub error: String,
     pub transactions: Vec<B256>,
+}
+
+/// `POST /v1/deposits/shield`: a deposit address's EIP-3009 `receiveWithAuthorization` of `value`
+/// to the Deposits contract, whose nonce commits to `note`, `fee` and the terms' `relayer`
+/// (`zecswap_core::DepositsDomain::deposit_nonce`). Persist the exact body before posting, and
+/// post the same bytes again after any answer but `200`, `400` or `409`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShieldDeposit {
+    pub chain_id: u64,
+    pub contract: Address,
+    /// The deposit address.
+    pub from: Address,
+    /// Token base units the authorization moves, as a decimal string.
+    #[serde(with = "decimal")]
+    pub value: u128,
+    pub valid_after: u64,
+    pub valid_before: u64,
+    /// The note the deposit shields to.
+    pub note: Note,
+    /// What the relayer keeps, as a decimal string.
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    /// `r ‖ s ‖ v` over the token's EIP-712 digest of the authorization.
+    pub signature: FixedBytes<65>,
+}
+
+/// `POST /v1/deposits/rescue`: shields what Railgun sent back to `from`'s vault again, to `note`,
+/// on `from`'s signature (`zecswap_core::DepositsDomain::rescue`) naming the terms' `relayer`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RescueDeposit {
+    pub chain_id: u64,
+    pub contract: Address,
+    pub from: Address,
+    pub note: Note,
+    #[serde(with = "decimal")]
+    pub fee: u128,
+    /// The vault's `rescueNonces(from)`.
+    pub nonce: u64,
+    pub deadline: u64,
+    pub signature: FixedBytes<65>,
 }
 
 /// The transactions a request sent, in order.
@@ -194,5 +279,20 @@ impl From<&Note> for ShieldNote {
                 shield_key: note.shield_key.0,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_deposits_percentage_is_rounded_up_onto_the_fee() {
+        assert_eq!(deposit_fee(100_000, 10, 25_000_000), 125_000);
+        assert_eq!(deposit_fee(100_000, 10, 1), 100_001);
+        assert_eq!(deposit_fee(0, 10, 9_999), 10);
+        assert_eq!(deposit_fee(0, 10, 10_000), 10);
+        assert_eq!(deposit_fee(100_000, 0, 25_000_000), 100_000);
+        assert_eq!(deposit_fee(u128::MAX, 10, u128::MAX), u128::MAX);
     }
 }

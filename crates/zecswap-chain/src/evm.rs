@@ -1,6 +1,7 @@
 //! Client for the ZecSwap settlement contract, on whichever EVM chain it is deployed.
 
 mod canonical;
+pub mod deposits;
 mod events;
 pub mod funding;
 mod meter;
@@ -143,6 +144,36 @@ sol! {
         function transfer(address to, uint256 amount) external returns (bool);
         function balanceOf(address owner) external view returns (uint256);
         function mint(address to, uint256 amount) external;
+    }
+
+    // `shield` takes ten parameters, which the generated binding cannot shorten.
+    #[allow(clippy::too_many_arguments)]
+    #[sol(rpc)]
+    interface IDeposits {
+        event DepositShielded(address indexed from, uint256 value, uint256 fee, address relayer, bytes32 note);
+        event Rescued(address indexed from, uint256 value, uint256 fee, address relayer, bytes32 note);
+        function shield(address from, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint8 v, bytes32 r, bytes32 s) external;
+        function rescue(address from, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint64 nonce, uint64 deadline, bytes signature) external;
+        function vaultOf(address from) external view returns (address);
+        function deposited(address from) external view returns (bool);
+        function rescueNonces(address from) external view returns (uint64);
+        function TOKEN() external view returns (address);
+        function RAILGUN() external view returns (address);
+        function SANCTIONS() external view returns (address);
+    }
+
+    /// EIP-3009's, and the EIP-712 domain it signs under.
+    #[sol(rpc)]
+    interface IEip3009 {
+        function name() external view returns (string);
+        function version() external view returns (string);
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+        function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
+    }
+
+    #[sol(rpc)]
+    interface ISanctionsOracle {
+        function isSanctioned(address addr) external view returns (bool);
     }
 }
 
