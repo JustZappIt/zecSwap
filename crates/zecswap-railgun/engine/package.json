@@ -2,11 +2,26 @@
   "name": "zecswap-railgun-engine-check",
   "private": true,
   "description": "Checks zecswap-railgun against Railgun's own engine: `npm ci`, then `node vectors.cjs > ../tests/engine-vectors.json`, or pipe `cargo run -p zecswap-railgun --example note` into `node check.cjs`",
+  "//": [
+    "Overrides keep known-vulnerable packages out of this checker; none of them runs here.",
+    ".npmrc's legacy-peer-deps: react-native-fs (graphql-mesh, React Native only) made npm install React Native's toolchain, and chai-as-promised chai, as peers; Node never loads either.",
+    "axios, ws and underscore: patched releases of the majors their dependents pin."
+  ],
   "dependencies": {
     "@railgun-community/engine": "9.8.0",
     "@railgun-community/shared-models": "8.2.0",
     "@railgun-community/wallet": "11.1.0",
     "memdown": "6.1.1",
     "snarkjs": "0.7.5"
+  },
+  "overrides": {
+    "axios": "1.20.0",
+    "ethers": {
+      "ws": "8.22.0"
+    },
+    "@graphql-tools/executor-graphql-ws": {
+      "ws": "8.22.0"
+    },
+    "underscore": "1.13.8"
   }
 }
