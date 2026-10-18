@@ -37,8 +37,8 @@
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
   "vpcService": "<workers vpc service id>",
   "worker": "zecswap-mainnet",
-  "release": "/opt/zecswap-mainnet/releases/20261017-sweep-outgoing-copy-1faaf63",
-  "makerSha256": "3699a9dfb0d2d85785045e51a2f9ccab672b42ab2d68cf2272be87b8b2846969",
+  "release": "/opt/zecswap-mainnet/releases/20261018-monitor-funds-05cab29",
+  "makerSha256": "7dba650b757e8e5bc8b5f0732e008035e749ce80c622b17f926559cbf71bf280",
   "relayerSha256": "285976bfc72d313330b58dc2d2a45ae87a8b4a8d7685ea693f8169611385e9d1",
   "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
   "inventory": "136408198",
@@ -103,7 +103,7 @@
     }
   },
   "zcashConfirmations": 2,
-  "previousRelease": "/opt/zecswap-mainnet/releases/20261012-mainnet-funding-cc8e06e",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261017-sweep-outgoing-copy-1faaf63",
   "minTipGwei": 0.02,
   "tipFloorReason": "the first swap's claim, sent with the node's suggested tip of 0, waited 6m41s to be mined (20:58:42 to 21:05:23 UTC) and the relayer recorded it unconfirmed at its 3-minute receipt timeout",
   "laneFloats": {
@@ -127,5 +127,14 @@
     "previousMakerSha256": "6c8ac03f4d3b7a66f5ac2db854c6c04f74f4e7eb11e2b698d78fbbfe8d07e1b8",
     "backup": "/var/backups/zecswap-mainnet/20261017-sweep-outgoing-copy-1faaf63",
     "validation": "before: release, release maker and running maker as recorded, health 204; after: health 204 with the staged maker running, info mainnet, chain 1, this contract, reverse on, no warning or error in 45 s; health and info the same through the Worker"
+  },
+  "monitorFunds": {
+    "reason": "the maker took a wallet summary, which covers every account, for each swap its monitor listed and its watchtower watched, so its cost grew with the swaps",
+    "fix": "1765bb6: every account's funds from one summary; mainnet runs testnet's own maker, the build of 05cab29 testnet has run since 2026-10-17 22:59 UTC, whose Rust code is main's 1e362db; the maker alone restarted, at 03:21 UTC on 2026-10-18, its relayer and issuer the previous release's byte for byte",
+    "previousMakerSha256": "3699a9dfb0d2d85785045e51a2f9ccab672b42ab2d68cf2272be87b8b2846969",
+    "backup": "/var/backups/zecswap-mainnet/20261018-monitor-funds-05cab29",
+    "monitorBefore": "0.149, 0.006 and 1.082 s",
+    "monitorAfter": "0.390, 0.463 and 0.013 s, with few swaps listed",
+    "validation": "before: testnet running this maker with health 204, mainnet's release, release maker and running maker as recorded, health 204; after: health 204 with the new maker running, info mainnet, chain 1, this contract, reverse on, no warning or error in 45 s; health and info the same through the Worker"
   }
 }
