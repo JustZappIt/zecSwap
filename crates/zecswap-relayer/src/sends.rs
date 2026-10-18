@@ -421,7 +421,7 @@ impl Relayer {
         let _one = sends.one_at_a_time.lock().await;
         let id = transact.id();
         if let Some(entry) = sends.journal.find(chain_id, id)? {
-            match self.fate(&entry.signed, entry.sent_at).await? {
+            match self.fate(&entry.signed, entry.sent_at, false).await? {
                 Fate::Pending | Fate::Landed | Fate::Reverted => {
                     return Ok(Sending::Again(Sent {
                         transactions: vec![entry.signed.hash],
@@ -434,7 +434,7 @@ impl Relayer {
         let nullifiers = transact.nullifiers();
         let (mut spending, mut unknown, mut cooling) = (Vec::new(), false, 0);
         for entry in sends.journal.spending(chain_id, &nullifiers)? {
-            match self.fate(&entry.signed, entry.sent_at).await? {
+            match self.fate(&entry.signed, entry.sent_at, false).await? {
                 Fate::Pending | Fate::Landed => spending.push(entry.signed.hash),
                 Fate::Reverted => {
                     let left = (entry.sent_at + REVERTED_COOLDOWN).saturating_sub(now());
@@ -482,12 +482,15 @@ impl Relayer {
     }
 
     /// What became of a send `signed` recorded at `sent_at`, asking the account that signed it.
-    pub(crate) async fn fate(&self, signed: &Signed, sent_at: u64) -> Result<Fate> {
+    /// One the node doesn't know is broadcast again, unless it has `expired` and can no longer
+    /// land: then it is dead, and gone.
+    pub(crate) async fn fate(&self, signed: &Signed, sent_at: u64, expired: bool) -> Result<Fate> {
         let chain = self.sender_of(signed);
         Ok(match chain.transaction_status(signed.hash).await? {
             Status::Pending => Fate::Pending,
             Status::Mined { succeeded: true } => Fate::Landed,
             Status::Mined { succeeded: false } => Fate::Reverted,
+            Status::Unknown if expired => Fate::Dead,
             Status::Unknown if chain.nonce_taken(signed.nonce, SETTLED_DEPTH).await? => Fate::Dead,
             Status::Unknown
                 if now().saturating_sub(sent_at) >= REBROADCAST_AFTER

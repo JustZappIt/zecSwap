@@ -8,7 +8,7 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::Bytes;
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy::sol_types::SolCall;
+use alloy::sol_types::{SolCall, SolEvent};
 use alloy::transports::RpcError;
 use zecswap_core::{RescueAuthorization, TokenDomain};
 use zecswap_railgun::ShieldNote;
@@ -80,11 +80,23 @@ pub enum Call {
         from: Address,
         value: u128,
         fee: u128,
+        valid_before: u64,
     },
     Rescue {
         from: Address,
         fee: u128,
+        deadline: u64,
     },
+}
+
+/// A deposit or rescue the Deposits contract recorded: whose, and the note it shielded to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub from: Address,
+    /// `noteCommitment(npk, ciphertext)`, as `ShieldNote::commitment` computes it.
+    pub note: B256,
+    pub fee: u128,
+    pub relayer: Address,
 }
 
 impl Shield<'_> {
@@ -131,13 +143,24 @@ impl Call {
                 from: call.from,
                 value: call.value.try_into().ok()?,
                 fee: call.fee,
+                valid_before: call.validBefore.try_into().unwrap_or(u64::MAX),
             });
         }
         let call = IDeposits::rescueCall::abi_decode(data).ok()?;
         Some(Call::Rescue {
             from: call.from,
             fee: call.fee,
+            deadline: call.deadline,
         })
+    }
+
+    /// The first time, in Unix seconds, from which it can no longer land: its authorization's
+    /// `validBefore`, or past its rescue's deadline.
+    pub fn expires_at(&self) -> u64 {
+        match *self {
+            Call::Shield { valid_before, .. } => valid_before,
+            Call::Rescue { deadline, .. } => deadline.saturating_add(1),
+        }
     }
 }
 
@@ -224,6 +247,41 @@ impl Settlement {
                 })
             })
             .collect()
+    }
+
+    /// The deposits and rescues `contract` recorded in `tx`; none while it is unmined.
+    pub async fn deposits_landed(&self, contract: Address, tx: B256) -> Result<Vec<Landed>, Error> {
+        let Some(receipt) = self
+            .provider
+            .get_transaction_receipt(tx)
+            .await
+            .map_err(Error::contract)?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(receipt
+            .inner
+            .logs()
+            .iter()
+            .filter(|log| log.address() == contract)
+            .filter_map(|log| match log.topics().first() {
+                Some(&IDeposits::DepositShielded::SIGNATURE_HASH) => {
+                    let event = IDeposits::DepositShielded::decode_log(&log.inner).ok()?;
+                    Some((event.from, event.note, event.fee, event.relayer))
+                }
+                Some(&IDeposits::Rescued::SIGNATURE_HASH) => {
+                    let event = IDeposits::Rescued::decode_log(&log.inner).ok()?;
+                    Some((event.from, event.note, event.fee, event.relayer))
+                }
+                _ => None,
+            })
+            .map(|(from, note, fee, relayer)| Landed {
+                from,
+                note,
+                fee: fee.saturating_to(),
+                relayer,
+            })
+            .collect())
     }
 
     pub async fn has_code(&self, address: Address) -> Result<bool, Error> {

@@ -9,24 +9,25 @@ use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
 use tokio::sync::OnceCell;
 use zecswap_api::Network;
-use zecswap_api::relayer::{DepositTerms, RescueDeposit, ShieldDeposit, deposit_fee};
+use zecswap_api::relayer::{DepositTerms, Note, RescueDeposit, ShieldDeposit, deposit_fee};
 use zecswap_chain::evm::deposits::{Deployment, Used};
 use zecswap_chain::evm::railgun::Status;
 use zecswap_chain::evm::{Settlement, Shielded};
 use zecswap_core::{
     DepositKeys, DepositsDomain, ReceiveAuthorization, RescueAuthorization, derive_deposit_keys,
 };
-use zecswap_railgun::Keys as RailgunKeys;
+use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 use zeroize::Zeroizing;
 
 use crate::api::{Deposited, RelayerApi};
 use crate::user::RAILGUN_WALLET;
 
-/// How long an authorization is valid for once signed.
+/// How long an authorization is valid for once signed, where the relayer takes that long.
 const VALIDITY: u64 = 60 * 60;
-/// What an authorization must have left to be posted again rather than signed again: the
-/// relayer takes none with under 15 minutes left.
-const RESIGN_UNDER: u64 = 20 * 60;
+/// The relayer takes no authorization with less than this left to land.
+const LANDING: u64 = 15 * 60;
+/// How far the wallet's clock and the relayer's may differ.
+const CLOCK_SLACK: u64 = 60;
 /// How long a deposit is posted again while the relayer can't send it.
 const PATIENCE: Duration = Duration::from_secs(30 * 60);
 /// The first wait between posts the relayer asked no wait for, doubling to `LONGEST_WAIT`.
@@ -204,7 +205,7 @@ impl Depositor {
             fee <= cap && fee < value,
             "the relayer asks a fee of {fee} of {value}, over the {cap} this wallet pays"
         );
-        let valid_before = now() + VALIDITY;
+        let valid_before = now() + validity(&terms);
         let note = self.railgun.note(&keys.shield_entropy(valid_before))?;
         let nonce = self
             .domain()
@@ -257,13 +258,17 @@ impl Depositor {
         let give_up = Instant::now() + PATIENCE;
         let (mut wait, mut signed_again) = (BACKOFF, false);
         loop {
-            if request.valid_before < now() + RESIGN_UNDER {
+            if request.valid_before < now() + LANDING + CLOCK_SLACK {
                 request = self.sign_again(index).await?;
                 keep(&request)?;
             }
             match self.relayer.shield_deposit(&request).await {
-                Deposited::Sent(sent) | Deposited::Conflict(sent) if !sent.is_empty() => {
-                    return self.landed(&sent).await;
+                Deposited::Sent(sent) if !sent.is_empty() => {
+                    return self.landed(&sent, request.from, Some(&request.note)).await;
+                }
+                // Another deposit of the address, which shields to another of the wallet's notes.
+                Deposited::Conflict(sent) if !sent.is_empty() => {
+                    return self.landed(&sent, request.from, None).await;
                 }
                 Deposited::Conflict(_) => bail!(
                     "the authorization is used in a transaction the relayer doesn't name: read the address's deposits from the chain"
@@ -307,8 +312,14 @@ impl Depositor {
         let mut wait = BACKOFF;
         loop {
             match self.relayer.rescue_deposit(&request).await {
-                Deposited::Sent(sent) | Deposited::Conflict(sent) if !sent.is_empty() => {
-                    return self.landed(&sent).await.map(Some);
+                Deposited::Sent(sent) if !sent.is_empty() => {
+                    return self
+                        .landed(&sent, request.from, Some(&request.note))
+                        .await
+                        .map(Some);
+                }
+                Deposited::Conflict(sent) if !sent.is_empty() => {
+                    return self.landed(&sent, request.from, None).await.map(Some);
                 }
                 Deposited::Retry { reason, after } => {
                     ensure!(
@@ -350,7 +361,7 @@ impl Depositor {
         let note = self.railgun.note(&keys.rescue_entropy(nonce))?;
         let authorization = RescueAuthorization {
             nonce,
-            deadline: now() + VALIDITY,
+            deadline: now() + validity(&terms),
         };
         let digest = self.domain().rescue(
             &from,
@@ -377,8 +388,10 @@ impl Depositor {
             .context("the address no longer holds enough to deposit")
     }
 
-    /// The last of `sent`, once mined, and the wallet's note it shielded.
-    async fn landed(&self, sent: &[B256]) -> Result<Deposit> {
+    /// The last of `sent`, once mined, if the pinned contract recorded it as a deposit or rescue
+    /// of `from`, to `note` where given, and Railgun as a note of the wallet's: a relayer naming
+    /// another transaction is not believed.
+    async fn landed(&self, sent: &[B256], from: Address, note: Option<&Note>) -> Result<Deposit> {
         let tx = *sent.last().context("no transaction")?;
         let deadline = Instant::now() + MINED_WITHIN;
         loop {
@@ -392,12 +405,27 @@ impl Depositor {
             ensure!(Instant::now() < deadline, "{tx} did not mine");
             tokio::time::sleep(POLL).await;
         }
+        let expected = note.map(|note| B256::from(ShieldNote::from(note).commitment()));
+        let ours = |commitment: B256| expected.is_none_or(|expected| commitment == expected);
+        let recorded = self
+            .chain
+            .deposits_landed(self.deployment.contract, tx)
+            .await?;
+        ensure!(
+            recorded
+                .iter()
+                .any(|landed| landed.from == from && ours(landed.note)),
+            "{tx} is no deposit of this address to its note"
+        );
         let shielded = self
             .chain
             .shielded(tx)
             .await?
             .into_iter()
-            .find(|shielded| self.railgun.open(&shielded.note).is_some())
+            .find(|shielded| {
+                self.railgun.open(&shielded.note).is_some()
+                    && ours(shielded.note.commitment().into())
+            })
             .with_context(|| format!("{tx} shielded no note of this wallet's"))?;
         Ok(Deposit { tx, shielded })
     }
@@ -424,6 +452,11 @@ impl Depositor {
             contract: self.deployment.contract.into(),
         }
     }
+}
+
+/// How long to sign for: an hour, or what the relayer takes if that is less.
+fn validity(terms: &DepositTerms) -> u64 {
+    VALIDITY.min(terms.max_validity.saturating_sub(CLOCK_SLACK))
 }
 
 fn now() -> u64 {

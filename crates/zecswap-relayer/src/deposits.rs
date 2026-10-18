@@ -31,6 +31,11 @@ use crate::{Config, DepositsConfig, Relayer, RelayerError, Result};
 
 /// How long an authorization must still be valid when posted: time to check, send and land it.
 pub(crate) const LANDING_MARGIN: u64 = 15 * 60;
+/// How long past an authorization's `validAfter` must be: USDC takes it only in a block after
+/// it, and a block of the current slot is stamped up to a slot before now.
+const VALID_AFTER_MARGIN: u64 = 2 * 60;
+/// A recorded deposit that can't land within this many seconds is never broadcast again.
+const EXPIRING: u64 = 60;
 /// What a `503` asks to wait, in seconds: for gas to fall, for the account deposits are sent from
 /// to be topped up (the lanes' interval), for deposits on their way to mine.
 const GAS_PRICE_WAIT: u64 = 300;
@@ -54,6 +59,9 @@ pub(crate) struct Deposits {
     pub(crate) telegram: Telegram,
     /// When each long-unmined deposit's receipt was last looked for.
     unmined: Mutex<HashMap<B256, u64>>,
+    /// One deposit at a time from the count of those on their way to its broadcast, so the count
+    /// holds however many arrive at once.
+    sending: tokio::sync::Mutex<()>,
 }
 
 /// Which of the contract's calls a deposit is.
@@ -185,6 +193,7 @@ impl Deposits {
             telegram,
             config: config.clone(),
             unmined: Mutex::default(),
+            sending: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -284,8 +293,8 @@ impl Relayer {
         if request.fee >= request.value {
             return refuse("the fee leaves nothing to shield".into());
         }
-        if request.valid_after > now {
-            return refuse("the authorization is not valid yet".into());
+        if request.valid_after.saturating_add(VALID_AFTER_MARGIN) > now {
+            return refuse("the authorization's validAfter is not two minutes past: sign 0".into());
         }
         if request.valid_before < now.saturating_add(LANDING_MARGIN) {
             return refuse("the authorization expires too soon to land: sign it again".into());
@@ -458,27 +467,12 @@ impl Relayer {
             ));
         }
 
+        // What an address without the funds fails is read first: it costs one read.
         let lane = &self.lanes.deposits;
-        let (mined, sent) = lane.nonces().await?;
-        if sent.saturating_sub(mined) >= deposits.config.max_pending {
-            return Err(RelayerError::Busy(
-                "the relayer has as many deposits on their way as it sends at once",
-                PENDING_WAIT,
-            ));
-        }
         let refuse = |reason: &str| Err(RelayerError::Rejected(reason.into()));
-        if lane.has_code(checked.from).await? {
-            return refuse("the deposit address has code: deposits are from plain accounts");
-        }
         let (contract, token) = (deposits.policy.contract, deposits.deployment.token);
         match checked.asked {
             Asked::Shield { value } => {
-                if lane
-                    .authorization_used(token, checked.from, checked.id)
-                    .await?
-                {
-                    return Err(RelayerError::Conflict(vec![], "the authorization is used"));
-                }
                 if lane.token_balance(token, checked.from).await? < value {
                     return refuse("the deposit address holds less than it authorizes");
                 }
@@ -495,10 +489,29 @@ impl Relayer {
                 }
             }
         }
+        if lane.has_code(checked.from).await? {
+            return refuse("the deposit address has code: deposits are from plain accounts");
+        }
+        if let Asked::Shield { .. } = checked.asked
+            && lane
+                .authorization_used(token, checked.from, checked.id)
+                .await?
+        {
+            return Err(RelayerError::Conflict(vec![], "the authorization is used"));
+        }
         if let Some(oracle) = deposits.deployment.sanctions
             && lane.sanctioned(oracle, checked.from).await?
         {
             return refuse("the deposit address is sanctioned");
+        }
+
+        let _sending = deposits.sending.lock().await;
+        let (mined, sent) = lane.nonces().await?;
+        if sent.saturating_sub(mined) >= deposits.config.max_pending {
+            return Err(RelayerError::Busy(
+                "the relayer has as many deposits on their way as it sends at once",
+                PENDING_WAIT,
+            ));
         }
         let (from, id, fee, rate) = (checked.from, checked.id, checked.fee, checked.rate);
         let tx = lane
@@ -531,7 +544,12 @@ impl Relayer {
                 Fate::Reverted
             });
         }
-        self.fate(&entry.signed, entry.sent_at).await
+        let expired = entry
+            .signed
+            .call()
+            .and_then(|(_, _, data)| Call::decode(&data))
+            .is_none_or(|call| call.expires_at() <= now().saturating_add(EXPIRING));
+        self.fate(&entry.signed, entry.sent_at, expired).await
     }
 
     /// Records each deposit's receipt once it mined, a bounded number a pass, and values them.
@@ -1003,6 +1021,19 @@ impl Deposits {
     #[cfg(test)]
     pub(crate) fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// Records a shield as `send_deposit` does before broadcasting it.
+    #[cfg(test)]
+    pub(crate) fn record_shield(
+        &self,
+        chain_id: u64,
+        from: Address,
+        id: B256,
+        signed: &Signed,
+    ) -> rusqlite::Result<()> {
+        self.journal
+            .record(chain_id, from, Kind::Shield, id, signed)
     }
 
     pub(crate) fn outbox(&self) -> &Mutex<Connection> {

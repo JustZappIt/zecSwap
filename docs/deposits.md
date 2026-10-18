@@ -123,8 +123,8 @@ apply here.
 7. Sign EIP-3009's `ReceiveWithAuthorization(from, to, value, validAfter, validBefore, nonce)`
    with the deposit key (`TokenDomain::receive_with_authorization`, `DepositKey::sign`): `from`
    the deposit address, `to` the Deposits contract, `value` the address's whole balance,
-   `validAfter` 0 and `validBefore` an hour from now. The signature is `r ‖ s ‖ v`, with a low
-   `s` and `v` 27 or 28.
+   `validAfter` 0 and `validBefore` an hour from now, or `maxValidity` less a minute from now if
+   that is sooner. The signature is `r ‖ s ‖ v`, with a low `s` and `v` 27 or 28.
 8. **Persist the exact body**, then post it.
 
 `zecswap_client::Depositor::sign_shield` does all of this.
@@ -158,10 +158,10 @@ again after any answer that says to.
 
 | Status | `code` | What it means | What the wallet does |
 | --- | --- | --- | --- |
-| `200` | | `{"transactions": ["0x…"]}`: sent, not yet mined. The same request posted again, before or after it mines, answers with the same hash and sends nothing new. | Watch the transaction; once it mines, the note is the wallet's. |
+| `200` | | `{"transactions": ["0x…"]}`: sent, not yet mined. The same request posted again, before or after it mines, answers with the same hash and sends nothing new. | Watch the transaction. Once it mines, believe it only if the pinned contract's `DepositShielded` in it names this address and this request's note. |
 | `400` | `rejected` | Refused: nothing was sent, and nothing will be. | If the fee or validity is the problem, fetch the terms and sign again; otherwise drop it. |
 | `400`, `415`, `422` | `invalidRequest` | Not JSON, not sent as JSON, or not this request. Nothing was sent. | As `rejected`. |
-| `409` | `conflict` | The authorization is used, or another deposit of this address is on its way: `{"code": "conflict", "error": "…", "transactions": ["0x…"]}` names the relayer's own that do it, empty when the relayer doesn't know one. | Follow the transaction named; with none, read the chain. |
+| `409` | `conflict` | The authorization is used, or another deposit of this address is on its way: `{"code": "conflict", "error": "…", "transactions": ["0x…"]}` names the relayer's own that do it, empty when the relayer doesn't know one. | Follow the transaction named, believing it once the pinned contract's `DepositShielded` in it names this address; with none, read the chain. |
 | `503` | `unavailable` | Not now, nothing sent, with `Retry-After` in seconds: the gateway is busy (5), gas can't be priced (60), the network's gas price is above `maxGasPriceWei` (300), the relayer is low on ETH (120), as many deposits are on their way as it sends at once (30), a deposit of this address reverted within the hour (the seconds left of it), or an earlier deposit of this address has no known outcome (15). | With `Retry-After` of 30 seconds or less, post the same bytes again, for up to 90 seconds in all (`zecswap-client`'s `BUSY_WAIT`, `BUSY_PATIENCE`); longer, show the deposit as waiting and post again with backoff. |
 | `500` | `internal` | The relayer could not read the chain or record the deposit. Nothing is known. | Post the same bytes again later. |
 
@@ -174,12 +174,15 @@ The `rejected` reasons, in `error`, for the wallet's logs:
 
 - `this relayer takes no deposits`, `wrong chain or Deposits contract`
 - `a deposit moves at least …`, `a deposit moves at most what a Railgun note holds`, `the fee
-  leaves nothing to shield`, `the authorization is not valid yet`, `the authorization expires too
-  soon to land: sign it again`, `the authorization is valid for longer than the relayer takes`
+  leaves nothing to shield`, `the authorization's validAfter is not two minutes past: sign 0`, `the
+  authorization expires too soon to land: sign it again`, `the authorization is valid for longer
+  than the relayer takes`, and for a rescue `the rescue expires too soon to land: sign it again`,
+  `the rescue is valid for longer than the relayer takes`
 - `not signed by the deposit address for this note, fee and relayer`
 - `a fee of … is less than the relayer's …: fetch the terms again and sign again`
 - `the deposit address has code: deposits are from plain accounts`, `the deposit address holds
-  less than it authorizes`, `the deposit address is sanctioned`
+  less than it authorizes`, `the deposit address is sanctioned`, `the rescue's nonce is not its
+  vault's next`, `the address's vault holds nothing to rescue beyond the fee`
 - `the transaction fails in simulation`, `the transaction needs more gas than the relayer's cap`,
   `the deposit's fee does not cover its gas`
 
@@ -191,8 +194,9 @@ In this order, cheapest first, so nothing that fails a check without the chain c
 call:
 
 1. The body is the request's, field for field, for its chain and Deposits contract.
-2. Bounds: `minValue ≤ value ≤ 2^120 − 1`, `fee < value`, `validAfter ≤ now`, and
-   `now + 15 min ≤ validBefore ≤ now + maxValidity`.
+2. Bounds: `minValue ≤ value ≤ 2^120 − 1`, `fee < value`, `validAfter` at least two minutes past
+   (USDC takes an authorization only in a block after `validAfter`, and a block of the current
+   slot is stamped before now), and `now + 15 min ≤ validBefore ≤ now + maxValidity`.
 3. The signer recovered from the token's digest is `from`, for the nonce of this note, fee and
    its own deposits account.
 4. The fee is at least `fee + ⌈value × feeBps / 10000⌉` at the lowest `fee` it quoted in the last
@@ -200,10 +204,16 @@ call:
 5. Requests for one address take turns. Its journal then answers a repeat with the first send,
    refuses another of the address while one is on its way (`409`), waits out an earlier one with no
    known outcome (`503`), and holds the address back for an hour after one that reverted (`503`).
-6. The chain: `from` has no code, the authorization is unused (`409` if it is), the address holds
-   `value`, and on mainnet the sanctions oracle doesn't flag it.
-7. It simulates the call on the pending state from its deposits account at the fees it pays, within
-   its gas caps, and the fee must cover the gas at the lowest rate it quoted in ten minutes.
+   An earlier one that never reached the node and can no longer land is forgotten, never broadcast
+   again.
+6. The chain, the address's balance first, so an address without the funds costs one read: the
+   address holds `value` (for a rescue, the nonce is its vault's next and the vault holds more than
+   the fee), has no code, the authorization is unused (`409` if it is), and on mainnet the
+   sanctions oracle doesn't flag it.
+7. One deposit at a time from here to its broadcast: with as many on their way as it sends at once
+   it answers `503`. It simulates the call on the pending state from its deposits account at the
+   fees it pays, within its gas caps, and the fee must cover the gas at the lowest rate it quoted
+   in ten minutes.
 8. It records the signed transaction, then broadcasts it, once.
 
 Before mainnet, deposits go through a revert-protecting private RPC (Flashbots Protect or the
@@ -271,8 +281,9 @@ burned 918,390 gas in execution, a later one 851,862 and a rescue 824,404 (2026-
 ## The reference client
 
 `zecswap_client::Depositor` plays the wallet: `sign_shield`, `post_shield` (the answers above,
-signing again once when a fee or validity went stale), `shield`, `sign_rescue`, `rescue`,
-`recover` and `showing`. `zecswap-cli deposit` runs it from a test wallet's seed, saving each
+signing again once when a fee or validity went stale, and believing a transaction only once the
+contract's event in it shows the address's deposit to the wallet's note), `shield`,
+`sign_rescue`, `rescue`, `recover` and `showing`. `zecswap-cli deposit` runs it from a test wallet's seed, saving each
 signed request before posting it.
 
 ## Running a relayer that takes them

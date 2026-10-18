@@ -24,6 +24,7 @@ use zecswap_core::{
     DepositKeys, DepositsDomain, NetworkType, ReceiveAuthorization, RescueAuthorization,
     derive_deposit_keys,
 };
+use zecswap_railgun::ShieldNote;
 
 use super::*;
 use crate::deposits::Deposits;
@@ -447,6 +448,11 @@ async fn what_the_relayer_cant_stand_behind_is_refused_before_it_reads_the_chain
         valid_after: now + 600,
         ..good.clone()
     };
+    // USDC takes it only in a block after `validAfter`, which one of the current slot may not be.
+    let valid_from_now = ShieldDeposit {
+        valid_after: now,
+        ..good.clone()
+    };
     let by_another = ShieldDeposit {
         from: who.address(),
         ..chain
@@ -479,6 +485,7 @@ async fn what_the_relayer_cant_stand_behind_is_refused_before_it_reads_the_chain
         ),
         (signed(VALUE, VALUE, now + 3_600).await, "all fee"),
         (not_valid_yet, "not valid yet"),
+        (valid_from_now, "valid only from now"),
         (signed(VALUE, fee(), now + 600).await, "expiring too soon"),
         (
             signed(VALUE, fee(), now + 2 * 86_400).await,
@@ -522,7 +529,7 @@ async fn what_the_relayer_cant_stand_behind_is_refused_before_it_reads_the_chain
         "a refusal read the chain"
     );
     let operations = &serde_json::to_value(relayer.monitor_snapshot()).unwrap()["operations"];
-    assert_eq!(operations["shield_deposit"]["refused"], 12);
+    assert_eq!(operations["shield_deposit"]["refused"], 13);
 
     // One its address can't pay for is refused once the chain is read, unsent.
     let lane = relayer.lane_accounts()["deposits"];
@@ -675,6 +682,138 @@ async fn a_full_queue_waits() {
     chain.mine_every(1).await;
     let (status, _, body) = post(&relayer, "/v1/deposits/shield", &requests[1]).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// However many arrive at once, from as many addresses, no more go out than the queue takes.
+#[tokio::test]
+async fn deposits_posted_at_once_never_overfill_the_queue() {
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = chain.config(dir.path());
+    config.deposits.as_mut().unwrap().max_pending = 1;
+    let relayer = chain.relayer(config).await;
+    let mut requests = Vec::new();
+    for seed in 1..=4 {
+        let who = Depositor::new(seed);
+        chain.mint(who.address(), VALUE).await;
+        requests.push(
+            chain
+                .shield(&relayer, &who, VALUE, fee(), now() + 3_600)
+                .await,
+        );
+    }
+    let lane = relayer.lane_accounts()["deposits"];
+    let sent = chain.sent(lane).await;
+    chain.mine_every(0).await;
+    let posts: Vec<_> = requests
+        .into_iter()
+        .map(|request| {
+            let relayer = Arc::clone(&relayer);
+            tokio::spawn(async move { post(&relayer, "/v1/deposits/shield", &request).await })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for answer in posts {
+        answers.push(answer.await.unwrap());
+    }
+    let statuses: Vec<StatusCode> = answers.iter().map(|(status, ..)| *status).collect();
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count(),
+        1,
+        "{statuses:?}"
+    );
+    for (status, headers, _) in &answers {
+        if *status != StatusCode::OK {
+            assert_eq!(*status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(retry_after(headers), 30);
+        }
+    }
+    assert_eq!(chain.sent(lane).await, sent + 1);
+    chain.mine_every(1).await;
+}
+
+/// A recorded deposit that never reached the node and can no longer land is not broadcast
+/// again, where it would only revert: it is forgotten, and the address's next deposit goes.
+#[tokio::test]
+async fn an_expired_deposit_the_node_never_saw_is_dropped_not_sent_again() {
+    use alloy::eips::Encodable2718;
+    use alloy::network::EthereumWallet;
+    use zecswap_chain::evm::deposits::Shield;
+    use zecswap_chain::evm::railgun::Signed;
+
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let relayer = chain.relayer(chain.config(dir.path())).await;
+    let who = Depositor::new(1);
+    chain.mint(who.address(), VALUE).await;
+
+    // A shield the deposits account signed and recorded long ago, valid until a minute ago,
+    // whose broadcast never arrived.
+    let expired = chain.shield(&relayer, &who, VALUE, fee(), now() - 60).await;
+    let key = crate::lanes::derive(&chain.relayer_key, "deposits").unwrap();
+    let lane = key.address();
+    let nonce = chain.sent(lane).await;
+    let note = ShieldNote::from(&expired.note);
+    let data = Shield {
+        from: expired.from,
+        value: expired.value,
+        valid_after: 0,
+        valid_before: expired.valid_before,
+        note: &note,
+        fee: expired.fee,
+        signature: &expired.signature.0,
+    }
+    .calldata();
+    let envelope = TransactionRequest::default()
+        .with_from(lane)
+        .with_to(chain.deposits)
+        .with_input(data)
+        .with_chain_id(chain.chain_id)
+        .with_nonce(nonce)
+        .with_gas_limit(1_000_000)
+        .with_max_fee_per_gas(10_000_000_000)
+        .with_max_priority_fee_per_gas(1_000_000_000)
+        .build(&EthereumWallet::from(key))
+        .await
+        .unwrap();
+    let signed = Signed {
+        hash: *envelope.tx_hash(),
+        nonce,
+        raw: envelope.encoded_2718().into(),
+    };
+    let deposits = relayer.deposits.as_ref().unwrap();
+    let id = chain
+        .domain()
+        .deposit_nonce(&note.words(), fee(), &lane.into());
+    deposits
+        .record_shield(chain.chain_id, who.address(), id.into(), &signed)
+        .unwrap();
+    deposits
+        .journal()
+        .connection()
+        .execute("UPDATE deposits SET sent_at = sent_at - 600", [])
+        .unwrap();
+
+    let request = chain
+        .shield(&relayer, &who, VALUE, fee(), now() + 3_600)
+        .await;
+    let (status, _, body) = post(&relayer, "/v1/deposits/shield", &request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let tx = transaction(&body);
+    assert!(chain.mined(tx).await);
+    assert_eq!(chain.status(signed.hash).await, Status::Unknown);
+    let journal = deposits.journal().connection();
+    let recorded: u64 = journal
+        .query_row("SELECT count(*) FROM deposits", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(recorded, 1, "the expired deposit is still recorded");
 }
 
 #[tokio::test]
@@ -870,6 +1009,7 @@ fn a_mined_deposit_says_what_it_moved_and_earned_and_names_no_one() {
         from,
         value: 25_000_000,
         fee: 125_000,
+        valid_before: 1_791_723_821,
     };
     assert_eq!(
         alert(Some(shield), true),
@@ -878,7 +1018,14 @@ fn a_mined_deposit_says_what_it_moved_and_earned_and_names_no_one() {
         )
     );
     assert_eq!(
-        alert(Some(Call::Rescue { from, fee: 100_000 }), true),
+        alert(
+            Some(Call::Rescue {
+                from,
+                fee: 100_000,
+                deadline: 1_791_723_821,
+            }),
+            true
+        ),
         format!(
             "ZecSwap testnet · deposit rescue\nfee 0.1 USDC\n11 Oct 12:03 UTC\nhttps://sepolia.etherscan.io/tx/{hash}"
         )

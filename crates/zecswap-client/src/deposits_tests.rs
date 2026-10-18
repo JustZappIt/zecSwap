@@ -91,7 +91,8 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
             max_gas_limit: 2_000_000,
             max_gas_price_wei: 50_000_000_000,
             min_value: 2_000_000,
-            max_validity: 86_400,
+            // Under the hour wallets sign for where they can.
+            max_validity: 1_500,
             max_pending: 8,
             journal: dir.path().join("deposits.sqlite"),
         }),
@@ -119,7 +120,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
         &SEED,
         Network::Testnet,
         Settlement::read_only(&url, deposits).unwrap(),
-        RelayerApi::new(relayer_url).unwrap(),
+        RelayerApi::new(relayer_url.clone()).unwrap(),
         DepositDeployment {
             chain_id,
             contract: deposits,
@@ -157,6 +158,11 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
         .unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].value, VALUE);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!((now + 1_300..=now + 1_500).contains(&kept[0].valid_before));
     let fee = deposit_fee(FLOOR.into(), FEE_BPS, VALUE);
     assert_eq!(kept[0].fee, fee);
     let shielded = VALUE - fee;
@@ -183,4 +189,48 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
         (5_000_000 - u128::from(FLOOR)) * 9_975 / 10_000
     );
     assert!(wallet.railgun().open(&rescued.shielded.note).is_some());
+
+    // A relayer that answers a new deposit with an earlier one of the address is not believed.
+    let terms = RelayerApi::new(relayer_url).unwrap().terms().await.unwrap();
+    let earlier = deposit.tx;
+    let liar = axum::Router::new()
+        .route(
+            "/v1/terms",
+            axum::routing::get(move || {
+                let terms = terms.clone();
+                async move { axum::Json(terms) }
+            }),
+        )
+        .route(
+            "/v1/deposits/shield",
+            axum::routing::post(move || async move {
+                axum::Json(zecswap_api::relayer::Sent {
+                    transactions: vec![earlier],
+                })
+            }),
+        );
+    let fooled = Depositor::new(
+        &SEED,
+        &SEED,
+        Network::Testnet,
+        Settlement::read_only(&url, deposits).unwrap(),
+        RelayerApi::new(serve(liar).await).unwrap(),
+        DepositDeployment {
+            chain_id,
+            contract: deposits,
+            token,
+        },
+        FeeCap {
+            fee: 1_000_000,
+            fee_bps: 50,
+        },
+    );
+    funder.mint_test_token(token, first, VALUE).await.unwrap();
+    let error = fooled.shield(0, |_| Ok(())).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no deposit of this address to its note"),
+        "{error:#}"
+    );
 }
