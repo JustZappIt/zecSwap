@@ -39,6 +39,9 @@ reads all its swaps in one call and never again one a finalized block holds sett
 services log and export what they ask their RPC ([October 12 RPC budget](#october-12-rpc-budget)).
 Since about 22:59 UTC on October 17 the maker's sweeps carry no outgoing copy a swap's user could
 read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-an-outgoing-copy)).
+Since 23:42 UTC on October 18 both swap a new test token, which the relayer also takes at wallets'
+deposit addresses and shields into their Railgun balances
+([October 18 deposits](#october-18-deposits-and-a-new-test-token)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -697,6 +700,66 @@ Rollback files are in `/var/backups/zecswap-mainnet/20261018-monitor-funds-05cab
 `maker-config.toml` and `previous-current`. Point `/opt/zecswap-mainnet/current` back at the
 release `previous-current` names and restart `zecswap-mainnet-maker`; the store didn't change.
 
+## October 18 deposits and a new test token
+
+Deposits ([deposits.md](deposits.md)) move a deposit address's tokens on its EIP-3009
+authorization, which the old test token lacks, so testnet has a new one. From `3bba12a`,
+`deploy/testnet/deploy-deposits.sh` deployed on Sepolia, from `0x09ed…c3e5`:
+
+| | Address | Block |
+| --- | --- | --- |
+| tUSD (`ZecSwap Test USD`, version `2`, 6 decimals, anyone may `mint`) | [`0x64c4a5cb09fe0b706d4cf24dc0a45fff275d727c`](https://sepolia.etherscan.io/address/0x64c4a5cb09fe0b706d4cf24dc0a45fff275d727c) | 11,944,315 |
+| Deposits (Railgun's Sepolia proxy, no sanctions oracle) | [`0x58324e9a866c9690aca08169d3c67630e84c9019`](https://sepolia.etherscan.io/address/0x58324e9a866c9690aca08169d3c67630e84c9019) | 11,944,316 |
+
+The swap contract stays: it keeps inventory per token, and each swap keeps its own.
+[sepolia-deposits.json](../deployments/sepolia-deposits.json) records both deployments and the
+switch.
+
+At 23:41 UTC `deploy/testnet/switch-token.sh` (`120106d`) found no live swap, stopped the maker and
+the relayer, and moved the maker's inventory. It withdrew the 956.670142 old tUSD to the maker's
+account (`0xf51eab97…`, block 11,944,396), then minted 2,000 new tUSD and added them in
+`0x8e60474c…`, `0xd871944f…` and `0x441c1832…` (blocks 11,944,397 to 11,944,399). Both configs now
+name the new token. The relayer's gained `[deposits]` (`deploy/testnet/relayer-deposits.toml`: a
+fee of 0.1 tUSD and 0.1%, priced from 1.7M gas when that costs more, a 2 tUSD minimum,
+authorizations valid up to a day, eight on their way at once), and the gateway an allowance for
+deposits of one a second, a burst of ten. The relayer runs a build of `120106d` (`d30cbcb4…`) in
+`/opt/zecswap/releases/20261018-deposits-120106d`, now `/opt/zecswap/current`; the maker and issuer
+are the previous release's, byte for byte. Both restarted at 23:42.
+
+The relayer sends deposits from an account of its own,
+`0xedc4c88a3f6ae8130a2c18babbabd8100cc1a446`: the terms name it, and wallets pin it. It funded
+that account with eight deposits' gas at the day's fees, and took back from the other accounts
+what they held beyond twice their float at those fees (0.0657 ETH in all).
+
+Before changing anything, the switch checked that both configs named the old token and the swap
+contract, both services ran, the staged relayer started, and the Deposits contract, read on the
+relayer's RPC, took the new token, shielded into Railgun's proxy and screened no one; after
+stopping the maker, that its store held no unsettled swap. After the restart the maker's health
+answered 204, its info named the new token, and the relayer's terms named the Deposits contract,
+token and account above, all the same through the public gateway. Then a fresh wallet's first
+deposit address got 5 tUSD and `zecswap-cli deposit` shielded it through the gateway: the relayer
+sent `0xd7667941…` (block 11,944,419, 1,663,324 gas at 0.02 gwei) 14 seconds after the CLI
+signed, and kept 0.105 tUSD. The wallet's Railgun balance got 4.882763, which Railgun's wallet
+SDK showed Spendable within five minutes.
+
+The maker's account keeps the 956.670142 old tUSD it withdrew. Old-tUSD Railgun balances and
+relayer fees stay where they are. App builds that pin the old token can no longer swap on testnet,
+since the maker's info and the relayer's terms name the new one. zapp-dashboard pins the testnet
+token in `lib/bridge/config.ts`; until a build pinning the new one deploys, it reports the maker's
+and the relayer's token as unexpected.
+
+Rollback files are in `/var/backups/zecswap/20261018-deposits-120106d` (root-only):
+`maker-config.toml`, `relayer-config.toml`, `nginx-site` (its path in `nginx-site-path`),
+`previous-current` and `maker.sqlite`. Rolling back moves the inventory back on chain:
+1. Stop both services.
+2. Run `withdraw-inventory all` under the current maker config.
+3. Restore both configs and the nginx site, and reload nginx.
+4. Run `add-inventory 956670142` under the restored config: the maker's account holds that old
+   tUSD.
+5. Point `/opt/zecswap/current` at the release `previous-current` names, and start both.
+
+Deposits then stop. Their journal stays in `/var/lib/zecswap-relayer/deposits.sqlite`.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
@@ -1168,8 +1231,8 @@ monitors share a gateway allowance of their own (one a second, a burst of ten), 
 apps'.
 
 The dashboard validates the deployment and token precision before formatting USDC.
-The pinned test token has no optional `decimals()` metadata and uses explicitly configured
-six-decimal USDC units; mainnet has no default token precision.
+The pinned test token uses explicitly configured six-decimal USDC units (the one before October
+18 had no `decimals()`); mainnet has no default token precision.
 Mainnet uses its own dashboard environment variables and monitoring token.
 
 - Maker `GET /v1/info`: exact expected chain ID, contract, token, Zcash network and

@@ -44,9 +44,12 @@ vectors, a testnet maker. The original design and threat model are in
   `zecswap-cli deposit`; the live `deposit` scenario passed on a Sepolia fork
   (`.testnet/e2e-deposit-fork.log`) and on Sepolia (`.testnet/e2e-deposit-sepolia.log`), where a
   first deposit burns 1.68M gas and `balance.cjs` shows the note Spendable.
-  Staged, not run: `deploy/testnet/` (a new tUSD with EIP-3009 and the Deposits contract, then the
-  droplet's token switch). Mainnet waits on the owner's `min_value` and a revert-protecting RPC for
-  deposit sends.
+  Live on the hosted testnet since 2026-10-18 23:42 UTC (`docs/deployment.md`, October 18
+  deposits): a new tUSD with EIP-3009 (`0x64c4…727c`), which swaps take too, and the Deposits
+  contract (`0x5832…9019`), sent from the relayer's deposits account `0xedc4…a446`; a CLI deposit
+  through the gateway shielded in 14 s and cleared screening. zapp-dashboard's testnet token pin
+  (`lib/bridge/config.ts`) moves with it. Mainnet's `min_value` is 5 USDC (the owner's); it waits
+  on a revert-protecting RPC for deposit sends.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
@@ -75,7 +78,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
-| `deploy/testnet` | Staged: the deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`) |
+| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18 |
 
 ## Commands
 
@@ -278,6 +281,7 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   reason, never a device; relayed transactions by outcome and their gas, read after the reply.
   All three share one gateway allowance; Alloy ships the issuer's journal. The dashboard pins
   the contract in Vercel's `BRIDGE_TESTNET_CONTRACT`: update it with every contract redeploy.
+  The testnet token is `lib/bridge/config.ts`'s `TOKEN` (no Vercel variable): move it with the token.
 - Telegram alerts (2026-10-11): the maker sends a swap two messages, when it is accepted and
   when it ends (completed; refunded; cancelled, no ZEC arrived; expired), each with its
   direction, amounts, time, the swap id's first eight hex digits (the dashboard's search finds

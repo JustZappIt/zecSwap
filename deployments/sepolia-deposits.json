@@ -8,6 +8,7 @@
   "railgun": "0xeCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea",
   "sanctions": null,
   "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "relayerDeposits": "0xedc4c88a3f6ae8130a2c18babbabd8100cc1a446",
   "deployments": {
     "token": {
       "transaction": "0xa0daf9382191f02ad18e791e5fd6f86e68a6fb3c780ceeac133022fdd143649c",
@@ -23,5 +24,54 @@
   "deployer": "0x09ed1f966745be18c711c346242c0974dad7c3e5",
   "sourceCommit": "3bba12a9b1f040ee9d1c25fec9ec38e11a855cbe",
   "deployedAt": "2026-10-18",
-  "status": "staged"
+  "status": "live",
+  "since": "2026-10-18T23:42Z",
+  "release": "/opt/zecswap/releases/20261018-deposits-120106d",
+  "releaseCommit": "120106d",
+  "previousRelease": "/opt/zecswap/releases/20261017-sweep-outgoing-copy-05cab29",
+  "backup": "/var/backups/zecswap/20261018-deposits-120106d",
+  "relayerSha256": "d30cbcb493bcf7ad865cfc2c667a602ed2001091a4541b4937d6f36be8d6b51b",
+  "previousRelayerSha256": "f35ef7ecd1db7caa6781169a0d3d109a336f6838d06b918afb9261699cc93d2f",
+  "makerSha256": "7dba650b757e8e5bc8b5f0732e008035e749ce80c622b17f926559cbf71bf280",
+  "issuerSha256": "bf036aaac23cc894b7bf50855c9d8715aa093d4ec5346f0977c385c6148251c3",
+  "restarted": ["maker", "relayer"],
+  "terms": {
+    "fee": "100000",
+    "feeBps": 10,
+    "feeGas": 1700000,
+    "minValue": "2000000",
+    "maxValidity": 86400,
+    "maxPending": 8,
+    "maxGasLimit": 3000000,
+    "maxGasPriceWei": "50000000000"
+  },
+  "switch": {
+    "oldToken": "0x5764D0044bef5AA839E0dDafE2073421101B9Ed8",
+    "withdrawn": "956670142",
+    "withdrawal": {
+      "transaction": "0xf51eab970d2980d5ba63382a572e78c3ef2595902eb216706fcbe7368fa5f1c2",
+      "block": 11944396
+    },
+    "minted": "2000000000",
+    "inventory": [
+      "0x8e60474c335c7347f397d3746b455de3101f16d3085ad2562ace2e10426d387a",
+      "0xd871944f41cc8e478b34a8d370ee16f4b34e0553041989b8a6248999d8940356",
+      "0x441c1832a28d06c5a292869b58251d0088d7b44bb1a7f686c339a2b956dbc858"
+    ]
+  },
+  "validation": {
+    "before": "both configs on the old token and this swap contract; both services running; the staged relayer starts; the Deposits contract's TOKEN, RAILGUN and SANCTIONS on the relayer's RPC; no live swap in the monitor, none unsettled in the stopped maker's store",
+    "after": "maker health 204 and info on the new token; relayer terms' deposits name this contract, token and account",
+    "publicGateway": "the same info and terms through the Worker",
+    "deposit": {
+      "tool": "zecswap-cli deposit, a fresh wallet's address #0, through the public gateway",
+      "value": "5000000",
+      "transaction": "0xd76679412002c60665a93278cf51401e06b03236e75661d224e53f29e47e7fd6",
+      "block": 11944419,
+      "gasUsed": 1663324,
+      "fee": "105000",
+      "shielded": "4882763",
+      "railgunStatus": "Spendable in Railgun's wallet SDK within five minutes"
+    }
+  }
 }
