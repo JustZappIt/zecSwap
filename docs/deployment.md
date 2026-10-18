@@ -674,6 +674,29 @@ Rollback files are in `/var/backups/zecswap/20261017-sweep-outgoing-copy-05cab29
 `maker-config.toml` and `previous-current`. Point the network's current link back at the release
 `previous-current` names and restart its maker; the stores didn't change.
 
+## October 18 mainnet funds from one summary
+
+At 03:21 UTC the mainnet maker restarted on testnet's own maker. That is the build of `05cab29`
+testnet has run since October 17 (`7dba650b…`), whose Rust code is main's (`1e362db`), in
+`/opt/zecswap-mainnet/releases/20261018-monitor-funds-05cab29`, now `/opt/zecswap-mainnet/current`.
+It brings mainnet the funds read from one wallet summary (`1765bb6`,
+[October 14](#october-14-testnet-inventory-and-monitor)), so both networks run the same maker. The
+relayer and issuer are the previous release's, byte for byte, and did not restart; no config
+changed.
+
+Before changing anything, the deploy checked that testnet still ran this maker with health 204,
+and that mainnet ran its recorded release and maker with health 204. Mainnet's monitor answered in
+0.15, 0.006 and 1.08 seconds before the restart and 0.39, 0.46 and 0.013 after. With few swaps
+listed it was already quick: the old way took a summary for each swap it listed, so its cost grew
+with them. After the restart the deploy saw health 204 with the new maker running, its info naming
+mainnet, chain 1 and the contract, and no warning or error in 45 seconds. The public gateway then
+answered health and info the same. [mainnet-beta.json](../deployments/mainnet-beta.json) records
+the checksums.
+
+Rollback files are in `/var/backups/zecswap-mainnet/20261018-monitor-funds-05cab29` (root-only):
+`maker-config.toml` and `previous-current`. Point `/opt/zecswap-mainnet/current` back at the
+release `previous-current` names and restart `zecswap-mainnet-maker`; the store didn't change.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
