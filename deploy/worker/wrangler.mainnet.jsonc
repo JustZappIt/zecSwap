@@ -1,7 +1,7 @@
 // The mainnet gateway: the same Worker, through the droplet's tunnel to the mainnet nginx on
 // 127.0.0.1:8090 (deploy/mainnet/install.sh). From deploy/worker/:
-//   npx wrangler secret put TICKET_SECRET -c wrangler.mainnet.jsonc   (the mainnet maker's
-//   MAKER_TICKET_SECRET), then npx wrangler deploy -c wrangler.mainnet.jsonc
+//   npx wrangler secret put TICKET_SECRET -c wrangler.mainnet.local.jsonc   (the mainnet maker's
+//   MAKER_TICKET_SECRET), then npx wrangler deploy -c wrangler.mainnet.local.jsonc
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "zecswap-mainnet",

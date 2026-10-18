@@ -811,7 +811,7 @@ before switching to the service account.
 
 From `deploy/worker/`, run `npm ci`, `npm run types`, `npm run check`, `npm test`, then
 `npx wrangler deploy --dry-run` before `npm run deploy`. The VPC binding is pinned in
-`wrangler.jsonc`, and the Worker needs the maker's `MAKER_TICKET_SECRET` as its own secret
+`wrangler.jsonc` (a template: the real ids sit in the gitignored `wrangler.local.jsonc`, which `npm run deploy` uses), and the Worker needs the maker's `MAKER_TICKET_SECRET` as its own secret
 (`npx wrangler secret put TICKET_SECRET`). The gateway streams request bodies unchanged, disables
 caching and does not retry financial requests. It forwards only the `Authorization`,
 `Content-Type` and `Content-Length` headers, so it passes on nothing else a client sends, nor the

@@ -35,7 +35,7 @@
     }
   },
   "host": "the testnet droplet, beside testnet: units zecswap-mainnet-*, /etc and /var/lib zecswap-mainnet-*, 127.0.0.1:8797-8799 behind nginx on 8090",
-  "vpcService": "<workers vpc service id>",
+  "vpcService": "<vpc service id>",
   "worker": "zecswap-mainnet",
   "release": "/opt/zecswap-mainnet/releases/20261018-monitor-funds-05cab29",
   "makerSha256": "7dba650b757e8e5bc8b5f0732e008035e749ce80c622b17f926559cbf71bf280",

@@ -11,3 +11,4 @@ node_modules/
 /deploy/worker/.wrangler/
 /deploy/worker/dist/
 /android/build
+/deploy/worker/wrangler*.local.jsonc
