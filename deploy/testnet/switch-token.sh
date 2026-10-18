@@ -4,20 +4,22 @@
 # its own token. On the droplet, as root, from a stage directory holding this script,
 # relayer-deposits.toml, deploy/nginx.conf and a Linux zecswap-relayer of this branch
 # (scripts/build-server.sh), once deploy-deposits.sh has deployed the token and the contract:
-#   bash /root/stage-deposits/switch-token.sh <release name> <new token> <Deposits contract>
+#   bash /root/stage-deposits/switch-token.sh <release name> <new token> <Deposits contract> [inventory]
 # It waits until the maker's monitor shows no live swap, stops the maker and the relayer (the
 # relayer serves one token, and would refuse swaps in the old one), moves the maker's inventory
-# from the old tUSD to the new one, switches both configs to the new token, gives the relayer
+# from the old tUSD to the new one, minting `inventory` base units of it if given (at least what
+# it held of the old), switches both configs to the new token, gives the relayer
 # `[deposits]`, this release's binary and the gateway's deposit allowance, starts both and checks
 # them. Until the inventory moves, a failure puts everything back as it was and starts both again;
 # after, it stops and says what is left to do.
 set -euo pipefail
 umask 022
 
-usage="usage: $0 <release name> <new token> <Deposits contract>"
+usage="usage: $0 <release name> <new token> <Deposits contract> [inventory]"
 release_name=${1:?$usage}
 new_token=${2:?$usage}
 deposits=${3:?$usage}
+minted=${4:-}
 stage=$(cd "$(dirname "$0")" && pwd)
 old_token=0x5764D0044bef5AA839E0dDafE2073421101B9Ed8
 zecswap=0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c
@@ -82,6 +84,9 @@ maker=$(curl -fsS --max-time 30 http://127.0.0.1:8787/v1/info |
 inventory=$(python3 -c 'import sys; print(int(sys.argv[1], 16))' \
     "$(call "$zecswap" "0xf7888aec$(word "$maker" | cut -c3-)$(word "$old_token" | cut -c3-)")")
 [ "$inventory" -gt 0 ] || die "the maker holds no old tUSD inventory to move"
+minted=${minted:-$inventory}
+[[ $minted =~ ^[0-9]+$ ]] && [ "$minted" -ge "$inventory" ] ||
+    die "the new inventory is in base units, at least the old's $inventory"
 
 install -d -m 0700 "$backup"
 cp -a "$maker_config" "$backup/maker-config.toml"
@@ -144,9 +149,9 @@ moved() {
 run_maker withdraw-inventory all ||
     moved "nothing moved on chain" "run this script's steps from withdraw-inventory on"
 sed -i "s/^token = \"$old_token\"$/token = \"$new_token\"/I" "$maker_config"
-run_maker add-inventory "$inventory" --mint ||
+run_maker add-inventory "$minted" --mint ||
     moved "withdrawing $inventory old tUSD to the maker" \
-        "add-inventory $inventory --mint under the switched maker config, then start both"
+        "add-inventory $minted --mint under the switched maker config, then start both"
 ln -sfn "$release" /opt/zecswap/current
 systemctl start zecswap-relayer zecswap-maker
 
@@ -166,5 +171,5 @@ assert terms["contract"].lower() == sys.argv[2].lower(), terms
 assert terms["token"].lower() == sys.argv[3].lower(), terms
 print("deposits go from", terms["relayer"], "for a fee of", terms["fee"], "and", terms["feeBps"], "bps")' \
     "$terms" "$deposits" "$new_token"
-echo "Switched: $inventory tUSD moved from $old_token to $new_token; release $release."
+echo "Switched: $inventory base units of $old_token withdrawn, $minted of $new_token minted and deposited; release $release."
 echo "Record it in docs/deployment.md, and point the dashboard's BRIDGE_TESTNET_TOKEN at $new_token."

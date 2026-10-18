@@ -1,0 +1,27 @@
+{
+  "chainId": 11155111,
+  "deposits": "0x58324e9a866c9690aca08169d3c67630e84c9019",
+  "token": "0x64c4a5cb09fe0b706d4cf24dc0a45fff275d727c",
+  "tokenName": "ZecSwap Test USD",
+  "tokenVersion": "2",
+  "tokenDecimals": 6,
+  "railgun": "0xeCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea",
+  "sanctions": null,
+  "contract": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "deployments": {
+    "token": {
+      "transaction": "0xa0daf9382191f02ad18e791e5fd6f86e68a6fb3c780ceeac133022fdd143649c",
+      "block": 11944315,
+      "gasUsed": 6401520
+    },
+    "deposits": {
+      "transaction": "0x28414711eeed0bddbd0d6d111596551b9d50ecc9dac14feada60df35594ae22c",
+      "block": 11944316,
+      "gasUsed": 14005205
+    }
+  },
+  "deployer": "0x09ed1f966745be18c711c346242c0974dad7c3e5",
+  "sourceCommit": "3bba12a9b1f040ee9d1c25fec9ec38e11a855cbe",
+  "deployedAt": "2026-10-18",
+  "status": "staged"
+}
