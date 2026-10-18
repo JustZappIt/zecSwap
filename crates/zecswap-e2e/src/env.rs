@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use zcash_address::ZcashAddress;
 use zcash_keys::keys::UnifiedSpendingKey;
-use zecswap_chain::evm::{Address, PrivateKeySigner, Settlement, U256, deploy};
+use zecswap_chain::evm::{Address, B256, PrivateKeySigner, Settlement, U256, deploy};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Network, Prover, Wallet, connect};
 use zecswap_maker::policy::Timing;
 use zecswap_maker::pricing::Pricing;
@@ -35,6 +35,15 @@ pub(crate) const MAX_RELAYER_FEE: u128 = 500_000;
 const RELAYER_FEE_GAS: u64 = 20_000;
 /// What a private send or withdrawal pays the relayer, in a fee note: 0.25 of the test token.
 pub(crate) const SEND_FEE: u64 = 250_000;
+/// What each deposit pays the relayer before its percentage: 0.1 of the test token, as the
+/// hosted testnet's.
+const DEPOSIT_FEE: u64 = 100_000;
+const DEPOSIT_FEE_BPS: u32 = 10;
+/// The least a deposit moves: 2 of the test token, as the hosted testnet's.
+pub(crate) const DEPOSIT_MIN_VALUE: u64 = 2_000_000;
+/// The most gas the relayer pays for a deposit, which takes about 0.95M on a fork, more on
+/// Sepolia's repriced state.
+const DEPOSIT_GAS_LIMIT: u64 = 3_000_000;
 /// The highest gas price the relayer pays for one, which the proofs' minimum may not exceed.
 pub(crate) const SEND_MAX_GAS_PRICE: u64 = 200_000_000_000;
 /// Gas each account is funded for, at the chain's gas price and `GAS_MARGIN` times over. The
@@ -54,6 +63,7 @@ const SEND_GAS: u64 = 2 * SEND_GAS_LIMIT;
 const LANE_TRANSACTIONS: u64 = 3;
 const SWAP_LANES_GAS: u64 = 2 * LANE_TRANSACTIONS * 1_000_000;
 const SEND_LANES_GAS: u64 = SWAP_LANES_GAS + LANE_TRANSACTIONS * SEND_GAS_LIMIT;
+const DEPOSIT_LANE_GAS: u64 = LANE_TRANSACTIONS * DEPOSIT_GAS_LIMIT;
 /// Approving Railgun and shielding one note, about 3.8M gas on Sepolia.
 const SHIELD_GAS: u64 = 8_000_000;
 /// Each note a send scenario shields into its sender's Railgun wallet: twenty of the test token,
@@ -179,7 +189,10 @@ pub(crate) struct Needs {
     pub(crate) relayed: usize,
     /// Private Railgun sends the relayer sends as their broadcaster.
     pub(crate) sends: usize,
+    /// Zcash deposits into swaps, a note of the treasury's each.
     pub(crate) deposits: usize,
+    /// Deposits of public tokens into Railgun, which the relayer sends.
+    pub(crate) shields: usize,
 }
 
 /// What every scenario shares: one fresh deployment, an attentive and a silent maker, a
@@ -191,7 +204,13 @@ pub(crate) struct Env {
     pub(crate) railgun_rpc: String,
     pub(crate) contract: Address,
     pub(crate) token: Address,
+    /// The Deposits contract, where Railgun is.
+    pub(crate) deposits: Option<Address>,
+    /// Deploys, makes and mints the test token.
+    pub(crate) funder: PrivateKeySigner,
     pub(crate) relayer_url: String,
+    /// That relayer itself, whose ledger records what each deposit cost and earned.
+    pub(crate) relayer: Arc<Relayer>,
     /// A relayer of its own for the private sends, so what it sends is theirs alone.
     pub(crate) sends: Option<SendsNode>,
     pub(crate) workspace: PathBuf,
@@ -259,12 +278,16 @@ impl Env {
             .context("the wallet has no seed-derived account")?;
         let treasury_key = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
             .map_err(|e| anyhow::anyhow!("deriving the treasury key: {e:?}"))?;
-        let (contract, token, gas_price) = deploy_contracts(&settings, &needs).await?;
+        let (contract, token, deposit_contract, gas_price) =
+            deploy_contracts(&settings, &needs).await?;
         let deposits = needs.deposits;
         log(
             started,
             "setup",
-            format!("deployed ZecSwap {contract} and token {token}"),
+            format!(
+                "deployed ZecSwap {contract}, token {token} and Deposits {}",
+                deposit_contract.map_or("none".into(), |contract| contract.to_string())
+            ),
         );
         let chain = Settlement::connect(&settings.evm_rpc, contract, settings.funder.clone())?;
         let fund = |gas: u64| U256::from(u128::from(gas) * gas_price * GAS_MARGIN);
@@ -286,23 +309,28 @@ impl Env {
             payout_keys.push(key);
         }
         let relayer_key = PrivateKeySigner::random();
-        if needs.relayed > 0 {
-            chain
-                .send_eth(
-                    relayer_key.address(),
-                    fund(RELAYED_GAS * needs.relayed as u64 + SWAP_LANES_GAS),
-                )
-                .await?;
+        let relaying = needs.relayed > 0 || needs.shields > 0;
+        if relaying {
+            let shields = needs.shields as u64;
+            let gas = RELAYED_GAS * needs.relayed as u64
+                + SWAP_LANES_GAS
+                + shields * DEPOSIT_GAS_LIMIT
+                + (shields > 0) as u64 * DEPOSIT_LANE_GAS;
+            chain.send_eth(relayer_key.address(), fund(gas)).await?;
         }
         let (issuer_url, return_key, gate) = start_issuer(&settings.work_dir).await?;
-        let (relayer_url, _) = start_relayer(
-            &settings,
-            &settings.evm_rpc,
+        let swaps = Deployment {
             contract,
             token,
+            deposits: deposit_contract,
+        };
+        let (relayer_url, relayer) = start_relayer(
+            &settings,
+            &settings.evm_rpc,
+            &swaps,
             relayer_key,
             None,
-            needs.relayed > 0,
+            relaying,
         )
         .await?;
         let sends = match needs.sends {
@@ -326,14 +354,16 @@ impl Env {
                 UnwrapErr(SysRng).fill_bytes(&mut railgun_seed);
                 let journal = Some((&railgun_seed, "relayer-sends.sqlite"));
                 let (rpc, lossy_rpc) = (&settings.evm_rpc, lossy_rpc(settings.evm_rpc.clone()));
+                let sends_only = Deployment {
+                    deposits: None,
+                    ..swaps
+                };
                 let (relayer_url, relayer) =
-                    start_relayer(&settings, rpc, contract, token, key.clone(), journal, true)
-                        .await?;
+                    start_relayer(&settings, rpc, &sends_only, key.clone(), journal, true).await?;
                 let (lossy_relayer_url, _) = start_relayer(
                     &settings,
                     &lossy_rpc.await?,
-                    contract,
-                    token,
+                    &sends_only,
                     key.clone(),
                     journal,
                     false,
@@ -341,7 +371,7 @@ impl Env {
                 .await?;
                 let forgetful = Some((&railgun_seed, "relayer-sends-forgotten.sqlite"));
                 let (forgetful_relayer_url, _) =
-                    start_relayer(&settings, rpc, contract, token, key, forgetful, false).await?;
+                    start_relayer(&settings, rpc, &sends_only, key, forgetful, false).await?;
                 Some(SendsNode {
                     relayer_url,
                     relayer,
@@ -426,7 +456,10 @@ impl Env {
             railgun_rpc: settings.railgun_rpc,
             contract,
             token,
+            deposits: deposit_contract,
+            funder: settings.funder,
             relayer_url,
+            relayer,
             sends,
             workspace: settings.workspace,
             work_dir: settings.work_dir.clone(),
@@ -667,17 +700,30 @@ async fn split_treasury(
     }
 }
 
-/// Deploys both contracts once the funder is known to cover the run; returns the gas price
-/// the run's funding is priced at.
-async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address, Address, u128)> {
+/// What a run deploys: the settlement, its token, and where Railgun is, the Deposits contract.
+#[derive(Clone, Copy)]
+struct Deployment {
+    contract: Address,
+    token: Address,
+    deposits: Option<Address>,
+}
+
+/// Deploys the contracts once the funder is known to cover the run; returns the fee cap a send
+/// is filled with now, at which every account is funded: what a send must hold for each gas,
+/// though it pays less.
+async fn deploy_contracts(
+    settings: &Settings,
+    needs: &Needs,
+) -> Result<(Address, Address, Option<Address>, u128)> {
     let funder = settings.funder.address();
     let chain = Settlement::connect(&settings.evm_rpc, Address::ZERO, settings.funder.clone())?;
-    let gas_price = chain.gas_price().await?;
+    let gas_price = chain.max_fee_per_gas().await?;
     let gas = DEPLOY_GAS
         + MAKER_GAS * 2
         + PAYOUT_GAS * needs.accounts as u64
         + RELAYED_GAS * needs.relayed as u64
-        + (SEND_GAS + SHIELD_GAS * SHIELDS) * needs.sends as u64;
+        + (SEND_GAS + SHIELD_GAS * SHIELDS) * needs.sends as u64
+        + (DEPOSIT_GAS_LIMIT + DEPOSIT_LANE_GAS) * needs.shields as u64;
     let needed = U256::from(u128::from(gas) * gas_price * GAS_MARGIN);
     let balance = chain.eth_balance(funder).await?;
     ensure!(
@@ -694,7 +740,18 @@ async fn deploy_contracts(settings: &Settings, needs: &Needs) -> Result<(Address
     code.extend_from_slice(&U256::from(LOCK_DURATION).to_be_bytes::<32>());
     code.extend_from_slice(&settings.railgun.unwrap_or_default().into_word().0);
     let contract = deploy(&settings.evm_rpc, settings.funder.clone(), code).await?;
-    Ok((contract, token, gas_price))
+    let deposits = match settings.railgun {
+        // Nobody is screened on testnets.
+        Some(railgun) => {
+            let mut code = creation_code(&settings.artifacts, "Deposits")?;
+            for word in [token.into_word(), railgun.into_word(), B256::ZERO] {
+                code.extend_from_slice(&word.0);
+            }
+            Some(deploy(&settings.evm_rpc, settings.funder.clone(), code).await?)
+        }
+        None => None,
+    };
+    Ok((contract, token, deposits, gas_price))
 }
 
 /// Runs a token issuer in-process, with a new key and one accept a device a day; returns its
@@ -741,17 +798,20 @@ async fn start_issuer(
 
 /// Runs a relayer in-process on `evm_rpc`, with its own key: it must never be a maker. With the
 /// seed of its own Railgun wallet and a journal, it sends private Railgun sends for a fee note,
-/// and records what each cost and earned, as the relayer's binary does. Only one of the relayers
-/// sharing a key `tops_up` the accounts it derives.
+/// and with the deployment's Deposits contract it takes deposits, recording what each cost and
+/// earned, as the relayer's binary does. Only one of the relayers sharing a key `tops_up` the
+/// accounts it derives.
 async fn start_relayer(
     settings: &Settings,
     evm_rpc: &str,
-    contract: Address,
-    token: Address,
+    deployment: &Deployment,
     key: PrivateKeySigner,
     sends: Option<(&[u8; 64], &str)>,
     tops_up: bool,
 ) -> Result<(String, Arc<Relayer>)> {
+    let Deployment {
+        contract, token, ..
+    } = *deployment;
     // Railgun scenarios all swap with the attentive maker, which sends as the funder.
     let config = zecswap_relayer::Config {
         network: zecswap_api::Network::Testnet,
@@ -779,6 +839,20 @@ async fn start_relayer(
             journal: settings.work_dir.join(journal),
         }),
         gas_alerts: None,
+        deposits: deployment
+            .deposits
+            .map(|contract| zecswap_relayer::DepositsConfig {
+                contract,
+                fee: DEPOSIT_FEE,
+                fee_gas: RELAYER_FEE_GAS,
+                fee_bps: DEPOSIT_FEE_BPS,
+                max_gas_limit: DEPOSIT_GAS_LIMIT,
+                max_gas_price_wei: SEND_MAX_GAS_PRICE,
+                min_value: DEPOSIT_MIN_VALUE,
+                max_validity: 24 * 60 * 60,
+                max_pending: 8,
+                journal: settings.work_dir.join("relayer-deposits.sqlite"),
+            }),
     };
     let railgun = sends.map(|(seed, _)| zecswap_railgun::Keys::from_seed(seed, 0));
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);

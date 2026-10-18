@@ -8,11 +8,11 @@
 # which needs no Sepolia ETH (Railgun's screening doesn't run there).
 #
 # Scenarios: happy no-deposit underpaid silent-maker never-claimed abandoned-claim, and with
-# --railgun railgun-happy railgun-resume railgun-no-deposit railgun-send (default: all,
+# --railgun railgun-happy railgun-resume railgun-no-deposit railgun-send deposit (default: all,
 # concurrently). Deposits count after 2 confirmations, which with deadlines to match takes a run
 # about 25 minutes; set ZECSWAP_E2E_CONFIRMATIONS=10, the wallets' default, for about 50.
-# railgun-send proves with Railgun's wallet SDK: run `npm ci` in crates/zecswap-railgun/engine
-# first. Settings come from the environment or .env.testnet:
+# railgun-send and deposit read Railgun's wallet SDK: run `npm ci` in
+# crates/zecswap-railgun/engine first. Settings come from the environment or .env.testnet:
 #   ZECSWAP_E2E_FUNDER_KEY   key holding test ETH on the chain; deploys, makes, and funds the
 #                            other accounts (defaults to MAKER_PRIVATE_KEY)
 #   ZECSWAP_E2E_WALLET       zecswap-cli wallet whose account holds testnet ZEC

@@ -3,6 +3,7 @@
 //   node send.cjs wallet               a new wallet: { mnemonic, seed }
 //   node send.cjs prove < request      each send's transaction: { chainId, to, data, value }
 //   node send.cjs balances < request   each wallet's balance of a token
+//   node send.cjs spendable < request  waits for a wallet to hold an amount it can spend
 // Requests come on stdin as JSON, since they carry mnemonics and seeds; nothing secret is
 // printed but the new wallet. On an anvil fork of Ethereum Sepolia, screening (POI) is off and
 // Railgun's history is taken up to the fork block, after which the fork's own blocks are read.
@@ -226,6 +227,20 @@ async function balancesOf(request) {
   return { balances: found.map(({ total, spendable }) => ({ total: total.toString(), spendable: spendable.toString() })) };
 }
 
+/** Waits until the wallet of `seed` can spend `needed` of `token`: where Railgun screens, once
+ * the screening nodes have cleared its notes. */
+async function spendableOf(request) {
+  const { fork } = await start(request.rpc, request.artifacts);
+  const keys = await wallet(request.seed, 0);
+  const info = await W.createViewOnlyRailgunWallet(
+    crypto.randomBytes(32).toString('hex'),
+    shareableViewingKey(keys),
+    { [NETWORK]: request.creationBlock },
+  );
+  const available = await spendable(info.id, request.token, BigInt(request.needed), fork, request.waitSeconds ?? 600);
+  return { address: info.railgunAddress, spendable: available.toString() };
+}
+
 async function main() {
   const command = process.argv[2];
   if (command === 'wallet') {
@@ -235,7 +250,8 @@ async function main() {
   const request = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (command === 'prove') return prove(request);
   if (command === 'balances') return balancesOf(request);
-  throw new Error('usage: node send.cjs wallet | prove | balances');
+  if (command === 'spendable') return spendableOf(request);
+  throw new Error('usage: node send.cjs wallet | prove | balances | spendable');
 }
 
 main().then(
