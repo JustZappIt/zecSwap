@@ -168,8 +168,14 @@ contract Deposits {
         return keccak256(abi.encode(npk, ciphertext));
     }
 
-    /// @notice Where `from`'s deposits shield from, and where Railgun sends them back. Its code
-    /// says `from` has deposited.
+    /// @notice Whether `from` has deposited: its vault is there. With its token balance, what a
+    /// wallet reads of each of its deposit addresses to find the ones it used, in one Multicall3
+    /// call for many.
+    function deposited(address from) external view returns (bool) {
+        return vaultOf(from).code.length > 0;
+    }
+
+    /// @notice Where `from`'s deposits shield from, and where Railgun sends them back.
     function vaultOf(address from) public view returns (address) {
         return address(
             uint160(

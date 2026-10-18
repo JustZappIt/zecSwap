@@ -57,10 +57,11 @@ contract DepositsTest is Test {
         Authorization memory a = signed(authorization(), relayer);
         bytes32 note = deposits.noteCommitment(npk, ciphertext);
         address vault = deposits.vaultOf(depositor);
-        assertEq(vault.code.length, 0);
+        assertFalse(deposits.deposited(depositor));
         vm.expectEmit(address(deposits));
         emit Deposits.DepositShielded(depositor, VALUE - FEE, FEE, relayer, note);
         send(a);
+        assertTrue(deposits.deposited(depositor));
 
         MockRailgun.Shielded memory shielded = railgun.last();
         uint120 value = uint120(VALUE - FEE);
