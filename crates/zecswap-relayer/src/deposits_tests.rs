@@ -884,3 +884,36 @@ fn a_mined_deposit_says_what_it_moved_and_earned_and_names_no_one() {
         assert!(!text.contains(&from.to_string()) && !text.contains("25 USDC"));
     }
 }
+
+/// The `[deposits]` tables staged in deploy/ load as the relayer's config, their placeholders
+/// filled in.
+#[test]
+fn the_staged_deposits_configs_load() {
+    let deploy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy");
+    let filled = |text: &str| {
+        let mut text = text.to_owned();
+        while let Some(start) = text.find("\"<") {
+            let end = start + text[start..].find(">\"").unwrap() + 2;
+            text.replace_range(start..end, "\"0x1111111111111111111111111111111111111111\"");
+        }
+        text
+    };
+    let testnet = std::fs::read_to_string(deploy.join("testnet/relayer-deposits.toml")).unwrap();
+    let base = r#"
+        network = "testnet"
+        evm_rpc = "http://127.0.0.1:8545"
+        contract = "0x2222222222222222222222222222222222222222"
+        token = "0x3333333333333333333333333333333333333333"
+        maker = "0x4444444444444444444444444444444444444444"
+        listen = "127.0.0.1:8788"
+        fee = 100000
+        claim_margin = 120
+    "#;
+    let config: Config = toml::from_str(&filled(&format!("{base}\n{testnet}"))).unwrap();
+    let deposits = config.deposits.unwrap();
+    assert_eq!(
+        (deposits.min_value, deposits.fee_bps, deposits.max_pending),
+        (2_000_000, 10, 8)
+    );
+    assert!(deposits.max_gas_limit >= deposits.fee_gas * 6 / 5);
+}
