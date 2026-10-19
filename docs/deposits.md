@@ -158,11 +158,11 @@ again after any answer that says to.
 
 | Status | `code` | What it means | What the wallet does |
 | --- | --- | --- | --- |
-| `200` | | `{"transactions": ["0x…"]}`: sent, not yet mined. The same request posted again, before or after it mines, answers with the same hash and sends nothing new. | Watch the transaction. Once it mines, believe it only if the pinned contract's `DepositShielded` in it names this address and this request's note. |
+| `200` | | `{"transactions": ["0x…"]}`: sent, not yet mined. The same request posted again, before or after it mines, answers with the same hash and sends nothing new while it can still land. | Watch the transaction. Once it mines, believe it only if the pinned contract's `DepositShielded` in it names this address and this request's note. If it hasn't mined within a minute, post the same bytes again: the relayer names it again while it can still land, and sends the deposit anew once it can't, as when Flashbots dropped it (`zecswap-client`'s `REPOST`). |
 | `400` | `rejected` | Refused: nothing was sent, and nothing will be. | If the fee or validity is the problem, fetch the terms and sign again; otherwise drop it. |
 | `400`, `415`, `422` | `invalidRequest` | Not JSON, not sent as JSON, or not this request. Nothing was sent. | As `rejected`. |
 | `409` | `conflict` | The authorization is used, or another deposit of this address is on its way: `{"code": "conflict", "error": "…", "transactions": ["0x…"]}` names the relayer's own that do it, empty when the relayer doesn't know one. | Follow the transaction named, believing it once the pinned contract's `DepositShielded` in it names this address; with none, read the chain. |
-| `503` | `unavailable` | Not now, nothing sent, with `Retry-After` in seconds: the gateway is busy (5), gas can't be priced (60), the network's gas price is above `maxGasPriceWei` (300), the relayer is low on ETH (120), as many deposits are on their way as it sends at once (30), a deposit of this address reverted within the hour (the seconds left of it), or an earlier deposit of this address has no known outcome (15). | With `Retry-After` of 30 seconds or less, post the same bytes again, for up to 90 seconds in all (`zecswap-client`'s `BUSY_WAIT`, `BUSY_PATIENCE`); longer, show the deposit as waiting and post again with backoff. |
+| `503` | `unavailable` | Not now, nothing sent, with `Retry-After` in seconds: the gateway is busy (5), gas can't be priced (60), the network's gas price is above `maxGasPriceWei` (300), the relayer is low on ETH (120), as many deposits are on their way as it sends at once (30), its private RPC refused the deposit (30), a deposit of this address reverted within the hour (the seconds left of it), or an earlier deposit of this address has no known outcome (15). | With `Retry-After` of 30 seconds or less, post the same bytes again, for up to 90 seconds in all (`zecswap-client`'s `BUSY_WAIT`, `BUSY_PATIENCE`); longer, show the deposit as waiting and post again with backoff. |
 | `500` | `internal` | The relayer could not read the chain or record the deposit. Nothing is known. | Post the same bytes again later. |
 
 Any other answer, a timeout or a transport failure: post the same bytes again later. The relayer
@@ -214,11 +214,18 @@ call:
    it answers `503`. It simulates the call on the pending state from its deposits account at the
    fees it pays, within its gas caps, and the fee must cover the gas at the lowest rate it quoted
    in ten minutes.
-8. It records the signed transaction, then broadcasts it, once.
+8. It records the signed transaction, then broadcasts it, once, through its private RPC if it has
+   one.
 
-Before mainnet, deposits go through a revert-protecting private RPC (Flashbots Protect or the
-like): an address can move its USDC after the simulation and leave the relayer paying for a
-reverted ~0.9M-gas transaction, from as many fresh addresses as it likes.
+On mainnet the relayer sends deposits through Flashbots Protect (`private_rpc`), never the public
+mempool. There an address could see its deposit coming and make it fail after the simulation,
+leaving the relayer to pay for the failed transaction, from as many fresh addresses as it likes.
+Flashbots lands a transaction only if it succeeds, and drops one it couldn't land within its
+URL's `blockRange`: 10 blocks on mainnet. The public node never sees a deposit sent so until it
+mines, and every later nonce would wait on one Flashbots dropped, so the relayer sends one at a
+time (`max_pending = 1`). It takes a deposit as dropped 5 blocks past the range, gives its nonce
+to the next, and sends it anew when it is posted again. A deposit that fails after the checks
+costs the relayer nothing, then, but holds the next one back for about 3 minutes.
 
 ## Rescue
 
@@ -281,8 +288,9 @@ burned 918,390 gas in execution, a later one 851,862 and a rescue 824,404 (2026-
 ## The reference client
 
 `zecswap_client::Depositor` plays the wallet: `sign_shield`, `post_shield` (the answers above,
-signing again once when a fee or validity went stale, and believing a transaction only once the
-contract's event in it shows the address's deposit to the wallet's note), `shield`,
+posting the same bytes again while a transaction it was given hasn't mined in a minute, signing
+again once when a fee or validity went stale, and believing a transaction only once the contract's
+event in it shows the address's deposit to the wallet's note), `shield`,
 `sign_rescue`, `rescue`, `recover` and `showing`. `zecswap-cli deposit` runs it from a test wallet's seed, saving each
 signed request before posting it.
 
@@ -298,8 +306,10 @@ max_gas_limit = 1500000
 max_gas_price_wei = 20000000000
 min_value = 2000000
 max_validity = 86400       # the latest validBefore, in seconds from now
-max_pending = 8            # deposits on their way at once
+max_pending = 8            # deposits on their way at once; 1 with private_rpc
 journal = "/var/lib/zecswap-relayer/deposits.sqlite"
+# Required on mainnet: deposits go through Flashbots Protect, never the public mempool.
+# private_rpc = "https://rpc.flashbots.net/fast?blockRange=10"
 ```
 
 The relayer refuses to start unless the contract's token is its `token`, its `RAILGUN()` the

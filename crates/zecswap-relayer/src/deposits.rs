@@ -18,9 +18,9 @@ use tracing::{info, warn};
 use zecswap_alerts::{Notification, Telegram, explorer, time, units};
 use zecswap_api::Network;
 use zecswap_api::relayer::{DepositTerms, RescueDeposit, Sent, ShieldDeposit, deposit_fee};
-use zecswap_chain::evm::Settlement;
 use zecswap_chain::evm::deposits::{Call, Deployment, DepositPolicy, Rescue, Shield};
-use zecswap_chain::evm::railgun::{Later, Signed};
+use zecswap_chain::evm::railgun::{Later, SendError, Signed, Status};
+use zecswap_chain::evm::{Settlement, endpoint};
 use zecswap_core::{DepositsDomain, ReceiveAuthorization, RescueAuthorization, signer};
 use zecswap_prices::{Asset, Unpriced};
 use zecswap_railgun::ShieldNote;
@@ -43,6 +43,12 @@ const ETH_WAIT: u64 = 120;
 const PENDING_WAIT: u64 = 30;
 /// Railgun notes hold at most uint120.
 const MAX_VALUE: u128 = (1 << 120) - 1;
+/// Past the private RPC's blocks, those after which a deposit it never landed is taken as dropped:
+/// a margin for missed slots.
+const PRIVATE_MARGIN_BLOCKS: u64 = 5;
+const SLOT: u64 = 12;
+/// The newest deposits read for one sent privately that may still land, or the last mined.
+const NEWEST: usize = 8;
 /// The most deposits one export carries; older ones need a later `since`.
 const LEDGER_LIMIT: usize = 1000;
 const SHIELD: &str = "shield_deposit";
@@ -135,6 +141,7 @@ impl Deposits {
             "deposits gas caps must be positive"
         );
         ensure!(config.max_pending > 0, "max_pending must be positive");
+        check_private(config, relayer.network)?;
         ensure!(config.fee_bps < 10_000, "fee_bps must be under 10000");
         ensure!(
             config.max_validity > LANDING_MARGIN,
@@ -174,6 +181,7 @@ impl Deposits {
             %account,
             token = deployment.token_domain.name,
             sanctions = ?deployment.sanctions,
+            private = ?config.private_rpc.as_deref().map(endpoint),
             alerts = telegram.enabled(),
             "taking deposits"
         );
@@ -220,6 +228,21 @@ impl Deposits {
         }
         Ok(())
     }
+}
+
+/// Mainnet deposits go through a private RPC, and deposits through one go one at a time.
+pub(crate) fn check_private(config: &DepositsConfig, network: Network) -> anyhow::Result<()> {
+    match config.private_rpc {
+        None => ensure!(
+            network != Network::Mainnet,
+            "on mainnet deposits go through a revert-protecting private RPC: set private_rpc"
+        ),
+        Some(_) => ensure!(
+            config.max_pending == 1,
+            "with private_rpc max_pending must be 1: a deposit the private RPC drops holds back every later nonce"
+        ),
+    }
+    Ok(())
 }
 
 /// What a `503` that a send waits on asks.
@@ -506,18 +529,29 @@ impl Relayer {
         }
 
         let _sending = deposits.sending.lock().await;
-        let (mined, sent) = lane.nonces().await?;
-        if sent.saturating_sub(mined) >= deposits.config.max_pending {
-            return Err(RelayerError::Busy(
-                "the relayer has as many deposits on their way as it sends at once",
-                PENDING_WAIT,
-            ));
-        }
+        let least_nonce = if lane.private_blocks().is_some() {
+            self.private_nonce(deposits)
+                .await?
+                .ok_or(RelayerError::Busy(
+                    "the relayer has a deposit on its way, and sends one at a time",
+                    PENDING_WAIT,
+                ))?
+        } else {
+            let (mined, sent) = lane.nonces().await?;
+            if sent.saturating_sub(mined) >= deposits.config.max_pending {
+                return Err(RelayerError::Busy(
+                    "the relayer has as many deposits on their way as it sends at once",
+                    PENDING_WAIT,
+                ));
+            }
+            0
+        };
         let (from, id, fee, rate) = (checked.from, checked.id, checked.fee, checked.rate);
-        let tx = lane
+        let sent = lane
             .send_deposit(
                 &deposits.policy,
                 checked.call,
+                least_nonce,
                 |gas, gas_price| covers(fee, rate, gas, gas_price),
                 |signed| {
                     deposits
@@ -526,8 +560,18 @@ impl Relayer {
                         .map_err(|e| zecswap_chain::Error::Journal(e.to_string()))
                 },
             )
-            .await
-            .map_err(crate::sends::refused)?;
+            .await;
+        let tx = match sent {
+            Ok(tx) => tx,
+            Err(SendError::Refused(hash)) => {
+                deposits.journal.forget(chain_id, hash)?;
+                return Err(RelayerError::Busy(
+                    "the private RPC refused the deposit: post it again",
+                    PENDING_WAIT,
+                ));
+            }
+            Err(error) => return Err(crate::sends::refused(error)),
+        };
         info!(%tx, kind = kind.name(), "sent a deposit");
         Ok(Sending::New(Sent {
             transactions: vec![tx],
@@ -549,7 +593,59 @@ impl Relayer {
             .call()
             .and_then(|(_, _, data)| Call::decode(&data))
             .is_none_or(|call| call.expires_at() <= now().saturating_add(EXPIRING));
-        self.fate(&entry.signed, entry.sent_at, expired).await
+        match self.lanes.deposits.private_blocks() {
+            Some(blocks) => self.private_fate(entry, expired, blocks).await,
+            None => self.fate(&entry.signed, entry.sent_at, expired).await,
+        }
+    }
+
+    /// What became of a deposit sent through the private RPC: the public node knows of it only
+    /// once it mines, and the private RPC never sends again one it dropped, so it is never
+    /// broadcast again.
+    async fn private_fate(&self, entry: &Entry, expired: bool, blocks: u64) -> Result<Fate> {
+        let dropped =
+            now().saturating_sub(entry.sent_at) >= (blocks + PRIVATE_MARGIN_BLOCKS) * SLOT;
+        let lane = &self.lanes.deposits;
+        Ok(match lane.transaction_status(entry.signed.hash).await? {
+            Status::Mined { succeeded: true } => Fate::Landed,
+            Status::Mined { succeeded: false } => Fate::Reverted,
+            Status::Pending => Fate::Pending,
+            Status::Unknown if expired || dropped => Fate::Dead,
+            Status::Unknown => Fate::Pending,
+        })
+    }
+
+    /// With deposits sent privately, the least nonce the next may take: past the last one mined,
+    /// which a node a block behind may not count yet. None while one may still land: the public
+    /// node can't see it, and the next would take its nonce.
+    async fn private_nonce(&self, deposits: &Deposits) -> Result<Option<u64>> {
+        let chain_id = self.domain.chain_id;
+        for entry in deposits.journal.newest(chain_id, NEWEST)? {
+            match self.deposit_fate(deposits, &entry).await? {
+                Fate::Pending | Fate::Unknown => return Ok(None),
+                Fate::Landed | Fate::Reverted => return Ok(Some(entry.signed.nonce + 1)),
+                Fate::Dead => deposits.journal.forget(chain_id, entry.signed.hash)?,
+            }
+        }
+        Ok(Some(0))
+    }
+
+    /// Takes back what the deposits account holds beyond `keep`; never while a deposit it sent
+    /// privately may still land, whose nonce the transfer would take.
+    pub(crate) async fn take_back_deposit_eth(&self, keep: U256) -> anyhow::Result<Option<U256>> {
+        let lane = &self.lanes.deposits;
+        let private = self
+            .deposits
+            .as_ref()
+            .filter(|_| lane.private_blocks().is_some());
+        let Some(deposits) = private else {
+            return Ok(lane.send_eth_above(self.account, keep).await?);
+        };
+        let _sending = deposits.sending.lock().await;
+        if self.private_nonce(deposits).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(lane.send_eth_above(self.account, keep).await?)
     }
 
     /// Records each deposit's receipt once it mined, a bounded number a pass, and values them.
@@ -864,6 +960,18 @@ impl Journal {
             ],
         )?;
         Ok(())
+    }
+
+    /// The newest recorded deposits of every address, newest first.
+    fn newest(&self, chain_id: u64, limit: usize) -> rusqlite::Result<Vec<Entry>> {
+        let db = self.0.lock().unwrap();
+        let mut query = db.prepare(
+            "SELECT kind, id, tx_hash, nonce, raw, sent_at FROM deposits WHERE chain_id = ?1
+             ORDER BY sent_at DESC, nonce DESC LIMIT ?2",
+        )?;
+        query
+            .query_map(params![chain_id as i64, limit as i64], entry)?
+            .collect()
     }
 
     fn forget(&self, chain_id: u64, hash: B256) -> rusqlite::Result<()> {

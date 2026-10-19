@@ -95,6 +95,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
             max_validity: 1_500,
             max_pending: 8,
             journal: dir.path().join("deposits.sqlite"),
+            private_rpc: None,
         }),
     };
     let relayer = Arc::new(

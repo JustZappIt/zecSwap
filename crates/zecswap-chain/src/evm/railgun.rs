@@ -128,6 +128,10 @@ pub enum SendError {
     /// The transaction was signed and recorded, and its broadcast failed: it may still land.
     #[error("the broadcast of {0} failed; it may still land")]
     Unknown(B256),
+    /// The transaction was signed and recorded, and the private RPC it went to turned it down: it
+    /// can't land.
+    #[error("the private RPC refused {0}")]
+    Refused(B256),
 }
 
 /// Why a send that may go as it is waits.
@@ -557,7 +561,7 @@ impl Settlement {
             return Ok(false);
         }
         let _pending = self
-            .provider
+            .broadcaster()
             .send_raw_transaction(&signed.raw)
             .await
             .map_err(|_| Error::Contract("the broadcast failed again".into()))?;

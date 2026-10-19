@@ -41,6 +41,8 @@ const SEND_ATTEMPTS: u32 = 4;
 const SEND_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// Reads one `aggregate3` carries, far under any node's gas cap for a call.
 const BATCH: usize = 100;
+/// The blocks Flashbots Protect tries a transaction for, unless its URL's `blockRange` says.
+const PROTECT_BLOCKS: u64 = 25;
 
 sol! {
     struct ReverseOpenWords {
@@ -384,12 +386,21 @@ pub struct Settlement {
     account: Option<Address>,
     /// The account's key, for transactions recorded before they are broadcast.
     wallet: Option<EthereumWallet>,
+    /// Where the account's deposits are broadcast instead of the public mempool.
+    private: Option<Private>,
     sending: Line,
     meter: RpcMeter,
     /// The contract's Railgun proxy, which it fixes at deployment.
     railgun: OnceCell<Address>,
     /// Whether Multicall3 is deployed, so reads of many swaps or accounts take one call.
     multicall: OnceCell<bool>,
+}
+
+/// A revert-protecting private RPC: it lands a transaction only if it succeeds, never shows it to
+/// the public mempool, and drops one it couldn't land within `blocks` blocks.
+struct Private {
+    provider: DynProvider,
+    blocks: u64,
 }
 
 /// The account's sends, one at a time. A turn that ends, whether or not its transaction went
@@ -469,11 +480,61 @@ impl Settlement {
             provider,
             account,
             wallet,
+            private: None,
             sending: Line::default(),
             meter: meter.clone(),
             railgun: OnceCell::new(),
             multicall: OnceCell::new(),
         }
+    }
+
+    /// Broadcasts this account's deposits through `rpc_url` alone, never the public mempool:
+    /// Flashbots Protect's, which drops a transaction it couldn't land within its URL's
+    /// `blockRange` blocks, or 25.
+    pub fn broadcast_privately(&mut self, rpc_url: &str) -> Result<(), Error> {
+        // Never echo the URL: a private RPC's can carry a key.
+        let unreadable = || Error::Config("the private RPC's URL is unreadable".into());
+        let url = reqwest::Url::parse(rpc_url).map_err(|_| unreadable())?;
+        let blocks = match url.query_pairs().find(|(name, _)| name == "blockRange") {
+            Some((_, blocks)) => blocks.parse().map_err(|_| unreadable())?,
+            None => PROTECT_BLOCKS,
+        };
+        self.private = Some(Private {
+            provider: signing_provider(rpc_url, None, &RpcMeter::default())?,
+            blocks,
+        });
+        Ok(())
+    }
+
+    /// With a private RPC, the blocks it tries a transaction for.
+    pub fn private_blocks(&self) -> Option<u64> {
+        self.private.as_ref().map(|private| private.blocks)
+    }
+
+    /// That the private RPC, if any, serves the chain this connection reads.
+    pub async fn check_private_rpc(&self) -> Result<(), Error> {
+        let Some(private) = &self.private else {
+            return Ok(());
+        };
+        let theirs = private
+            .provider
+            .get_chain_id()
+            .await
+            .map_err(|_| Error::Contract("the private RPC is unavailable".into()))?;
+        let ours = self.chain_id().await?;
+        if theirs != ours {
+            return Err(Error::Config(format!(
+                "the private RPC serves chain {theirs}, not {ours}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Where this account's signed transactions are broadcast.
+    fn broadcaster(&self) -> &DynProvider {
+        self.private
+            .as_ref()
+            .map_or(&self.provider, |private| &private.provider)
     }
 
     pub fn contract(&self) -> Address {

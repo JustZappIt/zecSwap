@@ -523,7 +523,7 @@ pub(crate) fn refused(error: SendError) -> RelayerError {
         SendError::Spent => RelayerError::Spent(Vec::new()),
         SendError::Later(later) => crate::deposits::later(later),
         SendError::Chain(error) => error.into(),
-        SendError::Unknown(_) => unsettled(),
+        SendError::Unknown(_) | SendError::Refused(_) => unsettled(),
     }
 }
 

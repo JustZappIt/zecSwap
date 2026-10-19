@@ -339,13 +339,15 @@ impl Settlement {
 
     /// Sends `data` to the Deposits contract within `policy`. It is simulated on the pending state
     /// from this account, at the fees every send pays, and sent only if its fee `covers` the gas
-    /// it is estimated to burn at the network's gas price; then signed, handed to `record`, and
-    /// broadcast once. No retries: a failed broadcast's outcome is unknown, and what `record` kept
-    /// says what to look for.
+    /// it is estimated to burn at the network's gas price; then signed, at a nonce of at least
+    /// `least_nonce`, handed to `record`, and broadcast once, through the private RPC if there is
+    /// one. No retries: a failed broadcast's outcome is unknown, and what `record` kept says what
+    /// to look for.
     pub async fn send_deposit(
         &self,
         policy: &DepositPolicy,
         data: Bytes,
+        least_nonce: u64,
         covers: impl FnOnce(u64, u128) -> bool,
         record: impl FnOnce(&Signed) -> Result<(), Error>,
     ) -> Result<B256, SendError> {
@@ -412,7 +414,8 @@ impl Settlement {
             .get_transaction_count(account)
             .pending()
             .await
-            .map_err(|_| Error::Contract("the relayer's nonce is unavailable".into()))?;
+            .map_err(|_| Error::Contract("the relayer's nonce is unavailable".into()))?
+            .max(least_nonce);
         tx.set_gas_limit(gas_limit);
         tx.set_nonce(nonce);
         let envelope = tx
@@ -425,10 +428,14 @@ impl Settlement {
             raw: envelope.encoded_2718().into(),
         };
         record(&signed)?;
-        match self.provider.send_raw_transaction(&signed.raw).await {
+        match self.broadcaster().send_raw_transaction(&signed.raw).await {
             Ok(_) => {
                 tracing::info!(transaction_hash = %signed.hash, "sent a deposit");
                 Ok(signed.hash)
+            }
+            // A private RPC that answers with an error never passes the transaction on.
+            Err(RpcError::ErrorResp(_)) if self.private_blocks().is_some() => {
+                Err(SendError::Refused(signed.hash))
             }
             Err(_) => Err(SendError::Unknown(signed.hash)),
         }

@@ -161,11 +161,18 @@ pub struct DepositsConfig {
     /// The latest an authorization's `validBefore` may be, in seconds from now.
     #[serde(default = "default_deposit_max_validity")]
     pub max_validity: u64,
-    /// The most deposits sent and not yet mined at once.
+    /// The most deposits sent and not yet mined at once: 1 with `private_rpc`.
     #[serde(default = "default_deposit_max_pending")]
     pub max_pending: u64,
     /// The SQLite file each deposit is recorded in before it is broadcast.
     pub journal: PathBuf,
+    /// Flashbots Protect's RPC, to send deposits through instead of the public mempool, where an
+    /// address could see its deposit coming and make it fail, leaving the relayer the gas. It
+    /// lands a deposit only if it succeeds, and drops one it couldn't land within its URL's
+    /// `blockRange` blocks (25 if none); every later nonce would wait on that one, so deposits go
+    /// one at a time. Required on mainnet.
+    #[serde(default)]
+    pub private_rpc: Option<String>,
 }
 
 fn default_top_up_transactions() -> u64 {
@@ -337,7 +344,7 @@ impl Relayer {
         }
         info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
         let meter = RpcMeter::default();
-        let lanes = Lanes::connect_metered(&config.evm_rpc, config.contract, &key, &meter)?;
+        let lanes = Lanes::of(&config, &key, &meter).await?;
         let settlement =
             Settlement::connect_metered(&config.evm_rpc, config.contract, key, &meter)?;
         let domain = Domain {

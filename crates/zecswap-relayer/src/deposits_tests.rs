@@ -162,8 +162,18 @@ impl Chain {
                 max_validity: 86_400,
                 max_pending: 8,
                 journal: dir.join("deposits.sqlite"),
+                private_rpc: None,
             }),
         }
+    }
+
+    /// The config, sending deposits through `protect` one at a time.
+    fn private_config(&self, dir: &Path, protect: &Protect) -> Config {
+        let mut config = self.config(dir);
+        let deposits = config.deposits.as_mut().unwrap();
+        deposits.private_rpc = Some(protect.url.clone());
+        deposits.max_pending = 1;
+        config
     }
 
     /// The relayer as `Relayer::new` makes it, with its messages queued and never delivered, and
@@ -173,7 +183,7 @@ impl Chain {
         let meter = RpcMeter::default();
         let settlement =
             Settlement::connect_metered(&self.url, self.contract, key.clone(), &meter).unwrap();
-        let lanes = Lanes::connect_metered(&self.url, self.contract, key, &meter).unwrap();
+        let lanes = Lanes::of(&config, key, &meter).await.unwrap();
         let deposits = match &config.deposits {
             Some(deposits) => Some(
                 Deposits::open(
@@ -377,6 +387,86 @@ fn retry_after(headers: &HeaderMap) -> u64 {
 
 fn fee() -> u128 {
     deposit_fee(FLOOR.into(), FEE_BPS, VALUE)
+}
+
+/// Moves deposit `tx`'s record `seconds` into the past.
+fn backdate(relayer: &Relayer, tx: B256, seconds: u64) {
+    relayer
+        .deposits
+        .as_ref()
+        .unwrap()
+        .journal()
+        .connection()
+        .execute(
+            "UPDATE deposits SET sent_at = sent_at - ?1 WHERE tx_hash = ?2",
+            rusqlite::params![seconds as i64, tx.as_slice()],
+        )
+        .unwrap();
+}
+
+/// How Flashbots Protect's stand-in takes a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Taking {
+    /// On to the chain.
+    Lands,
+    /// Kept from it, as one it never lands.
+    Holds,
+    Refuses,
+}
+
+/// Flashbots Protect's stand-in on a port of its own: it reads anvil, and sends as `taking` says.
+struct Protect {
+    url: String,
+    taking: Arc<std::sync::Mutex<Taking>>,
+}
+
+impl Protect {
+    async fn start(chain: &Chain) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/fast?blockRange=10",
+            listener.local_addr().unwrap()
+        );
+        let taking = Arc::new(std::sync::Mutex::new(Taking::Lands));
+        let (node, shared) = (chain.chain.clone(), Arc::clone(&taking));
+        let app = axum::Router::new().route(
+            "/fast",
+            axum::routing::post(move |axum::Json(call): axum::Json<serde_json::Value>| {
+                let (node, taking) = (node.clone(), *shared.lock().unwrap());
+                async move { axum::Json(answer(&node, taking, call).await) }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Self { url, taking }
+    }
+
+    fn take(&self, taking: Taking) {
+        *self.taking.lock().unwrap() = taking;
+    }
+}
+
+/// The stand-in's answer to a JSON-RPC `call`.
+async fn answer(node: &DynProvider, taking: Taking, call: serde_json::Value) -> serde_json::Value {
+    let (id, params) = (call["id"].clone(), call["params"].clone());
+    let method = call["method"].as_str().unwrap_or_default().to_owned();
+    let sending = method == "eth_sendRawTransaction";
+    let result = match taking {
+        Taking::Refuses if sending => Err("refused".to_owned()),
+        Taking::Holds if sending => {
+            let raw: alloy_primitives::Bytes = serde_json::from_value(params[0].clone()).unwrap();
+            Ok(serde_json::to_value(alloy_primitives::keccak256(&raw)).unwrap())
+        }
+        _ => node
+            .raw_request::<_, serde_json::Value>(method.into(), params)
+            .await
+            .map_err(|error| error.to_string()),
+    };
+    match result {
+        Ok(result) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err(message) => serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": message }
+        }),
+    }
 }
 
 #[tokio::test]
@@ -817,6 +907,189 @@ async fn an_expired_deposit_the_node_never_saw_is_dropped_not_sent_again() {
 }
 
 #[tokio::test]
+async fn deposits_sent_privately_go_one_at_a_time() {
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let protect = Protect::start(&chain).await;
+    let dir = tempfile::tempdir().unwrap();
+    let relayer = chain
+        .relayer(chain.private_config(dir.path(), &protect))
+        .await;
+    assert_eq!(relayer.lanes.deposits.private_blocks(), Some(10));
+    let (first, second) = (Depositor::new(1), Depositor::new(2));
+    chain.mint(first.address(), VALUE).await;
+    chain.mint(second.address(), VALUE).await;
+    let a = chain
+        .shield(&relayer, &first, VALUE, fee(), now() + 3_600)
+        .await;
+    let b = chain
+        .shield(&relayer, &second, VALUE, fee(), now() + 3_600)
+        .await;
+
+    chain.mine_every(0).await;
+    let (status, _, sent) = post(&relayer, "/v1/deposits/shield", &a).await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    let (status, headers, busy) = post(&relayer, "/v1/deposits/shield", &b).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{busy}");
+    assert_eq!(retry_after(&headers), 30);
+    let (status, _, again) = post(&relayer, "/v1/deposits/shield", &a).await;
+    assert_eq!((status, &again), (StatusCode::OK, &sent));
+
+    chain.mine().await;
+    assert!(chain.mined(transaction(&sent)).await);
+    let (status, _, next) = post(&relayer, "/v1/deposits/shield", &b).await;
+    assert_eq!(status, StatusCode::OK, "{next}");
+    chain.mine().await;
+    assert!(chain.mined(transaction(&next)).await);
+}
+
+#[tokio::test]
+async fn a_deposit_the_private_rpc_dropped_gives_its_nonce_to_the_next_once_its_blocks_pass() {
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let protect = Protect::start(&chain).await;
+    let dir = tempfile::tempdir().unwrap();
+    let relayer = chain
+        .relayer(chain.private_config(dir.path(), &protect))
+        .await;
+    let lane = relayer.lane_accounts()["deposits"];
+    let (first, second) = (Depositor::new(1), Depositor::new(2));
+    chain.mint(first.address(), VALUE).await;
+    chain.mint(second.address(), VALUE).await;
+    let a = chain
+        .shield(&relayer, &first, VALUE, fee(), now() + 3_600)
+        .await;
+    let b = chain
+        .shield(&relayer, &second, VALUE, fee(), now() + 3_600)
+        .await;
+
+    protect.take(Taking::Holds);
+    let nonce = chain.sent(lane).await;
+    let (status, _, held) = post(&relayer, "/v1/deposits/shield", &a).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let dropped = transaction(&held);
+    let (status, _, again) = post(&relayer, "/v1/deposits/shield", &a).await;
+    assert_eq!((status, &again), (StatusCode::OK, &held));
+    let (status, _, busy) = post(&relayer, "/v1/deposits/shield", &b).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{busy}");
+
+    // Ten blocks and the margin on, Flashbots dropped it.
+    backdate(&relayer, dropped, (10 + 5) * 12);
+    protect.take(Taking::Lands);
+    let (status, _, next) = post(&relayer, "/v1/deposits/shield", &b).await;
+    assert_eq!(status, StatusCode::OK, "{next}");
+    assert!(chain.mined(transaction(&next)).await);
+    assert_eq!(
+        chain.sent(lane).await,
+        nonce + 1,
+        "it took the dropped one's nonce"
+    );
+
+    let (status, _, resent) = post(&relayer, "/v1/deposits/shield", &a).await;
+    assert_eq!(status, StatusCode::OK, "{resent}");
+    assert_ne!(transaction(&resent), dropped);
+    assert!(chain.mined(transaction(&resent)).await);
+    assert_eq!(chain.status(dropped).await, Status::Unknown);
+}
+
+#[tokio::test]
+async fn a_deposit_the_private_rpc_refuses_is_never_on_its_way() {
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let protect = Protect::start(&chain).await;
+    let dir = tempfile::tempdir().unwrap();
+    let relayer = chain
+        .relayer(chain.private_config(dir.path(), &protect))
+        .await;
+    let who = Depositor::new(1);
+    chain.mint(who.address(), VALUE).await;
+    let request = chain
+        .shield(&relayer, &who, VALUE, fee(), now() + 3_600)
+        .await;
+
+    protect.take(Taking::Refuses);
+    let (status, headers, body) = post(&relayer, "/v1/deposits/shield", &request).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(retry_after(&headers), 30);
+    let recorded: u64 = relayer
+        .deposits
+        .as_ref()
+        .unwrap()
+        .journal()
+        .connection()
+        .query_row("SELECT count(*) FROM deposits", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(recorded, 0);
+
+    protect.take(Taking::Lands);
+    let (status, _, sent) = post(&relayer, "/v1/deposits/shield", &request).await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert!(chain.mined(transaction(&sent)).await);
+}
+
+#[tokio::test]
+async fn the_deposits_account_takes_back_eth_only_with_no_deposit_on_its_way() {
+    let Some(chain) = chain().await else {
+        return;
+    };
+    let protect = Protect::start(&chain).await;
+    let dir = tempfile::tempdir().unwrap();
+    let relayer = chain
+        .relayer(chain.private_config(dir.path(), &protect))
+        .await;
+    let lane = relayer.lane_accounts()["deposits"];
+    let who = Depositor::new(1);
+    chain.mint(who.address(), VALUE).await;
+    let request = chain
+        .shield(&relayer, &who, VALUE, fee(), now() + 3_600)
+        .await;
+    protect.take(Taking::Holds);
+    let (status, _, held) = post(&relayer, "/v1/deposits/shield", &request).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+
+    // Gas fell since the account was filled: it holds far over twice its float.
+    chain
+        .funder
+        .send_eth(lane, U256::from(10).pow(U256::from(18)))
+        .await
+        .unwrap();
+    let full = chain.funder.eth_balance(lane).await.unwrap();
+    relayer.top_up().await.unwrap();
+    assert_eq!(chain.funder.eth_balance(lane).await.unwrap(), full);
+
+    backdate(&relayer, transaction(&held), (10 + 5) * 12);
+    relayer.top_up().await.unwrap();
+    assert!(chain.funder.eth_balance(lane).await.unwrap() < full);
+}
+
+#[test]
+fn mainnet_deposits_go_through_a_private_rpc_one_at_a_time() {
+    let deposits = |private_rpc: Option<&str>, max_pending| DepositsConfig {
+        contract: Address::repeat_byte(1),
+        fee: FLOOR,
+        fee_gas: 0,
+        fee_bps: FEE_BPS,
+        max_gas_limit: 2_000_000,
+        max_gas_price_wei: 50_000_000_000,
+        min_value: MIN_VALUE,
+        max_validity: 86_400,
+        max_pending,
+        journal: "deposits.sqlite".into(),
+        private_rpc: private_rpc.map(str::to_owned),
+    };
+    let protect = Some("https://rpc.flashbots.net/fast?blockRange=10");
+    let check = crate::deposits::check_private;
+    let (mainnet, testnet) = (zecswap_api::Network::Mainnet, zecswap_api::Network::Testnet);
+    assert!(check(&deposits(None, 8), mainnet).is_err());
+    assert!(check(&deposits(protect, 8), mainnet).is_err());
+    assert!(check(&deposits(protect, 1), mainnet).is_ok());
+    assert!(check(&deposits(None, 8), testnet).is_ok());
+}
+
+#[tokio::test]
 async fn a_rescue_shields_what_came_back_and_each_deposit_is_costed_once() {
     let Some(chain) = chain().await else {
         return;
@@ -1068,4 +1341,24 @@ fn the_staged_deposits_configs_load() {
         (2_000_000, 10, 8)
     );
     assert!(deposits.max_gas_limit >= deposits.fee_gas * 6 / 5);
+
+    let mainnet = std::fs::read_to_string(deploy.join("mainnet/relayer-deposits.toml")).unwrap();
+    let base = base.replace("\"testnet\"", "\"mainnet\"");
+    let config: Config = toml::from_str(&filled(&format!("{base}\n{mainnet}"))).unwrap();
+    let deposits = config.deposits.unwrap();
+    assert_eq!((deposits.min_value, deposits.fee_bps), (5_000_000, 10));
+    assert!(deposits.max_gas_limit >= deposits.fee_gas * 6 / 5);
+    crate::deposits::check_private(&deposits, config.network).unwrap();
+    let mut lane = Settlement::connect(
+        "http://127.0.0.1:1",
+        Address::ZERO,
+        PrivateKeySigner::random(),
+    )
+    .unwrap();
+    lane.broadcast_privately(deposits.private_rpc.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(lane.private_blocks(), Some(10));
+    lane.broadcast_privately("https://rpc.flashbots.net/fast")
+        .unwrap();
+    assert_eq!(lane.private_blocks(), Some(25), "Flashbots' own");
 }

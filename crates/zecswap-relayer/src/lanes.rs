@@ -42,6 +42,25 @@ impl Lanes {
         Self::connect_metered(rpc, contract, key, &RpcMeter::default())
     }
 
+    /// The lanes as `config` has them, counting their requests on `meter`: deposits broadcast
+    /// through its private RPC, where it names one on the chain they read.
+    pub(crate) async fn of(
+        config: &Config,
+        key: &PrivateKeySigner,
+        meter: &RpcMeter,
+    ) -> anyhow::Result<Self> {
+        let mut lanes = Self::connect_metered(&config.evm_rpc, config.contract, key, meter)?;
+        let private = config
+            .deposits
+            .as_ref()
+            .and_then(|deposits| deposits.private_rpc.as_deref());
+        if let Some(rpc) = private {
+            lanes.deposits.broadcast_privately(rpc)?;
+            lanes.deposits.check_private_rpc().await?;
+        }
+        Ok(lanes)
+    }
+
     /// Every lane counts its requests on `meter`.
     pub(crate) fn connect_metered(
         rpc: &str,
@@ -181,7 +200,11 @@ impl Relayer {
         {
             let keep = fee * U256::from(gas) * transactions;
             if balance > keep * U256::from(2) {
-                if let Some(amount) = settlement.send_eth_above(self.account, keep).await? {
+                let taken = match lane {
+                    "deposits" => self.take_back_deposit_eth(keep).await?,
+                    _ => settlement.send_eth_above(self.account, keep).await?,
+                };
+                if let Some(amount) = taken {
                     info!(lane, %account, %amount, "took back a lane's ETH");
                     spare += amount;
                 }

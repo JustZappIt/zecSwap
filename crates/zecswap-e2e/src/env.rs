@@ -85,6 +85,9 @@ pub(crate) struct Settings {
     railgun_rpc: String,
     /// Confirmations a note needs before it counts; the wallets' default, 10, unless set.
     confirmations: Option<NonZeroU32>,
+    /// Where the relayer sends deposits instead of the public mempool: Flashbots Protect's, on
+    /// Sepolia `https://rpc-sepolia.flashbots.net/fast`.
+    private_rpc: Option<String>,
     lightwalletd: String,
     funder: PrivateKeySigner,
     wallet_dir: PathBuf,
@@ -132,6 +135,9 @@ impl Settings {
             evm_rpc,
             railgun,
             confirmations,
+            private_rpc: std::env::var("ZECSWAP_E2E_PRIVATE_RPC")
+                .ok()
+                .filter(|url| !url.is_empty()),
             lightwalletd: var_or(
                 "ZECSWAP_E2E_LIGHTWALLETD",
                 zecswap_api::Network::Testnet.lightwalletd(),
@@ -850,8 +856,9 @@ async fn start_relayer(
                 max_gas_price_wei: SEND_MAX_GAS_PRICE,
                 min_value: DEPOSIT_MIN_VALUE,
                 max_validity: 24 * 60 * 60,
-                max_pending: 8,
+                max_pending: if settings.private_rpc.is_some() { 1 } else { 8 },
                 journal: settings.work_dir.join("relayer-deposits.sqlite"),
+                private_rpc: settings.private_rpc.clone(),
             }),
     };
     let railgun = sends.map(|(seed, _)| zecswap_railgun::Keys::from_seed(seed, 0));
