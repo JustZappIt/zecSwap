@@ -1,0 +1,20 @@
+# The mainnet relayer's deposits (docs/deposits.md). enable-deposits.sh appends this to
+# /etc/zecswap-mainnet-relayer/config.toml, with the Deposits contract deploy-deposits.sh deployed.
+[deposits]
+contract = "<deposits>"
+# The fee is $0.10 and 0.1% of the deposit; with `providers`, the $0.10 follows a first deposit's
+# gas if that costs more: 918,390 of execution on a mainnet fork (2026-10-18), about 950k in all.
+# A rescue pays the $0.10 alone.
+fee = 100000
+fee_gas = 950000
+fee_bps = 10
+max_gas_limit = 1500000
+max_gas_price_wei = 20000000000
+# 5 USDC, the owner's mainnet minimum.
+min_value = 5000000
+max_validity = 86400
+# Through Flashbots Protect, never the public mempool, one at a time: it lands a deposit only if
+# it succeeds, and drops one it couldn't land within 10 blocks.
+max_pending = 1
+private_rpc = "https://rpc.flashbots.net/fast?blockRange=10"
+journal = "/var/lib/zecswap-mainnet-relayer/deposits.sqlite"
