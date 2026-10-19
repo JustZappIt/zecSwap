@@ -1,30 +1,18 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.28;
 
-import {Vm, console} from "forge-std/Test.sol";
+import {console} from "forge-std/Test.sol";
 
 import {IRailgun} from "../../src/ShieldVault.sol";
 import {IERC20} from "../../src/Token.sol";
 import {ZecSwap} from "../../src/ZecSwap.sol";
 import {SpendAuthVectors} from "../utils/SpendAuthVectors.sol";
-
-interface IRailgunTree {
-    function treeNumber() external view returns (uint256);
-    function nextLeafIndex() external view returns (uint256);
-    function shieldFee() external view returns (uint120);
-}
+import {IRailgunTree, RailgunFixture} from "./RailgunFixture.sol";
 
 /// Railgun payouts against the real Railgun and USDC on an Ethereum mainnet fork, paying the note
 /// zecswap-railgun built in `vectors/railgun_note.json`. Skipped unless ETH_RPC_URL is set:
 ///   ETH_RPC_URL=… forge test --match-path test/fork/RailgunFork.t.sol -vv
-contract RailgunForkTest is SpendAuthVectors {
-    address internal constant RAILGUN = 0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9;
-    address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
-    /// 2026-09-25; pinned so forks are cached and repeatable.
-    uint256 internal constant FORK_BLOCK = 26_056_542;
-    bytes32 internal constant SHIELD_EVENT = keccak256(
-        "Shield(uint256,uint256,(bytes32,(uint8,address,uint256),uint120)[],(bytes32[3],bytes32)[],uint256[])"
-    );
+contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
     bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
@@ -38,15 +26,10 @@ contract RailgunForkTest is SpendAuthVectors {
     address internal relayer = makeAddr("relayer");
     address internal auth;
     uint256 internal authKey;
-    bytes32 internal npk;
-    IRailgun.ShieldCiphertext internal ciphertext;
-    bytes32 internal commitment;
 
     function setUp() public override {
-        string memory rpc = vm.envOr("ETH_RPC_URL", string(""));
-        vm.skip(bytes(rpc).length == 0);
+        forkMainnet();
         super.setUp();
-        vm.createSelectFork(rpc, FORK_BLOCK);
 
         swaps = new ZecSwap(LOCK, IRailgun(RAILGUN));
         deal(USDC, maker, AMOUNT);
@@ -55,13 +38,6 @@ contract RailgunForkTest is SpendAuthVectors {
         swaps.deposit(USDC, AMOUNT);
         vm.stopPrank();
         (auth, authKey) = makeAddrAndKey("auth");
-
-        string memory json = vm.readFile(string.concat(vm.projectRoot(), "/test/vectors/railgun_note.json"));
-        npk = vm.parseJsonBytes32(json, ".npk");
-        bytes32[] memory bundle = vm.parseJsonBytes32Array(json, ".encryptedBundle");
-        ciphertext.encryptedBundle = [bundle[0], bundle[1], bundle[2]];
-        ciphertext.shieldKey = vm.parseJsonBytes32(json, ".shieldKey");
-        commitment = vm.parseJsonBytes32(json, ".commitment");
     }
 
     function test_rustAndSolidityCommitToTheSameNote() public view {
@@ -157,39 +133,6 @@ contract RailgunForkTest is SpendAuthVectors {
         Vector memory z = randomVector(1);
         uint64 t0 = uint64(block.timestamp + 45 minutes);
         return ZecSwap.Terms(maker, USDC, AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t0 + 1 hours, commitment);
-    }
-
-    /// The one `Shield` Railgun emitted since `vm.recordLogs`.
-    function shieldEvent()
-        internal
-        view
-        returns (
-            IRailgun.CommitmentPreimage[] memory,
-            IRailgun.ShieldCiphertext[] memory,
-            uint256[] memory fees
-        )
-    {
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == RAILGUN && logs[i].topics[0] == SHIELD_EVENT) {
-                (
-                    ,
-                    ,
-                    IRailgun.CommitmentPreimage[] memory notes,
-                    IRailgun.ShieldCiphertext[] memory ciphertexts,
-                    uint256[] memory f
-                ) = abi.decode(
-                    logs[i].data,
-                    (uint256, uint256, IRailgun.CommitmentPreimage[], IRailgun.ShieldCiphertext[], uint256[])
-                );
-                return (notes, ciphertexts, f);
-            }
-        }
-        revert("no Shield event");
-    }
-
-    function leafCount() internal view returns (uint256) {
-        return IRailgunTree(RAILGUN).treeNumber() * 2 ** 16 + IRailgunTree(RAILGUN).nextLeafIndex();
     }
 
     function sign(bytes32 structHash) internal view returns (bytes memory) {

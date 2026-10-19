@@ -27,7 +27,7 @@ const NAME: &str = "railgun-send";
 const SENT: u128 = 1_000_000;
 const MINED_WITHIN: Duration = Duration::from_secs(10 * 60);
 /// How long screening may take to clear a note on a live chain.
-const SCREENING_WITHIN: Duration = Duration::from_secs(40 * 60);
+pub(crate) const SCREENING_WITHIN: Duration = Duration::from_secs(40 * 60);
 /// Screening, then a minute or two to sync and prove.
 const SDK_WITHIN: Duration = Duration::from_secs(45 * 60);
 /// Longer than the relayer waits before broadcasting a lost transaction again.
@@ -41,9 +41,9 @@ alloy::sol! {
 }
 
 #[derive(Deserialize)]
-struct NewWallet {
-    mnemonic: String,
-    seed: String,
+pub(crate) struct NewWallet {
+    pub(crate) mnemonic: String,
+    pub(crate) seed: String,
 }
 
 #[derive(Deserialize)]
@@ -469,7 +469,11 @@ async fn mined(chain: &Settlement, tx: B256) -> Result<()> {
 }
 
 /// Runs `send.cjs` with `request` on stdin, and reads its JSON answer.
-async fn sdk<T: DeserializeOwned>(env: &Env, command: &str, request: Option<Value>) -> Result<T> {
+pub(crate) async fn sdk<T: DeserializeOwned>(
+    env: &Env,
+    command: &str,
+    request: Option<Value>,
+) -> Result<T> {
     let engine = env.workspace.join("crates/zecswap-railgun/engine");
     ensure!(
         engine.join("node_modules").exists(),
@@ -531,13 +535,13 @@ async fn sdk<T: DeserializeOwned>(env: &Env, command: &str, request: Option<Valu
     }
 }
 
-fn artifacts(env: &Env) -> String {
+pub(crate) fn artifacts(env: &Env) -> String {
     env.workspace
         .join("target/railgun-artifacts")
         .display()
         .to_string()
 }
 
-fn seed_bytes(seed: &str) -> Result<Vec<u8>> {
+pub(crate) fn seed_bytes(seed: &str) -> Result<Vec<u8>> {
     Ok(hex::decode(seed.trim_start_matches("0x"))?)
 }

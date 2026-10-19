@@ -5,7 +5,9 @@ split `±(e + z)`: the maker holds `e`, the user holds `z`. An EVM contract pays
 whichever half is revealed, checking it on Pallas. The payout goes into the user's private
 Railgun balance on Ethereum, with no user account on-chain; withdrawing from it to any Ethereum
 address comes later. The contract can also pay an account (the earlier Base route, still tested),
-but the owner shelved that route for the app on 2026-09-25. Target client is the Android wallet
+but the owner shelved that route for the app on 2026-09-25. Wallets also take public USDC at
+deposit addresses of their own and shield it into the same Railgun balance through the relayer,
+holding no ETH (`docs/deposits.md`). Target client is the Android wallet
 `~/dev/zapp/zapp-android` (iOS later).
 
 Read `docs/local/plan.md` next (gitignored, internal): the decisions that change the original
@@ -31,6 +33,33 @@ vectors, a testnet maker. The original design and threat model are in
 - **All nine passed live on Ethereum Sepolia itself** (`.testnet/e2e-railgun-sepolia.log`), and
   Railgun's own wallet SDK (`balance.cjs`) shows both payouts in the user's `0zk` wallet as
   Spendable: they cleared Railgun's screening.
+- **Deposits (2026-10-18, branch `feature/deposits`; brief `docs/local/deposits.md`)**: public USDC
+  at a deposit address derived from the seed (BIP-44 `m/44'/60'/(1000 + account)'/0/index`,
+  testnet `1'`) is shielded into the wallet's Railgun balance on one EIP-3009
+  `receiveWithAuthorization`, which the relayer sends from an account of its own for a fee of a
+  floor and `fee_bps` of the deposit. `docs/deposits.md` is the wallet-facing contract. Built and
+  tested: `Deposits.sol` (unit, invariant, FFI and mainnet-fork tests: 918k gas of execution for a
+  first deposit, 852k later), the keys and hashes in `zecswap-core` (ethers' addresses as known
+  answers), the relayer's `/v1/deposits/{shield,rescue}`, the reference `Depositor` and
+  `zecswap-cli deposit`; the live `deposit` scenario passed on a Sepolia fork
+  (`.testnet/e2e-deposit-fork.log`) and on Sepolia (`.testnet/e2e-deposit-sepolia.log`), where a
+  first deposit burns 1.68M gas and `balance.cjs` shows the note Spendable.
+  Live on the hosted testnet since 2026-10-18 23:42 UTC (`docs/deployment.md`, October 18
+  deposits): a new tUSD with EIP-3009 (`0x64c4…727c`), which swaps take too, and the Deposits
+  contract (`0x5832…9019`), sent from the relayer's deposits account `0xedc4…a446`; a CLI deposit
+  through the gateway shielded in 14 s and cleared screening. zapp-dashboard's testnet token pin
+  (`lib/bridge/config.ts`) moves with it. Mainnet sends deposits through Flashbots Protect
+  (`[deposits] private_rpc`, required there; 2026-10-19): one at a time, since the public node
+  can't see one before it mines and every later nonce would wait on one Flashbots dropped; one
+  unmined 5 blocks past its `blockRange` is dropped, its nonce the next's, and sent anew when
+  posted again, as wallets do every minute a named transaction hasn't mined. On Sepolia the path
+  checked out live up to inclusion, which Flashbots' Sepolia relay hasn't delivered a block for
+  since block 11,856,337. Live on mainnet since 2026-10-19 03:48 UTC (`docs/deployment.md`,
+  October 19 mainnet deposits): Deposits `0xebc7…8cb6`, sent from the relayer's deposits account
+  `0x6ae4…2135`, 5 USDC minimum; a first deposit of 1 USDC (the relayer's own fees, at a minimum
+  lowered for it) landed through Flashbots 11 s after it was sent, unseen by the public mempool.
+  The test wallet's seed is in `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with
+  `RAILGUN_NETWORK=mainnet`.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
@@ -44,21 +73,22 @@ vectors, a testnet maker. The original design and threat model are in
 
 | Path | Role |
 |---|---|
-| `crates/zecswap-core` | Pure crypto: shares, proofs of knowledge, joint account (UFVK/UA), seed-derived keys incl. the per-swap auth key, EIP-712 signing, PCZT signing with the combined key |
+| `crates/zecswap-core` | Pure crypto: shares, proofs of knowledge, joint account (UFVK/UA), seed-derived keys incl. the per-swap auth key and deposit addresses (`deposit.rs`), EIP-712 signing incl. EIP-3009's and the Deposits contract's (`auth.rs`), PCZT signing with the combined key |
 | `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, the encrypted shield note a payout goes to, and transaction outputs as their receiver reads them (a relayer's fee notes); `engine/` checks it against Railgun's own engine and wallet SDK (Node), and `send.cjs` proves sends with the SDK for the live suite |
-| `crates/zecswap-chain` | I/O adapters: Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the EVM contract client (`evm`) |
+| `crates/zecswap-chain` | I/O adapters: Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the EVM contract client (`evm`, the Deposits contract in `evm/deposits.rs`) |
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
-| `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it |
+| `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it. `Depositor` plays a wallet's USDC deposits |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, and with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`); never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`), and with `[deposits]` deposit addresses' USDC into Railgun (`deposits.rs`, `docs/deposits.md`); never run by a maker |
 | `crates/zecswap-alerts` | Telegram alerts for the maker and the relayer: the bot's client, the durable queue messages wait in, in each service's own SQLite, and the gas alerts of the account each sends from (`gas`) |
 | `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
-| `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun) |
+| `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun, `deposit`) |
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
-| `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors` |
+| `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
+| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18 |
 
 ## Commands
 
@@ -66,7 +96,7 @@ vectors, a testnet maker. The original design and threat model are in
 cargo test --workspace                                  # offline tests, plus the EVM client on a local anvil (needs `forge build`; the live suite skips itself)
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
-(cd contracts && ETH_RPC_URL=… forge test --match-path test/fork/RailgunFork.t.sol --isolate -vv)   # real Railgun + USDC, with gas
+(cd contracts && ETH_RPC_URL=… forge test --match-path 'test/fork/*' --isolate -vv)   # real Railgun, USDC and sanctions oracle, with gas
 cargo build --release -p zecswap-core --example evm_vectors && (cd contracts && FOUNDRY_PROFILE=ffi forge test)
 scripts/e2e-testnet.sh [scenario ...]                   # Base Sepolia
 scripts/e2e-testnet.sh --railgun [--fork] [scenario ...] # Ethereum Sepolia with Railgun; --fork on a local anvil fork of it
@@ -74,8 +104,10 @@ cargo run -p zecswap-cli -- --data-dir .testnet/user status   # the funded test 
 cargo run -p zecswap-client --example vectors           # known answers for the Android port
 # Railgun's engine and wallet SDK (cd crates/zecswap-railgun/engine && npm ci):
 node vectors.cjs > ../tests/engine-vectors.json         # regenerate the Rust tests' known answers
+node deposit-vectors.cjs > ../../zecswap-core/tests/deposit-vectors.json   # deposit addresses as ethers derives them
 cargo run -p zecswap-railgun --example note | node crates/zecswap-railgun/engine/check.cjs
 ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [from-block]   # a wallet's Railgun balance by screening status
+RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block]   # the same on Ethereum
 ```
 
 Deposits count after 2 confirmations in the live suite (`ZECSWAP_E2E_CONFIRMATIONS`, default
@@ -99,6 +131,12 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Every relayer `503` says when to come back (2026-10-18, `feature/deposits`): an earlier send's
+  unknown outcome 15 s, unpriced gas 60 s, a monitor export 30 s, beside the cooldown's and the
+  deposits' own waits. `zecswap-client` waits out any of 30 s or less and posts the same request
+  again, for 90 s in all, which every relayer route stands (none sends twice); zapp-android and
+  Veylor only wait longer before posting again. A deposit's `409` is `conflict`; the body type
+  `AlreadySpent` is now `Conflict`, the wire unchanged.
 - Sweeps hide where they go (2026-10-16): both sides hold a joint account's viewing key, and a
   sweep sealed its outputs' outgoing copy under that account's outgoing key, so the maker could
   read the user's own address from a refund or reverse receive sweep, and users the maker's
@@ -254,6 +292,7 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   reason, never a device; relayed transactions by outcome and their gas, read after the reply.
   All three share one gateway allowance; Alloy ships the issuer's journal. The dashboard pins
   the contract in Vercel's `BRIDGE_TESTNET_CONTRACT`: update it with every contract redeploy.
+  The testnet token is `lib/bridge/config.ts`'s `TOKEN` (no Vercel variable): move it with the token.
 - Telegram alerts (2026-10-11): the maker sends a swap two messages, when it is accepted and
   when it ends (completed; refunded; cancelled, no ZEC arrived; expired), each with its
   direction, amounts, time, the swap id's first eight hex digits (the dashboard's search finds
@@ -349,9 +388,14 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   live suite uses keeps the old prices.
 - anvil's fork errors quote the upstream URL, Alchemy key included: filter URLs out of anything
   printed from a fork (`sed -E 's#https?://[^ "]+#<url>#g'`).
+- Everything uses the owner's Alchemy RPCs, never public ones (the owner's rule, 2026-10-19): the
+  droplet's services one key, local work `.env.testnet`'s (`eth-mainnet` in place of
+  `eth-sepolia` for mainnet). When Alchemy answers `429 Monthly capacity limit exceeded`, stop and
+  ask; don't fall back. Mainnet's deposits are *sent* through Flashbots Protect, by design.
 - Alchemy's free tier caps `eth_getLogs` at 10 blocks. Load-balanced RPCs read a block behind.
-  Railgun's wallet SDK scans logs, so `balance.cjs` needs an RPC without that cap;
-  `https://ethereum-sepolia-rpc.publicnode.com` works.
+  Railgun's wallet SDK scans logs, so `balance.cjs` and `send.cjs` need an RPC without that cap:
+  through Alchemy's free tier a mainnet scan ended incomplete (2026-10-19), through the owner's
+  Infura key (10,000-block log queries, mainnet and Sepolia) it completed. Ask the owner for it.
 - `blake-hash` (BLAKE-512) panics on ARM, phones included: its SIMD fallback is unimplemented.
   `zecswap-railgun` uses the portable `bloock-blake-rs`, as railgun-rust does.
 - Railgun accepts any ciphertext, and a note its receiver can't decrypt is lost: never change

@@ -26,15 +26,18 @@ const ACCOUNT: [&str; 6] = [
     "never-claimed",
     "abandoned-claim",
 ];
-/// Paid into Railgun, where the deployment has it, and private sends from it.
-const RAILGUN: [&str; 4] = [
+/// Paid into Railgun, where the deployment has it, private sends from it, and deposits into it.
+const RAILGUN: [&str; 5] = [
     "railgun-happy",
     "railgun-resume",
     "railgun-no-deposit",
     SEND,
+    DEPOSIT,
 ];
 /// Private Railgun sends and withdrawals the relayer sends as their broadcaster.
 const SEND: &str = "railgun-send";
+/// Public tokens shielded into a wallet's Railgun balance from its deposit address.
+const DEPOSIT: &str = "deposit";
 
 const POLL: Duration = Duration::from_secs(15);
 const TIMEOUT: Duration = Duration::from_secs(80 * 60);
@@ -66,16 +69,18 @@ pub(crate) fn select(only: &[String], railgun: bool) -> Result<Vec<&'static str>
 }
 
 pub(crate) fn needs(names: &[&str]) -> Needs {
-    let sends = names.iter().filter(|name| **name == SEND).count();
+    let count = |kind| names.iter().filter(|name| **name == kind).count();
+    let (sends, shields) = (count(SEND), count(DEPOSIT));
     let relayed = names.iter().filter(|name| pays_into_railgun(name)).count();
     Needs {
-        accounts: names.len() - relayed - sends,
+        accounts: names.len() - relayed - sends - shields,
         relayed,
         sends,
         deposits: names
             .iter()
-            .filter(|name| **name != SEND && !name.ends_with("no-deposit"))
+            .filter(|name| ![SEND, DEPOSIT].contains(*name) && !name.ends_with("no-deposit"))
             .count(),
+        shields,
     }
 }
 
@@ -86,6 +91,9 @@ fn pays_into_railgun(name: &str) -> bool {
 pub(crate) async fn run(env: Arc<Env>, name: &'static str) -> Result<()> {
     if name == SEND {
         return crate::sends::railgun_send(&env).await;
+    }
+    if name == DEPOSIT {
+        return crate::deposits::deposit(&env).await;
     }
     let player = Player::join(env, name, name == "silent-maker").await?;
     match name {

@@ -77,12 +77,17 @@ impl ShieldNote {
     /// to when it opens.
     pub fn commitment(&self) -> [u8; 32] {
         let mut hasher = Keccak256::new();
-        hasher.update(self.npk);
-        for word in &self.ciphertext.encrypted_bundle {
+        for word in self.words() {
             hasher.update(word);
         }
-        hasher.update(self.ciphertext.shield_key);
         hasher.finalize().into()
+    }
+
+    /// The note as `abi.encode(npk, ciphertext)` writes it: its note public key, then the
+    /// ciphertext's bundle and shield key.
+    pub fn words(&self) -> [[u8; 32]; 5] {
+        let [first, second, third] = self.ciphertext.encrypted_bundle;
+        [self.npk, first, second, third, self.ciphertext.shield_key]
     }
 
     /// The note's `random`, if the holder of `viewing_key` can decrypt it.

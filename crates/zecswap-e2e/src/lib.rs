@@ -4,6 +4,7 @@
 //! in-process, and plays every scenario concurrently; see scripts/e2e-testnet.sh. Where
 //! Railgun is deployed, the scenarios that pay into it run too.
 
+mod deposits;
 mod env;
 mod scenarios;
 mod sends;

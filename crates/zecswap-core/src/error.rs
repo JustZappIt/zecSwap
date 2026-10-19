@@ -6,6 +6,9 @@ use orchard::ValuePool;
 pub enum Error {
     /// A scalar was non-canonical or zero.
     InvalidScalar,
+    /// BIP-32 can't derive the key: a seed of another length, an account or index past its
+    /// range, or one of the 1-in-2^127 children it skips.
+    InvalidDerivation,
     /// A point was non-canonical, off the curve, or the identity.
     InvalidPoint,
     /// `nk` or `rivk` was non-canonical, or together they yield an invalid viewing key.
@@ -31,6 +34,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidScalar => f.write_str("scalar is non-canonical or zero"),
+            Error::InvalidDerivation => f.write_str("no BIP-32 key at that seed and path"),
             Error::InvalidPoint => {
                 f.write_str("point is non-canonical, off the curve, or the identity")
             }

@@ -29,9 +29,12 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         }),
         railgun_sends: None,
         gas_alerts: None,
+        deposits: None,
     };
     Relayer {
         funding: config.funding_policy(account, 11_155_111).unwrap(),
+
+        deposits: None,
         config,
         account,
         domain: Domain {

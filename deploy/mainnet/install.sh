@@ -3,8 +3,8 @@
 # under names of their own: units zecswap-mainnet-*, users and /etc, /var/lib folders of the same
 # names, releases in /opt/zecswap-mainnet, the APIs on 127.0.0.1:8797-8799 behind nginx on
 # 127.0.0.1:8090, which the droplet's tunnel reaches through a Workers VPC service of its own.
-# Nothing of testnet's is touched. From a stage directory holding this script, the three Linux
-# binaries (scripts/build-server.sh), deploy/systemd/ and deploy/nginx.conf, as root:
+# Nothing of testnet's is touched. From a stage directory holding this script, nginx-site.sed, the
+# three Linux binaries (scripts/build-server.sh), deploy/systemd/ and deploy/nginx.conf, as root:
 #   bash /root/stage-mainnet/install.sh <release name>
 # It starts no service: it ends by listing what to put in place before starting them.
 set -euo pipefail
@@ -17,7 +17,7 @@ if [ "$(id -u)" != 0 ]; then
     echo "run as root" >&2
     exit 1
 fi
-for file in zecswap-maker zecswap-relayer zecswap-issuer nginx.conf \
+for file in zecswap-maker zecswap-relayer zecswap-issuer nginx.conf nginx-site.sed \
     systemd/zecswap-maker.service systemd/zecswap-relayer.service systemd/zecswap-issuer.service \
     systemd/zecswap-issuer-status.service systemd/zecswap-issuer-status.timer; do
     if [ ! -f "$stage/$file" ]; then
@@ -99,14 +99,7 @@ systemctl start zecswap-mainnet-issuer-status.service ||
 
 # Testnet's gateway, with zones and variables of its own, on its own port.
 site=/etc/nginx/sites-available/zecswap-mainnet
-sed -e 's#\$zecswap_#$zecswap_mainnet_#g' \
-    -e 's#zone=zecswap_#zone=zecswap_mainnet_#g' \
-    -e 's#limit_conn zecswap_#limit_conn zecswap_mainnet_#g' \
-    -e 's#listen 127\.0\.0\.1:8080;#listen 127.0.0.1:8090;#' \
-    -e 's#127\.0\.0\.1:8787#127.0.0.1:8797#g' \
-    -e 's#127\.0\.0\.1:8788#127.0.0.1:8798#g' \
-    -e 's#127\.0\.0\.1:8789#127.0.0.1:8799#g' \
-    "$stage/nginx.conf" >"$site"
+sed -f "$stage/nginx-site.sed" "$stage/nginx.conf" >"$site"
 ln -sfn "$site" /etc/nginx/sites-enabled/zecswap-mainnet
 if ! nginx -t; then
     rm -f /etc/nginx/sites-enabled/zecswap-mainnet

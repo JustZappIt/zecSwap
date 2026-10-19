@@ -22,7 +22,7 @@ pub(crate) const UNMINED: &str =
     "the transaction is sent and not mined yet; post the same request again later";
 const EARLIER: &str = "transactions sent before the relayer restarted are not mined yet; post the same request again later";
 
-/// Each swap's requests, one at a time in the order they came.
+/// Each swap's requests, and each deposit address's, one at a time in the order they came.
 #[derive(Clone, Default)]
 pub(crate) struct Turns(Arc<Mutex<HashMap<B256, Arc<tokio::sync::Mutex<()>>>>>);
 
@@ -149,8 +149,7 @@ impl Steps {
 
 impl Relayer {
     /// Runs `request`, counted as `operation`, once the swap's earlier requests have ended, and
-    /// to its own end whether or not its caller still waits: cut off half way, it would leave a
-    /// transaction sent that a repeat knows nothing of.
+    /// to its own end whether or not its caller still waits.
     pub(crate) async fn in_turn<F>(
         self: &Arc<Self>,
         operation: &'static str,
@@ -160,12 +159,31 @@ impl Relayer {
     where
         F: Future<Output = Result<Sent>> + Send + 'static,
     {
-        let turn = self.turns.take(swap_id).await;
-        let (relayer, request) = (Arc::clone(self), request(Arc::clone(self)));
+        let request = request(Arc::clone(self));
+        self.in_line(operation, swap_id, request, Self::observe)
+            .await
+    }
+
+    /// Runs `request` once the earlier requests under `key` have ended, and to its own end
+    /// whether or not its caller still waits: cut off half way, it would leave a transaction
+    /// sent that a repeat knows nothing of. `count` counts how it ended, as `operation`.
+    pub(crate) async fn in_line<T, F>(
+        self: &Arc<Self>,
+        operation: &'static str,
+        key: B256,
+        request: F,
+        count: fn(&Arc<Self>, &'static str, Result<T>) -> Result<Sent>,
+    ) -> Result<Sent>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        let turn = self.turns.take(key).await;
+        let relayer = Arc::clone(self);
         tokio::spawn(async move {
-            let sent = request.await;
+            let done = request.await;
             drop(turn);
-            relayer.observe(operation, sent)
+            count(&relayer, operation, done)
         })
         .await
         .unwrap_or_else(|e| {

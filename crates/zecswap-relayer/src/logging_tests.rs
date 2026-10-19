@@ -3,8 +3,9 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use zecswap_api::{relayer::Note, reverse::Refund};
 
+/// What a test's subscriber writes.
 #[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
+pub(crate) struct Capture(pub(crate) Arc<Mutex<Vec<u8>>>);
 impl Write for Capture {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.0.lock().unwrap().extend_from_slice(data);
@@ -43,6 +44,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             reverse_funding: None,
             railgun_sends: None,
             gas_alerts: None,
+            deposits: None,
         },
         account: Address::repeat_byte(2),
         domain: Domain {
@@ -62,6 +64,8 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         funding: None,
+
+        deposits: None,
         pricing: None,
         history: None,
     };

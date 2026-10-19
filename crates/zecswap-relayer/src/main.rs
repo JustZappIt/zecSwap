@@ -12,8 +12,8 @@ use zeroize::Zeroizing;
 /// Serves the relayer API. Its key comes from `RELAYER_PRIVATE_KEY`, and with `[railgun_sends]`
 /// its Railgun wallet's 64-byte BIP-39 seed from `RELAYER_RAILGUN_SEED`, in hex: never a config
 /// file, and never the maker's. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, both or neither,
-/// send a message for each Railgun send once it mines, and with `[gas_alerts]` when the
-/// relayer's own account runs low on ETH and once it is topped up.
+/// send a message for each Railgun send and each deposit once it mines, and with `[gas_alerts]`
+/// when the relayer's own account runs low on ETH and once it is topped up.
 #[derive(Parser)]
 #[command(about = "ZecSwap relayer: sends the transactions of users with no account on the chain")]
 struct Cli {
@@ -26,8 +26,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sends the ETH of every account derived from the relayer's key, all but its gas, to `--to`.
-    /// Stop the relayer first, or it tops them up again.
+    /// Sends what every account derived from the relayer's key holds to `--to`: the deposit fees
+    /// collected in the relayer's token, then the ETH, all but its gas. Stop the relayer first, or
+    /// it tops them up again.
     DrainLanes {
         #[arg(long)]
         to: Address,

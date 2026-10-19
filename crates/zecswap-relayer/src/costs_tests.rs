@@ -103,6 +103,7 @@ fn relayer(
             reverse_funding: None,
             railgun_sends: None,
             gas_alerts: None,
+            deposits: None,
         },
         account: key.address(),
         domain: Domain {
@@ -125,6 +126,8 @@ fn relayer(
             .unwrap(),
         ),
         funding: None,
+
+        deposits: None,
         pricing: None,
         history: None,
     }

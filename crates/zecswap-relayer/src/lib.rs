@@ -3,9 +3,14 @@
 //! from any maker: a maker that learned the user share before the claim landed could hold the
 //! claim back until the lock lapses, then refund and race the user for the ZEC. With
 //! `railgun_sends` it also sends wallets' own Railgun transactions as their broadcaster, paid
-//! by a fee note to its own Railgun wallet (`sends`).
+//! by a fee note to its own Railgun wallet (`sends`), and with `deposits` it shields deposit
+//! addresses' public tokens into their owners' Railgun balances on their EIP-3009
+//! authorizations, for a fee they commit to (`deposits`).
 
 pub mod api;
+mod deposits;
+#[cfg(test)]
+mod deposits_tests;
 #[cfg(test)]
 mod funding_tests;
 mod lanes;
@@ -45,6 +50,7 @@ use zecswap_chain::evm::{OnChainSwap, PrivateKeySigner, RpcMeter, Settlement, St
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
 
+pub use deposits::DepositsSnapshot;
 pub use lanes::drain_lanes;
 pub use sends::{Sending, SendsSnapshot};
 
@@ -99,6 +105,10 @@ pub struct Config {
     /// up; queued in the `railgun_sends` journal.
     #[serde(default)]
     pub gas_alerts: Option<zecswap_alerts::GasAlerts>,
+    /// Opt-in shielding of deposit addresses' tokens, the relayer's `token`, into their owners'
+    /// Railgun balances, through the Deposits contract.
+    #[serde(default)]
+    pub deposits: Option<DepositsConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -129,7 +139,55 @@ pub struct RailgunSendsConfig {
     pub journal: PathBuf,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepositsConfig {
+    /// The Deposits contract: its token must be the relayer's, its Railgun the settlement's.
+    pub contract: Address,
+    /// Token base units each deposit's fee keeps at least before its percentage: the floor, and
+    /// what a rescue pays.
+    pub fee: u64,
+    /// With `providers`, the gas the fee pays for, priced at the gas price and ETH price when it
+    /// is quoted: a first deposit from an address, its vault made.
+    #[serde(default)]
+    pub fee_gas: u64,
+    /// The fee's part of what is deposited, in basis points, on top of `fee`.
+    #[serde(default = "default_deposit_fee_bps")]
+    pub fee_bps: u32,
+    pub max_gas_limit: u64,
+    pub max_gas_price_wei: u64,
+    /// The least a deposit moves, in token base units.
+    pub min_value: u64,
+    /// The latest an authorization's `validBefore` may be, in seconds from now.
+    #[serde(default = "default_deposit_max_validity")]
+    pub max_validity: u64,
+    /// The most deposits sent and not yet mined at once: 1 with `private_rpc`.
+    #[serde(default = "default_deposit_max_pending")]
+    pub max_pending: u64,
+    /// The SQLite file each deposit is recorded in before it is broadcast.
+    pub journal: PathBuf,
+    /// Flashbots Protect's RPC, to send deposits through instead of the public mempool, where an
+    /// address could see its deposit coming and make it fail, leaving the relayer the gas. It
+    /// lands a deposit only if it succeeds, and drops one it couldn't land within its URL's
+    /// `blockRange` blocks (25 if none); every later nonce would wait on that one, so deposits go
+    /// one at a time. Required on mainnet.
+    #[serde(default)]
+    pub private_rpc: Option<String>,
+}
+
 fn default_top_up_transactions() -> u64 {
+    8
+}
+
+fn default_deposit_fee_bps() -> u32 {
+    10
+}
+
+fn default_deposit_max_validity() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_deposit_max_pending() -> u64 {
     8
 }
 
@@ -195,6 +253,12 @@ pub enum RelayerError {
     /// again later.
     #[error("the relayer can't price gas right now; post the same request again later")]
     Unpriced,
+    /// Not now, nothing sent: the same request is to be posted again in this many seconds.
+    #[error("{0}; post the same request again in {1} seconds")]
+    Busy(&'static str, u64),
+    /// What the request asks is done, or under way in these transactions of the relayer's.
+    #[error("{1}")]
+    Conflict(Vec<B256>, &'static str),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -219,7 +283,11 @@ impl RelayerError {
     /// What kind of failure this is, for the monitor; none for a refusal.
     fn failure_kind(&self) -> Option<&'static str> {
         match self {
-            RelayerError::Rejected(_) | RelayerError::Spent(_) | RelayerError::Reverted(_) => None,
+            RelayerError::Rejected(_)
+            | RelayerError::Spent(_)
+            | RelayerError::Reverted(_)
+            | RelayerError::Busy(..)
+            | RelayerError::Conflict(..) => None,
             RelayerError::Unsettled(_) => Some("unconfirmed"),
             RelayerError::Unpriced => Some("internal"),
             RelayerError::Internal(error) => Some(
@@ -244,6 +312,7 @@ pub struct Relayer {
     steps: Steps,
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
+    deposits: Option<deposits::Deposits>,
     /// With `reverse_funding`: what a funding must be, its fee the floor.
     funding: Option<FundingPolicy>,
     /// With `providers`: every fee priced by gas.
@@ -275,7 +344,7 @@ impl Relayer {
         }
         info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
         let meter = RpcMeter::default();
-        let lanes = Lanes::connect_metered(&config.evm_rpc, config.contract, &key, &meter)?;
+        let lanes = Lanes::of(&config, &key, &meter).await?;
         let settlement =
             Settlement::connect_metered(&config.evm_rpc, config.contract, key, &meter)?;
         let domain = Domain {
@@ -318,6 +387,20 @@ impl Relayer {
                 Some(sends::Sends::open(policy, keys, &sends.journal, telegram)?)
             }
         };
+        let deposits = match &config.deposits {
+            Some(deposits) => Some(
+                deposits::Deposits::open(
+                    deposits,
+                    &config,
+                    &settlement,
+                    lanes.deposits.account().context("a lane sends")?,
+                    proxy,
+                    zecswap_alerts::Telegram::from_env()?,
+                )
+                .await?,
+            ),
+            None => None,
+        };
         let pricing = (!config.providers.is_empty())
             .then(|| {
                 pricing::GasPricing::new(
@@ -333,7 +416,7 @@ impl Relayer {
             .filter(|key| !key.trim().is_empty())
             .map(|key| zecswap_prices::History::new(&zeroize::Zeroizing::new(key)))
             .transpose()?;
-        if sends.is_some() && history.is_none() {
+        if (sends.is_some() || deposits.is_some()) && history.is_none() {
             warn!("ALCHEMY_API_KEY is not set: send costs are recorded without USD values");
         }
         let steps = Steps::default();
@@ -351,6 +434,7 @@ impl Relayer {
             steps,
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
+            deposits,
             funding,
             pricing,
             history,
@@ -422,6 +506,11 @@ impl Relayer {
                     .sends
                     .as_ref()
                     .map(|sends| sends.policy.fee.to_string()),
+                deposits: self
+                    .config
+                    .deposits
+                    .as_ref()
+                    .map(|deposits| deposits.fee.to_string()),
             },
             gas_alerts: self.config.gas_alerts.as_ref().map(|alerts| {
                 let enabled = self
@@ -441,6 +530,10 @@ impl Relayer {
         let (fee, priced) = self.quote_swap_fee(SwapFee::Payout, now).await;
         let funding = match self.config.reverse_funding {
             Some(_) => Some(self.quote_swap_fee(SwapFee::Funding, now).await),
+            None => None,
+        };
+        let deposit = match self.deposits {
+            Some(_) => Some(self.quote_swap_fee(SwapFee::Deposit, now).await),
             None => None,
         };
         let rate = match (&self.sends, &self.pricing) {
@@ -482,6 +575,13 @@ impl Relayer {
                     max_calldata_bytes: MAX_CALLDATA_BYTES,
                 }
             }),
+            deposits: self
+                .deposits
+                .as_ref()
+                .zip(deposit)
+                .map(|(deposits, (fee, priced))| {
+                    deposits.terms(fee, priced.then_some(now + pricing::SEND_FEE_VALIDITY))
+                }),
         }
     }
 
@@ -494,6 +594,11 @@ impl Relayer {
                 .reverse_funding
                 .as_ref()
                 .map_or((0, 0), |funding| (funding.fee.into(), funding.fee_gas)),
+            SwapFee::Deposit => self
+                .config
+                .deposits
+                .as_ref()
+                .map_or((0, 0), |deposits| (deposits.fee.into(), deposits.fee_gas)),
         }
     }
 

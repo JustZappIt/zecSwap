@@ -7,6 +7,7 @@
 
 mod auth;
 mod curve;
+mod deposit;
 mod error;
 mod joint;
 mod seed;
@@ -16,7 +17,11 @@ mod sweep;
 mod terms;
 mod transcript;
 
-pub use auth::{AuthKey, Domain, RescueAuthorization, ReverseOpen, signer};
+pub use auth::{
+    AuthKey, DepositsDomain, Domain, ReceiveAuthorization, RescueAuthorization, ReverseOpen,
+    TokenDomain, signer,
+};
+pub use deposit::{DEPOSIT_ACCOUNTS, DepositKey, DepositKeys, derive_deposit_keys};
 pub use error::Error;
 pub use joint::{JointAccount, SpendKey, ViewingKeys};
 pub use seed::{UserSwapKeys, derive_maker_share, derive_user_keys};

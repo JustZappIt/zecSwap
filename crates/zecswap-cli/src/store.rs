@@ -47,6 +47,13 @@ impl Store {
         Ok(fs::rename(tmp, self.dir.join(name))?)
     }
 
+    pub(crate) fn remove(&self, name: &str) -> Result<()> {
+        match fs::remove_file(self.dir.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     pub(crate) fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
         match fs::read(self.dir.join(name)) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),

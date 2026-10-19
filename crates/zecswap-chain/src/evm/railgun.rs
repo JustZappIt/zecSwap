@@ -119,12 +119,37 @@ pub enum SendError {
     /// A note it spends is spent already.
     #[error("these notes are already spent")]
     Spent,
+    /// Nothing was sent, but it may go later, as it is.
+    #[error("{}", .0.reason())]
+    Later(Later),
     /// Nothing was sent: the chain could not be read, or the transaction not recorded.
     #[error(transparent)]
     Chain(#[from] Error),
     /// The transaction was signed and recorded, and its broadcast failed: it may still land.
     #[error("the broadcast of {0} failed; it may still land")]
     Unknown(B256),
+    /// The transaction was signed and recorded, and the private RPC it went to turned it down: it
+    /// can't land.
+    #[error("the private RPC refused {0}")]
+    Refused(B256),
+}
+
+/// Why a send that may go as it is waits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Later {
+    /// The network's gas price is above the relayer's cap.
+    GasPrice,
+    /// The sending account holds too little ETH for the gas: until it is topped up.
+    Eth,
+}
+
+impl Later {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Later::GasPrice => "the network's gas price is above the relayer's cap",
+            Later::Eth => "the relayer is low on ETH",
+        }
+    }
 }
 
 type Result<T, E = SendError> = std::result::Result<T, E>;
@@ -536,7 +561,7 @@ impl Settlement {
             return Ok(false);
         }
         let _pending = self
-            .provider
+            .broadcaster()
             .send_raw_transaction(&signed.raw)
             .await
             .map_err(|_| Error::Contract("the broadcast failed again".into()))?;
@@ -549,7 +574,7 @@ pub(super) fn erc20(token: &TokenData, address: Address) -> bool {
     token.tokenType == 0 && token.tokenAddress == address && token.tokenSubID.is_zero()
 }
 
-fn require(condition: bool, reason: &'static str) -> Result<()> {
+pub(super) fn require(condition: bool, reason: &'static str) -> Result<()> {
     if condition {
         Ok(())
     } else {

@@ -5,10 +5,22 @@
 //!   evm_vectors terms <maker> <token> <amount> <makerKey> <userKey> <user> <t0> <t1> <payoutNote>
 //!                         `Terms::hash` of a swap's terms: hex addresses, 64-byte keys and note,
 //!                         decimal numbers (forge ffi)
+//!   evm_vectors deposit-nonce <chainId> <deposits> <npk> <bundle0> <bundle1> <bundle2>
+//!                         <shieldKey> <fee> <relayer>
+//!                         `DepositsDomain::deposit_nonce` (forge ffi)
+//!   evm_vectors receive-digest <name> <version> <chainId> <token> <from> <to> <value>
+//!                         <validAfter> <validBefore> <nonce>
+//!                         `TokenDomain::receive_with_authorization` (forge ffi)
+//!   evm_vectors deposit-rescue <chainId> <deposits> <from> <note> <relayer> <fee> <nonce>
+//!                         <deadline>
+//!                         `DepositsDomain::rescue` (forge ffi)
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use zecswap_core::{PublicShare, SecretShare, Terms};
+use zecswap_core::{
+    DepositsDomain, PublicShare, ReceiveAuthorization, RescueAuthorization, SecretShare, Terms,
+    TokenDomain,
+};
 
 const Q_MINUS_ONE: &str = "40000000000000000000000000000000224698fc0994a8dd8c46eb2100000000";
 const Q_MINUS_TWO: &str = "40000000000000000000000000000000224698fc0994a8dd8c46eb20ffffffff";
@@ -48,9 +60,91 @@ fn main() {
             };
             println!("0x{}", hex(&terms.hash()));
         }
+        [
+            mode,
+            chain_id,
+            deposits,
+            npk,
+            bundle0,
+            bundle1,
+            bundle2,
+            shield_key,
+            fee,
+            relayer,
+        ] if mode == "deposit-nonce" => {
+            let domain = DepositsDomain {
+                chain_id: chain_id.parse().expect("a decimal chain id"),
+                contract: fixed(deposits),
+            };
+            let note = [npk, bundle0, bundle1, bundle2, shield_key].map(|word| fixed(word));
+            let fee = fee.parse().expect("a decimal fee");
+            println!(
+                "0x{}",
+                hex(&domain.deposit_nonce(&note, fee, &fixed(relayer)))
+            );
+        }
+        [
+            mode,
+            name,
+            version,
+            chain_id,
+            token,
+            from,
+            to,
+            value,
+            valid_after,
+            valid_before,
+            nonce,
+        ] if mode == "receive-digest" => {
+            let domain = TokenDomain {
+                name: name.clone(),
+                version: version.clone(),
+                chain_id: chain_id.parse().expect("a decimal chain id"),
+                token: fixed(token),
+            };
+            let digest = domain.receive_with_authorization(&ReceiveAuthorization {
+                from: fixed(from),
+                to: fixed(to),
+                value: value.parse().expect("a decimal value"),
+                valid_after: valid_after.parse().expect("a decimal validAfter"),
+                valid_before: valid_before.parse().expect("a decimal validBefore"),
+                nonce: fixed(nonce),
+            });
+            println!("0x{}", hex(&digest));
+        }
+        [
+            mode,
+            chain_id,
+            deposits,
+            from,
+            note,
+            relayer,
+            fee,
+            nonce,
+            deadline,
+        ] if mode == "deposit-rescue" => {
+            let domain = DepositsDomain {
+                chain_id: chain_id.parse().expect("a decimal chain id"),
+                contract: fixed(deposits),
+            };
+            let authorization = RescueAuthorization {
+                nonce: nonce.parse().expect("a decimal nonce"),
+                deadline: deadline.parse().expect("a decimal deadline"),
+            };
+            let digest = domain.rescue(
+                &fixed(from),
+                &fixed(note),
+                &fixed(relayer),
+                fee.parse().expect("a decimal fee"),
+                authorization,
+            );
+            println!("0x{}", hex(&digest));
+        }
         [] => print_vectors(256),
         [count] => print_vectors(count.parse().expect("count must be a number")),
-        _ => panic!("usage: evm_vectors [count] | evm_vectors mul <k> | evm_vectors terms <...>"),
+        _ => panic!(
+            "usage: evm_vectors [count] | mul <k> | terms <...> | deposit-nonce <...> | receive-digest <...> | deposit-rescue <...>"
+        ),
     }
 }
 

@@ -33,6 +33,7 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
                 journal: "unused.sqlite".into(),
             }),
             gas_alerts: None,
+            deposits: None,
         },
         account: key.address(),
         domain: Domain {
@@ -47,6 +48,8 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         funding: None,
+
+        deposits: None,
         pricing: None,
         history: None,
     }

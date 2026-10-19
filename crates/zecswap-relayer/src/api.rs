@@ -6,17 +6,26 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tracing::error;
-use zecswap_api::relayer::{AlreadySpent, Claim, LockClaim, Payout, RailgunTransact, Sent, Terms};
+use zecswap_api::relayer::{
+    Claim, Conflict, LockClaim, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
+};
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
 
 use crate::monitor::MonitorSnapshot;
-use crate::{Relayer, RelayerError, Sending};
+use crate::{Relayer, RelayerError};
+
+/// What a `503` with nothing better to say asks to wait, in seconds: a send's outcome is known
+/// within a block or two, prices within a minute.
+const UNSETTLED_WAIT: u64 = 15;
+const UNPRICED_WAIT: u64 = 60;
+const MONITOR_WAIT: u64 = 30;
 
 pub fn router(relayer: Arc<Relayer>) -> Router {
     let monitor = Router::new()
         .route("/v1/monitor", get(monitor))
         .route("/v1/monitor/sends", get(sends))
+        .route("/v1/monitor/deposits", get(deposits))
         .route_layer(middleware::from_fn_with_state(
             relayer.monitor.token.clone(),
             server::require_monitor,
@@ -41,6 +50,8 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
             "/v1/railgun/transact",
             post(railgun_transact).layer(DefaultBodyLimit::max(132 * 1024)),
         )
+        .route("/v1/deposits/shield", post(shield_deposit))
+        .route("/v1/deposits/rescue", post(rescue_deposit))
         .fallback(server::not_found)
         .method_not_allowed_fallback(server::method_not_allowed)
         .layer(middleware::from_fn(server::no_store))
@@ -56,27 +67,49 @@ async fn monitor(State(relayer): State<Arc<Relayer>>) -> Json<MonitorSnapshot> {
 }
 
 #[derive(serde::Deserialize)]
-struct SendsQuery {
+struct LedgerQuery {
     since: Option<u64>,
 }
 
-async fn sends(State(relayer): State<Arc<Relayer>>, Query(query): Query<SendsQuery>) -> Response {
-    match relayer.sends_snapshot(query.since) {
+async fn sends(State(relayer): State<Arc<Relayer>>, Query(query): Query<LedgerQuery>) -> Response {
+    ledger(
+        relayer.sends_snapshot(query.since),
+        "this relayer sends no Railgun transactions",
+    )
+}
+
+async fn deposits(
+    State(relayer): State<Arc<Relayer>>,
+    Query(query): Query<LedgerQuery>,
+) -> Response {
+    ledger(
+        relayer.deposits_snapshot(query.since),
+        "this relayer takes no deposits",
+    )
+}
+
+fn ledger(snapshot: anyhow::Result<Option<impl serde::Serialize>>, none: &str) -> Response {
+    match snapshot {
         Ok(Some(snapshot)) => axum::Json(snapshot).into_response(),
-        Ok(None) => server::error(
-            StatusCode::NOT_FOUND,
-            ErrorCode::NotFound,
-            "this relayer sends no Railgun transactions",
-        ),
+        Ok(None) => server::error(StatusCode::NOT_FOUND, ErrorCode::NotFound, none),
         Err(e) => {
-            error!("sends snapshot: {e:#}");
-            server::error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::Unavailable,
-                "monitoring temporarily unavailable",
-            )
+            error!("ledger snapshot: {e:#}");
+            unavailable("monitoring temporarily unavailable", MONITOR_WAIT)
         }
     }
+}
+
+/// A `503`, with how long to wait before asking again.
+fn unavailable(message: impl Into<String>, seconds: u64) -> Response {
+    let mut response = server::error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::Unavailable,
+        message,
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+    response
 }
 
 async fn lock_claim(
@@ -209,12 +242,23 @@ async fn railgun_transact(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<RailgunTransact>,
 ) -> Result<Json<Sent>, RelayerError> {
-    let sent = match relayer.railgun_transact(request).await {
-        Ok(Sending::Again(sent)) => Ok(sent),
-        Ok(Sending::New(sent)) => relayer.observe("railgun_transact", Ok(sent)),
-        Err(error) => relayer.observe("railgun_transact", Err(error)),
-    };
-    Ok(Json(sent?))
+    let sending = relayer.railgun_transact(request).await;
+    Ok(Json(relayer.observe_sending("railgun_transact", sending)?))
+}
+
+/// As `railgun_transact`, a repeat of the same authorization answers with the first send's hash.
+async fn shield_deposit(
+    State(relayer): State<Arc<Relayer>>,
+    Json(request): Json<ShieldDeposit>,
+) -> Result<Json<Sent>, RelayerError> {
+    Ok(Json(relayer.shield_deposit(request).await?))
+}
+
+async fn rescue_deposit(
+    State(relayer): State<Arc<Relayer>>,
+    Json(request): Json<RescueDeposit>,
+) -> Result<Json<Sent>, RelayerError> {
+    Ok(Json(relayer.rescue_deposit(request).await?))
 }
 
 impl IntoResponse for RelayerError {
@@ -223,35 +267,16 @@ impl IntoResponse for RelayerError {
             RelayerError::Rejected(reason) => {
                 server::error(StatusCode::BAD_REQUEST, ErrorCode::Rejected, reason)
             }
-            RelayerError::Spent(transactions) => (
-                StatusCode::CONFLICT,
-                axum::Json(AlreadySpent {
-                    code: ErrorCode::AlreadySpent,
-                    error: self.to_string(),
-                    transactions: transactions.clone(),
-                }),
-            )
-                .into_response(),
-            RelayerError::Unsettled(reason) => server::error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::Unavailable,
-                *reason,
-            ),
-            RelayerError::Unpriced => server::error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::Unavailable,
-                self.to_string(),
-            ),
-            RelayerError::Reverted(seconds) => {
-                let mut response = server::error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    ErrorCode::Unavailable,
-                    self.to_string(),
-                );
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, HeaderValue::from(*seconds));
-                response
+            RelayerError::Spent(transactions) => {
+                conflict(ErrorCode::AlreadySpent, self.to_string(), transactions)
+            }
+            RelayerError::Conflict(transactions, _) => {
+                conflict(ErrorCode::Conflict, self.to_string(), transactions)
+            }
+            RelayerError::Unsettled(reason) => unavailable(*reason, UNSETTLED_WAIT),
+            RelayerError::Unpriced => unavailable(self.to_string(), UNPRICED_WAIT),
+            RelayerError::Reverted(seconds) | RelayerError::Busy(_, seconds) => {
+                unavailable(self.to_string(), *seconds)
             }
             RelayerError::Internal(e) => {
                 error!("{e:#}");
@@ -263,4 +288,13 @@ impl IntoResponse for RelayerError {
             }
         }
     }
+}
+
+fn conflict(code: ErrorCode, error: String, transactions: &[alloy_primitives::B256]) -> Response {
+    let body = Conflict {
+        code,
+        error,
+        transactions: transactions.to_vec(),
+    };
+    (StatusCode::CONFLICT, axum::Json(body)).into_response()
 }
