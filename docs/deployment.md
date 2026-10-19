@@ -806,8 +806,8 @@ landed `0xabdd88db…` in block 26,224,038, 11 seconds after the relayer sent it
 it to the public mempool (its status page: `INCLUDED`, `seenInMempool: false`); it burned 910,821
 gas at 0.056 gwei. The relayer kept 0.106214 USDC, Railgun 0.25%, and the wallet's balance got
 0.891552, which Railgun's wallet SDK (`balance.cjs`, on mainnet with `RAILGUN_NETWORK=mainnet`)
-showed ShieldPending, its screening on the way (the scan needs 10,000-block log queries, which the
-owner's Infura key serves and Alchemy's free tier doesn't). The test wallet's seed is in
+showed ShieldPending at 04:30 and Spendable by 06:54, screening cleared (the scan needs
+10,000-block log queries, which the owner's Infura key serves and Alchemy's free tier doesn't). The test wallet's seed is in
 `.testnet/deposit-test-wallet` on the owner's machine. The owner left the minimum at 1 USDC for
 now; `deploy/mainnet/relayer-deposits.toml` holds the 5 USDC to go back to (`min_value =
 5000000` in the relayer's config, then a restart of the relayer).

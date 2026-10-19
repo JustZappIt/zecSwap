@@ -56,7 +56,7 @@
       "fee": "106214",
       "shielded": "891552",
       "flashbots": "INCLUDED, seenInMempool false",
-      "railgunStatus": "ShieldPending in Railgun's wallet SDK at once"
+      "railgunStatus": "ShieldPending at 04:30 UTC, Spendable by 06:54 UTC in Railgun's wallet SDK"
     }
   }
 }
