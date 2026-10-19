@@ -129,7 +129,9 @@ impl Settings {
             .map(|count| count.parse())
             .transpose()
             .context("ZECSWAP_E2E_CONFIRMATIONS")?;
-        let evm_rpc = var_or("ZECSWAP_E2E_EVM_RPC", "https://sepolia.base.org");
+        // The owner's own RPC, never a public one: scripts/e2e-testnet.sh names it.
+        let evm_rpc =
+            std::env::var("ZECSWAP_E2E_EVM_RPC").context("ZECSWAP_E2E_EVM_RPC is not set")?;
         Ok(Some(Self {
             railgun_rpc: var_or("ZECSWAP_E2E_RAILGUN_RPC", &evm_rpc),
             evm_rpc,

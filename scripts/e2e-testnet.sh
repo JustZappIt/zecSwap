@@ -17,10 +17,10 @@
 #                            other accounts (defaults to MAKER_PRIVATE_KEY)
 #   ZECSWAP_E2E_WALLET       zecswap-cli wallet whose account holds testnet ZEC
 #                            (defaults to .testnet/user)
-#   ZECSWAP_E2E_EVM_RPC      defaults to ZECSWAP_E2E_BASE_RPC, then BASE_SEPOLIA_RPC_URL, then
-#                            https://sepolia.base.org; with --railgun, ETH_SEPOLIA_RPC_URL
+#   ZECSWAP_E2E_EVM_RPC      defaults to ZECSWAP_E2E_BASE_RPC, then BASE_SEPOLIA_RPC_URL; with
+#                            --railgun, ETH_SEPOLIA_RPC_URL (the owner's Alchemy, never a public RPC)
 #   ZECSWAP_E2E_RAILGUN_RPC  where Railgun's SDK reads Sepolia, which needs wide log ranges:
-#                            defaults to the fork with --fork, else a public Sepolia node
+#                            defaults to the fork with --fork, else INFURA_SEPOLIA_RPC_URL
 #   ZECSWAP_E2E_LIGHTWALLETD defaults to https://testnet.zec.rocks:443
 #   ZECSWAP_E2E_CONFIRMATIONS defaults to 2
 set -euo pipefail
@@ -61,10 +61,10 @@ if $railgun; then
     export ZECSWAP_E2E_EVM_RPC="${ZECSWAP_E2E_EVM_RPC:-$ETH_SEPOLIA_RPC_URL}"
     export ZECSWAP_E2E_RAILGUN="$RAILGUN_SEPOLIA"
     if ! $fork; then
-        export ZECSWAP_E2E_RAILGUN_RPC="${ZECSWAP_E2E_RAILGUN_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
+        export ZECSWAP_E2E_RAILGUN_RPC="${ZECSWAP_E2E_RAILGUN_RPC:-${INFURA_SEPOLIA_RPC_URL:?set INFURA_SEPOLIA_RPC_URL: the Railgun wallet SDK scans wider log ranges than the Alchemy free tier serves}}"
     fi
 else
-    export ZECSWAP_E2E_EVM_RPC="${ZECSWAP_E2E_EVM_RPC:-${ZECSWAP_E2E_BASE_RPC:-${BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}}}"
+    export ZECSWAP_E2E_EVM_RPC="${ZECSWAP_E2E_EVM_RPC:-${ZECSWAP_E2E_BASE_RPC:-${BASE_SEPOLIA_RPC_URL:?set BASE_SEPOLIA_RPC_URL}}}"
 fi
 
 (cd contracts && FOUNDRY_DISABLE_NIGHTLY_WARNING=1 forge build --silent)
