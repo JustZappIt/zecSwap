@@ -1,0 +1,62 @@
+{
+  "chainId": 1,
+  "deposits": "0xebc7508e20bd4467491ee7e7589d5c7d4c5e8cb6",
+  "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "tokenName": "USD Coin",
+  "tokenVersion": "2",
+  "tokenDecimals": 6,
+  "railgun": "0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9",
+  "sanctions": "0x40C57923924B5c5c5455c48D93317139ADDaC8fb",
+  "contract": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
+  "deployment": {
+    "transaction": "0x08115a2ecf54b776c681ea9b6e1f9b4a6ff8959c9bddfbaaa4753b94e95f7556",
+    "block": 26224004,
+    "gasUsed": 1983757
+  },
+  "deployer": "0xcbcb5f57c79c88a0e4bb450289de2088958a017f",
+  "sourceCommit": "63803a64147a73ca7b22fc0906abd34aeb9e2a14",
+  "deployedAt": "2026-10-19",
+  "status": "live",
+  "since": "2026-10-19T03:48Z",
+  "relayerDeposits": "0x6ae40b34c32d3feaa0eef53d7e4724160b7a2135",
+  "privateRpc": "https://rpc.flashbots.net/fast?blockRange=10",
+  "release": "/opt/zecswap-mainnet/releases/20261019-deposits-63803a6",
+  "releaseCommit": "63803a6",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261018-monitor-funds-05cab29",
+  "backup": "/var/backups/zecswap-mainnet/20261019-deposits-63803a6",
+  "relayerSha256": "bb8439d5af8280ce3e254351c7235763c92abfa2f8ce18be175daff8c53cb640",
+  "previousRelayerSha256": "285976bfc72d313330b58dc2d2a45ae87a8b4a8d7685ea693f8169611385e9d1",
+  "makerSha256": "7dba650b757e8e5bc8b5f0732e008035e749ce80c622b17f926559cbf71bf280",
+  "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
+  "restarted": [
+    "relayer"
+  ],
+  "terms": {
+    "fee": "100000",
+    "feeBps": 10,
+    "feeGas": 950000,
+    "minValue": "1000000",
+    "maxValidity": 86400,
+    "maxPending": 1,
+    "maxGasLimit": 1500000,
+    "maxGasPriceWei": "20000000000",
+    "minValueStaged": "5000000"
+  },
+  "validation": {
+    "before": "the contract's TOKEN, RAILGUN and SANCTIONS on the relayer's RPC; no live swap in the mainnet maker's monitor; the gateway's new site differing from the live one in the deposits' allowance alone",
+    "after": "the relayer's terms name this contract, USDC and the deposits account; no warning or error",
+    "deposit": {
+      "tool": "zecswap-cli deposit --network mainnet, a test wallet's address #0, through the public gateway, at a minimum of 1 USDC for it",
+      "funding": "0xb00a68622a45f5388b79e1442622879beceecf0a1d44f9080279c522629ed2b7",
+      "value": "1000000",
+      "transaction": "0xabdd88dbc52fe8ff15d6dff55cd913b67da8af79ed542399478b61b52832649e",
+      "block": 26224038,
+      "gasUsed": 910821,
+      "effectiveGasPriceWei": "55548070",
+      "fee": "106214",
+      "shielded": "891552",
+      "flashbots": "INCLUDED, seenInMempool false",
+      "railgunStatus": "ShieldPending in Railgun's wallet SDK at once"
+    }
+  }
+}

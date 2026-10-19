@@ -1,7 +1,9 @@
-// Syncs the Railgun wallet a seed opens on Ethereum Sepolia, with Railgun's own wallet SDK, and
-// prints its balances by screening status: payouts land where Railgun's wallets find them, and
-// clear screening. The seed is read from a file and never printed.
+// Syncs the Railgun wallet a seed opens on Ethereum Sepolia, or on Ethereum with
+// RAILGUN_NETWORK=mainnet, with Railgun's own wallet SDK, and prints its balances by screening
+// status: payouts land where Railgun's wallets find them, and clear screening. The seed is read
+// from a file and never printed.
 //   ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [scan-from-block]
+//   RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [scan-from-block]
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -11,7 +13,9 @@ const W = require('@railgun-community/wallet');
 const { NetworkName, NETWORK_CONFIG, TXIDVersion } = require('@railgun-community/shared-models');
 const { wallet, shareableViewingKey } = require('./engine.cjs');
 
-const NETWORK = NetworkName.EthereumSepolia;
+const MAINNET = process.env.RAILGUN_NETWORK === 'mainnet';
+const NETWORK = MAINNET ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
+const RPC = MAINNET ? 'ETH_RPC_URL' : 'ETH_SEPOLIA_RPC_URL';
 const POI_NODE = 'https://ppoi.fdi.network/';
 
 /** Runs `refresh` and returns the balances by bucket it reports, all in one pass. */
@@ -42,9 +46,9 @@ function scratchArtifacts() {
 
 async function main() {
   const [seedFile, fromBlock] = process.argv.slice(2);
-  const rpc = process.env.ETH_SEPOLIA_RPC_URL;
+  const rpc = process.env[RPC];
   if (!seedFile || !rpc) {
-    throw new Error('usage: ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [scan-from-block]');
+    throw new Error(`usage: ${RPC}=… node balance.cjs <seed-file> [scan-from-block]`);
   }
   const seed = `0x${fs.readFileSync(seedFile, 'utf8').trim().replace(/^0x/, '')}`;
   const keys = await wallet(seed, 0);

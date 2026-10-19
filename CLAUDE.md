@@ -54,8 +54,12 @@ vectors, a testnet maker. The original design and threat model are in
   unmined 5 blocks past its `blockRange` is dropped, its nonce the next's, and sent anew when
   posted again, as wallets do every minute a named transaction hasn't mined. On Sepolia the path
   checked out live up to inclusion, which Flashbots' Sepolia relay hasn't delivered a block for
-  since block 11,856,337. Staged for mainnet, 5 USDC minimum: `deploy/mainnet/deploy-deposits.sh`
-  (the contract, about 2.0M gas) and `enable-deposits.sh` (the droplet), neither run yet.
+  since block 11,856,337. Live on mainnet since 2026-10-19 03:48 UTC (`docs/deployment.md`,
+  October 19 mainnet deposits): Deposits `0xebc7…8cb6`, sent from the relayer's deposits account
+  `0x6ae4…2135`, 5 USDC minimum; a first deposit of 1 USDC (the relayer's own fees, at a minimum
+  lowered for it) landed through Flashbots 11 s after it was sent, unseen by the public mempool.
+  The test wallet's seed is in `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with
+  `RAILGUN_NETWORK=mainnet`.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
@@ -103,6 +107,7 @@ node vectors.cjs > ../tests/engine-vectors.json         # regenerate the Rust te
 node deposit-vectors.cjs > ../../zecswap-core/tests/deposit-vectors.json   # deposit addresses as ethers derives them
 cargo run -p zecswap-railgun --example note | node crates/zecswap-railgun/engine/check.cjs
 ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [from-block]   # a wallet's Railgun balance by screening status
+RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block]   # the same on Ethereum
 ```
 
 Deposits count after 2 confirmations in the live suite (`ZECSWAP_E2E_CONFIRMATIONS`, default
@@ -383,13 +388,14 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   live suite uses keeps the old prices.
 - anvil's fork errors quote the upstream URL, Alchemy key included: filter URLs out of anything
   printed from a fork (`sed -E 's#https?://[^ "]+#<url>#g'`).
-- When the Alchemy account is over its monthly cap (`429 Monthly capacity limit exceeded`, as on
-  2026-10-18), public RPCs serve the work: `https://ethereum-sepolia-rpc.publicnode.com` the live
-  suite on Sepolia and its fork (`ETH_SEPOLIA_RPC_URL`), `https://eth.drpc.org` mainnet's archive
-  state for fork tests (publicnode's mainnet wants a token for archive reads).
+- Everything uses the owner's Alchemy RPCs, never public ones (the owner's rule, 2026-10-19): the
+  droplet's services one key, local work `.env.testnet`'s (`eth-mainnet` in place of
+  `eth-sepolia` for mainnet). When Alchemy answers `429 Monthly capacity limit exceeded`, stop and
+  ask; don't fall back. Mainnet's deposits are *sent* through Flashbots Protect, by design.
 - Alchemy's free tier caps `eth_getLogs` at 10 blocks. Load-balanced RPCs read a block behind.
-  Railgun's wallet SDK scans logs, so `balance.cjs` needs an RPC without that cap;
-  `https://ethereum-sepolia-rpc.publicnode.com` works.
+  Railgun's wallet SDK scans logs, so `balance.cjs` and `send.cjs` need an RPC without that cap:
+  through Alchemy's free tier a mainnet scan ended incomplete (2026-10-19), through the owner's
+  Infura key (10,000-block log queries, mainnet and Sepolia) it completed. Ask the owner for it.
 - `blake-hash` (BLAKE-512) panics on ARM, phones included: its SIMD fallback is unimplemented.
   `zecswap-railgun` uses the portable `bloock-blake-rs`, as railgun-rust does.
 - Railgun accepts any ciphertext, and a note its receiver can't decrypt is lost: never change

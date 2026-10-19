@@ -776,6 +776,48 @@ the cap can hold all the tUSD until the maker refunds them, 15 minutes after eac
 To roll back, restore `/var/backups/zecswap/20261019-swap-cap-200/maker-config.toml` (root-only)
 to `/etc/zecswap-maker/config.toml` and restart the maker.
 
+## October 19 mainnet deposits
+
+At 03:42 UTC `deploy/mainnet/deploy-deposits.sh` (`63803a6`) deployed the Deposits contract on
+Ethereum from the relayer's own account, `0xcBcb…017F`:
+[`0xebc7508e20bd4467491ee7e7589d5c7d4c5e8cb6`](https://etherscan.io/address/0xebc7508e20bd4467491ee7e7589d5c7d4c5e8cb6)
+in `0x08115a2e…` (block 26,224,004, 1,983,757 gas, 0.000137 ETH). It takes USDC into Railgun's
+proxy and screens depositors against Chainalysis' oracle `0x40C5…C8fb`; the script read all three
+back, and USDC's domain (`USD Coin`, `2`). [mainnet-deposits.json](../deployments/mainnet-deposits.json)
+records it. Its source isn't verified on Etherscan yet: the script prints the command.
+
+At 03:48 `deploy/mainnet/enable-deposits.sh` found no live swap and gave the relayer `[deposits]`
+(`deploy/mainnet/relayer-deposits.toml`: a fee of $0.10 and 0.1%, priced from 950k gas when that
+costs more, a 5 USDC minimum, authorizations valid up to a day) and a build of `63803a6`
+(`bb8439d5…`) in `/opt/zecswap-mainnet/releases/20261019-deposits-63803a6`, now
+`/opt/zecswap-mainnet/current`; the maker's and issuer's binaries are the previous release's,
+byte for byte. Deposits go one at a time through Flashbots Protect,
+`https://rpc.flashbots.net/fast?blockRange=10`, never the public mempool
+([deposits.md](deposits.md)). The mainnet gateway's site, made from `deploy/nginx.conf` by
+`deploy/mainnet/nginx-site.sed` (which `install.sh` now uses too), gained the deposits' allowance;
+it differed from the live one in that alone. Only the relayer restarted, at 03:48:29. Deposits go
+from `0x6ae40b34c32d3feaa0eef53d7e4724160b7a2135`, which the relayer topped up with 0.000294 ETH,
+two deposits' gas at the fee cap.
+
+The relayer's own USDC fees, 2 USDC, were all the USDC it could move, so for a first deposit the
+minimum was 1 USDC. One went to a test wallet's first deposit address (`0xb00a6862…`), and
+`zecswap-cli deposit --network mainnet` shielded it through the gateway in 19 seconds. Flashbots
+landed `0xabdd88db…` in block 26,224,038, 11 seconds after the relayer sent it, and never showed
+it to the public mempool (its status page: `INCLUDED`, `seenInMempool: false`); it burned 910,821
+gas at 0.056 gwei. The relayer kept 0.106214 USDC, Railgun 0.25%, and the wallet's balance got
+0.891552, which Railgun's wallet SDK (`balance.cjs`, on mainnet with `RAILGUN_NETWORK=mainnet`)
+showed ShieldPending, its screening on the way (the scan needs 10,000-block log queries, which the
+owner's Infura key serves and Alchemy's free tier doesn't). The test wallet's seed is in
+`.testnet/deposit-test-wallet` on the owner's machine. The owner left the minimum at 1 USDC for
+now; `deploy/mainnet/relayer-deposits.toml` holds the 5 USDC to go back to (`min_value =
+5000000` in the relayer's config, then a restart of the relayer).
+
+Rollback files are in `/var/backups/zecswap-mainnet/20261019-deposits-63803a6` (root-only):
+`relayer-config.toml`, `nginx-site` and `previous-current`. Restore the config and the site,
+reload nginx, point `/opt/zecswap-mainnet/current` at the release `previous-current` names, and
+restart the relayer. Deposits then stop; their journal stays in
+`/var/lib/zecswap-mainnet-relayer/deposits.sqlite`.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
