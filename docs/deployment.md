@@ -41,7 +41,8 @@ Since about 22:59 UTC on October 17 the maker's sweeps carry no outgoing copy a 
 read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-an-outgoing-copy)).
 Since 23:42 UTC on October 18 both swap a new test token, which the relayer also takes at wallets'
 deposit addresses and shields into their Railgun balances
-([October 18 deposits](#october-18-deposits-and-a-new-test-token)).
+([October 18 deposits](#october-18-deposits-and-a-new-test-token)). Since 02:27 UTC on October 19 a
+swap can be up to 200 tUSD, up from 20 ([October 19](#october-19-a-larger-swap-cap)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -759,6 +760,21 @@ Rollback files are in `/var/backups/zecswap/20261018-deposits-120106d` (root-onl
 5. Point `/opt/zecswap/current` at the release `previous-current` names, and start both.
 
 Deposits then stop. Their journal stays in `/var/lib/zecswap-relayer/deposits.sqlite`.
+
+## October 19 a larger swap cap
+
+At 02:15 UTC the maker refused a quote for 0.1 ZEC (116.686723 tUSD) as outside the quotable
+range: `[pricing] max_units` let a swap be at most 20 tUSD, about 0.017 ZEC with ZEC near $1,180.
+At 02:27, once no swap was live, the cap went to `200000000` (200 tUSD, about 0.17 ZEC) and the
+maker restarted on the same release. Its health answered 204, its monitor showed the new cap, and a
+quote for 116.686723 tUSD through the gateway asked 0.10070382 ZEC.
+
+Its 1,988.63 tUSD covers nine swaps at the cap at once, and its 1.36 TAZ eight the other way.
+Testnet accepts need no tokens and up to 20 swaps may wait on deposits, so ten abandoned ones at
+the cap can hold all the tUSD until the maker refunds them, 15 minutes after each opens.
+
+To roll back, restore `/var/backups/zecswap/20261019-swap-cap-200/maker-config.toml` (root-only)
+to `/etc/zecswap-maker/config.toml` and restart the maker.
 
 ## Deployment sequence
 
