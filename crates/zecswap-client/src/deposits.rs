@@ -28,12 +28,16 @@ const VALIDITY: u64 = 60 * 60;
 const LANDING: u64 = 15 * 60;
 /// How far the wallet's clock and the relayer's may differ.
 const CLOCK_SLACK: u64 = 60;
-/// How long a deposit is posted again while the relayer can't send it.
+/// How long a deposit is posted again while the relayer can't send it, or what it sent doesn't
+/// land.
 const PATIENCE: Duration = Duration::from_secs(30 * 60);
 /// The first wait between posts the relayer asked no wait for, doubling to `LONGEST_WAIT`.
 const BACKOFF: Duration = Duration::from_secs(15);
 const LONGEST_WAIT: Duration = Duration::from_secs(5 * 60);
-const MINED_WITHIN: Duration = Duration::from_secs(10 * 60);
+/// How long a transaction the relayer names may take to mine before the deposit is posted again:
+/// the relayer names it again while it may still land, and sends the deposit anew once it can't,
+/// as when Flashbots drops it.
+const REPOST: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(3);
 /// Unused deposit addresses in a row past which a wallet restored from its seed stops looking.
 pub const GAP: u32 = 20;
@@ -246,8 +250,9 @@ impl Depositor {
     }
 
     /// Posts `request`, a shield of address `index` signed before, until it lands: the same
-    /// bytes again while the relayer can't send it, signed again once its fee or validity went
-    /// stale, following whatever deposit of the address the relayer names.
+    /// bytes again while the relayer can't send it or what it sent hasn't mined, signed again
+    /// once its fee or validity went stale, following whatever deposit of the address the relayer
+    /// names.
     pub async fn post_shield(
         &self,
         index: u32,
@@ -264,11 +269,20 @@ impl Depositor {
             }
             match self.relayer.shield_deposit(&request).await {
                 Deposited::Sent(sent) if !sent.is_empty() => {
-                    return self.landed(&sent, request.from, Some(&request.note)).await;
+                    if let Some(deposit) = self
+                        .landed(&sent, request.from, Some(&request.note))
+                        .await?
+                    {
+                        return Ok(deposit);
+                    }
+                    ensure!(Instant::now() < give_up, "the deposit never landed");
                 }
                 // Another deposit of the address, which shields to another of the wallet's notes.
                 Deposited::Conflict(sent) if !sent.is_empty() => {
-                    return self.landed(&sent, request.from, None).await;
+                    if let Some(deposit) = self.landed(&sent, request.from, None).await? {
+                        return Ok(deposit);
+                    }
+                    ensure!(Instant::now() < give_up, "the deposit never landed");
                 }
                 Deposited::Conflict(_) => bail!(
                     "the authorization is used in a transaction the relayer doesn't name: read the address's deposits from the chain"
@@ -313,13 +327,19 @@ impl Depositor {
         loop {
             match self.relayer.rescue_deposit(&request).await {
                 Deposited::Sent(sent) if !sent.is_empty() => {
-                    return self
+                    if let Some(deposit) = self
                         .landed(&sent, request.from, Some(&request.note))
-                        .await
-                        .map(Some);
+                        .await?
+                    {
+                        return Ok(Some(deposit));
+                    }
+                    ensure!(Instant::now() < give_up, "the rescue never landed");
                 }
                 Deposited::Conflict(sent) if !sent.is_empty() => {
-                    return self.landed(&sent, request.from, None).await.map(Some);
+                    if let Some(deposit) = self.landed(&sent, request.from, None).await? {
+                        return Ok(Some(deposit));
+                    }
+                    ensure!(Instant::now() < give_up, "the rescue never landed");
                 }
                 Deposited::Retry { reason, after } => {
                     ensure!(
@@ -390,10 +410,15 @@ impl Depositor {
 
     /// The last of `sent`, once mined, if the pinned contract recorded it as a deposit or rescue
     /// of `from`, to `note` where given, and Railgun as a note of the wallet's: a relayer naming
-    /// another transaction is not believed.
-    async fn landed(&self, sent: &[B256], from: Address, note: Option<&Note>) -> Result<Deposit> {
+    /// another transaction is not believed. None while it hasn't mined within `REPOST`.
+    async fn landed(
+        &self,
+        sent: &[B256],
+        from: Address,
+        note: Option<&Note>,
+    ) -> Result<Option<Deposit>> {
         let tx = *sent.last().context("no transaction")?;
-        let deadline = Instant::now() + MINED_WITHIN;
+        let deadline = Instant::now() + REPOST;
         loop {
             match self.chain.transaction_status(tx).await? {
                 Status::Mined { succeeded: true } => break,
@@ -402,7 +427,9 @@ impl Depositor {
                 ),
                 Status::Pending | Status::Unknown => {}
             }
-            ensure!(Instant::now() < deadline, "{tx} did not mine");
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
             tokio::time::sleep(POLL).await;
         }
         let expected = note.map(|note| B256::from(ShieldNote::from(note).commitment()));
@@ -427,7 +454,7 @@ impl Depositor {
                     && ours(shielded.note.commitment().into())
             })
             .with_context(|| format!("{tx} shielded no note of this wallet's"))?;
-        Ok(Deposit { tx, shielded })
+        Ok(Some(Deposit { tx, shielded }))
     }
 
     /// The Deposits contract, read once and checked against the pin: its token, and the token's
