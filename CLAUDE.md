@@ -48,8 +48,14 @@ vectors, a testnet maker. The original design and threat model are in
   deposits): a new tUSD with EIP-3009 (`0x64c4…727c`), which swaps take too, and the Deposits
   contract (`0x5832…9019`), sent from the relayer's deposits account `0xedc4…a446`; a CLI deposit
   through the gateway shielded in 14 s and cleared screening. zapp-dashboard's testnet token pin
-  (`lib/bridge/config.ts`) moves with it. Mainnet's `min_value` is 5 USDC (the owner's); it waits
-  on a revert-protecting RPC for deposit sends.
+  (`lib/bridge/config.ts`) moves with it. Mainnet sends deposits through Flashbots Protect
+  (`[deposits] private_rpc`, required there; 2026-10-19): one at a time, since the public node
+  can't see one before it mines and every later nonce would wait on one Flashbots dropped; one
+  unmined 5 blocks past its `blockRange` is dropped, its nonce the next's, and sent anew when
+  posted again, as wallets do every minute a named transaction hasn't mined. On Sepolia the path
+  checked out live up to inclusion, which Flashbots' Sepolia relay hasn't delivered a block for
+  since block 11,856,337. Staged for mainnet, 5 USDC minimum: `deploy/mainnet/deploy-deposits.sh`
+  (the contract, about 2.0M gas) and `enable-deposits.sh` (the droplet), neither run yet.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
