@@ -784,7 +784,8 @@ Ethereum from the relayer's own account, `0xcBcb…017F`:
 in `0x08115a2e…` (block 26,224,004, 1,983,757 gas, 0.000137 ETH). It takes USDC into Railgun's
 proxy and screens depositors against Chainalysis' oracle `0x40C5…C8fb`; the script read all three
 back, and USDC's domain (`USD Coin`, `2`). [mainnet-deposits.json](../deployments/mainnet-deposits.json)
-records it. Its source isn't verified on Etherscan yet: the script prints the command.
+records it. Its source was verified on Etherscan on 2026-10-20 at 00:20 UTC, from the deployed
+commit; its vault logic (`0x8123…3E39`) shows as verified too.
 
 At 03:48 `deploy/mainnet/enable-deposits.sh` found no live swap and gave the relayer `[deposits]`
 (`deploy/mainnet/relayer-deposits.toml`: a fee of $0.10 and 0.1%, priced from 950k gas when that

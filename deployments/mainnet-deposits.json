@@ -16,6 +16,8 @@
   "deployer": "0xcbcb5f57c79c88a0e4bb450289de2088958a017f",
   "sourceCommit": "63803a64147a73ca7b22fc0906abd34aeb9e2a14",
   "deployedAt": "2026-10-19",
+  "vaultLogic": "0x81235c1cBE59DA348B74084b660bD0917a3c3E39",
+  "etherscan": "source verified on 2026-10-20 for the contract and its vault logic, from sourceCommit",
   "status": "live",
   "since": "2026-10-19T03:48Z",
   "relayerDeposits": "0x6ae40b34c32d3feaa0eef53d7e4724160b7a2135",
