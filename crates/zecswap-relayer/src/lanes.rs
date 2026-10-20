@@ -261,7 +261,8 @@ impl Relayer {
             .unwrap_or(&self.settlement)
     }
 
-    pub(crate) fn lane_accounts(&self) -> BTreeMap<&'static str, Address> {
+    /// The account each lane its config sends on signs with.
+    pub fn lane_accounts(&self) -> BTreeMap<&'static str, Address> {
         self.lanes
             .used(&self.config)
             .into_iter()

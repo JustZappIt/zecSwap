@@ -84,9 +84,25 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         "the relayer's fee address is not its Railgun wallet"
     );
     let chain = ProviderBuilder::new().connect_http(env.evm_rpc.parse()?);
-    let nonce = |account| {
+    // The Railgun transactions the relayer sent from block `from` on, counted by their recipient:
+    // its sends account also hands spare ETH back to the relayer's own, which tops it up.
+    let (lane, proxy) = (node.relayer.lane_accounts()["sends"], terms.railgun_proxy);
+    let broadcast_since = |from: u64| {
         let chain = chain.clone();
-        async move { anyhow::Ok(chain.get_transaction_count(account).await?) }
+        async move {
+            let mut count = 0;
+            for number in from..=chain.get_block_number().await? {
+                let receipts = chain
+                    .get_block_receipts(number.into())
+                    .await?
+                    .context("the node lacks a block")?;
+                count += receipts
+                    .iter()
+                    .filter(|receipt| receipt.from == lane && receipt.to == Some(proxy))
+                    .count();
+            }
+            anyhow::Ok(count)
+        }
     };
 
     let sender: NewWallet = sdk(env, "wallet", None).await?;
@@ -140,7 +156,7 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         );
     }
 
-    let sent_before = nonce(all_terms.relayer).await?;
+    let start = chain.get_block_number().await?;
     let short = short.iter().map(|(request, _)| {
         (
             request.clone(),
@@ -157,7 +173,7 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         }
     }
     ensure!(
-        nonce(all_terms.relayer).await? == sent_before,
+        broadcast_since(start).await? == 0,
         "the relayer sent a transaction for a refused request"
     );
 
@@ -214,7 +230,7 @@ pub(crate) async fn railgun_send(env: &Env) -> Result<()> {
         "a relayer without the journal did not find the mined send's notes spent"
     );
     ensure!(
-        nonce(all_terms.relayer).await? == sent_before + 2,
+        broadcast_since(start).await? == 2,
         "the relayer sent other than the two sends"
     );
     let unshield_bps = IRailgunFees::new(terms.railgun_proxy, &chain)
