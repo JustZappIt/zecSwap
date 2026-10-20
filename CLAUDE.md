@@ -61,6 +61,14 @@ vectors, a testnet maker. The original design and threat model are in
   Spendable by 06:54 UTC. The minimum was lowered to 1 USDC for it and stays there for now (the
   owner's call); `deploy/mainnet/relayer-deposits.toml` stages 5. The test wallet's seed is in
   `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with `RAILGUN_NETWORK=mainnet`.
+- **Windows contract (2026-10-20, PR #17, `feature/windows`)**: the lock contract's successor and
+  its port (Recent fixes, first entry). All eleven live scenarios passed on a fork of Sepolia
+  (`.testnet/e2e-windows-fork.log`, and `-rerun.log` for the two fixed after it). The hosted
+  testnet's switch is staged, not run: `deploy/testnet/deploy-windows.sh` deploys the contract
+  (30-minute minimum window, 1-hour late window), then `switch-windows.sh`, uploaded with this
+  branch's Linux maker and relayer to the droplet's `/root/stage-windows`, moves the maker and
+  relayer onto it; zapp-dashboard reads both contracts from its `866df80` (not pushed). Android and
+  Veylor speak locks until ported.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
@@ -157,7 +165,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   handing it out and never readies after asking for a refund. Builds from here refuse the lock
   contract: mainnet-beta's services stay on their release until mainnet moves to a windows
   contract, and wallets keep the lock path for swaps still open there (`zecswap-core` keeps its
-  lock digests, which `zecswap-jni` uses).
+  lock digests, which `zecswap-jni` uses). The client also refuses a swap whose `t1` follows `t0`
+  by under twice its claim margin (10 minutes): should the maker never ready it, the user claims
+  from `t0` with the margin to spare.
 - Reveals keep fee headroom (2026-10-19, after an outside report confirmed on a mainnet fork): a
   claim or refund carries its share, and one the base fee outruns is mined after its lock lapses,
   reverting with the share public while the other side moves next (the maker refunds, then
