@@ -205,12 +205,7 @@ impl User {
         let keys = self.keys(swap.index)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
         let now = self.settlement.now().await?;
-        let min = self.min_time_to_t0;
-        ensure!(
-            (now + min..=now + MAX_TIME_TO_T0).contains(&chain.t0),
-            "t0 is {}s away, outside {min}..={MAX_TIME_TO_T0}s",
-            chain.t0.saturating_sub(now)
-        );
+        check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1)?;
         Ok(JointAccount::derive(
             &chain.maker_share,
             &chain.user_share,
@@ -540,4 +535,42 @@ impl User {
 
 fn last(sent: &Sent) -> Option<B256> {
     sent.transactions.last().copied()
+}
+
+/// That `t0` is `min` to `MAX_TIME_TO_T0` from `now`, and that `t1` leaves time to claim from
+/// `t0` with `CLAIM_MARGIN` to spare, should the maker never ready the swap.
+fn check_deadlines(now: u64, min: u64, t0: u64, t1: u64) -> Result<()> {
+    ensure!(
+        (now + min..=now + MAX_TIME_TO_T0).contains(&t0),
+        "t0 is {}s away, outside {min}..={MAX_TIME_TO_T0}s",
+        t0.saturating_sub(now)
+    );
+    ensure!(
+        t1 >= t0 + 2 * CLAIM_MARGIN,
+        "t1 follows t0 by {}s, too soon to claim in should the maker never ready the swap",
+        t1.saturating_sub(t0)
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_swap_leaves_its_user_time_to_claim_from_t0_without_a_ready() {
+        let (now, min) = (1_000_000, 1_800);
+        let t0 = now + 2_700;
+        assert!(check_deadlines(now, min, t0, t0 + 3_600).is_ok());
+        assert!(check_deadlines(now, min, t0, t0 + 2 * CLAIM_MARGIN).is_ok());
+        let short = check_deadlines(now, min, t0, t0 + 2 * CLAIM_MARGIN - 1).unwrap_err();
+        assert!(
+            short.to_string().contains("too soon to claim in"),
+            "{short}"
+        );
+        assert!(check_deadlines(now, min, now + min - 1, now + 2 * min).is_err());
+        assert!(
+            check_deadlines(now, min, now + MAX_TIME_TO_T0 + 1, now + 2 * MAX_TIME_TO_T0).is_err()
+        );
+    }
 }

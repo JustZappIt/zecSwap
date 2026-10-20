@@ -169,7 +169,8 @@ impl Settings {
             timing: Timing {
                 quote_ttl: 300,
                 t0_after,
-                t1_after: t0_after + MIN_WINDOW,
+                // The client claims an unready swap from t0 only with its margin left before t1.
+                t1_after: t0_after + 2 * MIN_WINDOW,
                 // One wallet pays every deposit, so the last leaves a minute after its open,
                 // and a testnet block can take minutes: room for both before calling a swap
                 // unpaid.
