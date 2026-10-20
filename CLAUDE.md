@@ -33,8 +33,8 @@ vectors, a testnet maker. The original design and threat model are in
 - **All nine passed live on Ethereum Sepolia itself** (`.testnet/e2e-railgun-sepolia.log`), and
   Railgun's own wallet SDK (`balance.cjs`) shows both payouts in the user's `0zk` wallet as
   Spendable: they cleared Railgun's screening.
-- **Deposits (2026-10-18, branch `feature/deposits`; brief `docs/local/deposits.md`)**: public USDC
-  at a deposit address derived from the seed (BIP-44 `m/44'/60'/(1000 + account)'/0/index`,
+- **Deposits (2026-10-18, PR #15, merged 2026-10-19; brief `docs/local/deposits.md`)**: public
+  USDC at a deposit address derived from the seed (BIP-44 `m/44'/60'/(1000 + account)'/0/index`,
   testnet `1'`) is shielded into the wallet's Railgun balance on one EIP-3009
   `receiveWithAuthorization`, which the relayer sends from an account of its own for a fee of a
   floor and `fee_bps` of the deposit. `docs/deposits.md` is the wallet-facing contract. Built and
@@ -55,11 +55,12 @@ vectors, a testnet maker. The original design and threat model are in
   posted again, as wallets do every minute a named transaction hasn't mined. On Sepolia the path
   checked out live up to inclusion, which Flashbots' Sepolia relay hasn't delivered a block for
   since block 11,856,337. Live on mainnet since 2026-10-19 03:48 UTC (`docs/deployment.md`,
-  October 19 mainnet deposits): Deposits `0xebc7…8cb6`, sent from the relayer's deposits account
-  `0x6ae4…2135`, 5 USDC minimum; a first deposit of 1 USDC (the relayer's own fees, at a minimum
-  lowered for it) landed through Flashbots 11 s after it was sent, unseen by the public mempool.
-  The test wallet's seed is in `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with
-  `RAILGUN_NETWORK=mainnet`.
+  October 19 mainnet deposits): Deposits `0xebc7…8cb6` (source verified on Etherscan), sent from
+  the relayer's deposits account `0x6ae4…2135`; a first deposit of 1 USDC (the relayer's own fees)
+  landed through Flashbots 11 s after it was sent, unseen by the public mempool, and its note was
+  Spendable by 06:54 UTC. The minimum was lowered to 1 USDC for it and stays there for now (the
+  owner's call); `deploy/mainnet/relayer-deposits.toml` stages 5. The test wallet's seed is in
+  `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with `RAILGUN_NETWORK=mainnet`.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
