@@ -411,6 +411,28 @@ async fn a_reverse_refund_waits_for_the_relayers_own_ready_to_land_or_fail() {
     assert_eq!(chain.sent(claims).await.0, refunds);
 }
 
+#[tokio::test]
+async fn a_reverse_escrow_is_never_readied_after_a_refund_the_relayer_sent() {
+    let Some(chain) = deployment().await else {
+        return;
+    };
+    let relayer = chain.relayer().await;
+    relayer.top_up().await.unwrap();
+    let escrow = Escrow::open(&chain, 2).await;
+    let readies = relayer.lane_accounts()["locks"];
+    let (sent, _) = chain.sent(readies).await;
+    // As after a refund whose receipt never came: sent, and maybe still to land.
+    relayer
+        .steps
+        .record(escrow.id, Step::Refund, B256::repeat_byte(1), false);
+    let ready = relayer.ready_reverse(escrow.ready(&chain).await).await;
+    assert!(
+        matches!(&ready, Err(RelayerError::Rejected(reason)) if reason.contains("never readied")),
+        "{ready:?}"
+    );
+    assert_eq!(chain.sent(readies).await.0, sent, "the ready went out");
+}
+
 #[test]
 fn reveals_go_only_through_a_private_rpc_that_keeps_them_to_itself() {
     let dir = tempfile::tempdir().unwrap();

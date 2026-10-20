@@ -128,7 +128,12 @@ impl Steps {
         self.sent.lock().unwrap().get(&(swap_id, step)).copied()
     }
 
-    fn record(&self, swap_id: B256, step: Step, tx: B256, landed: bool) {
+    /// Whether the relayer sent a transaction for the swap's `step`, whatever became of it.
+    pub(crate) fn sent(&self, swap_id: B256, step: Step) -> bool {
+        self.get(swap_id, step).is_some()
+    }
+
+    pub(crate) fn record(&self, swap_id: B256, step: Step, tx: B256, landed: bool) {
         let mut sent = self.sent.lock().unwrap();
         sent.retain(|_, record| record.at.elapsed() < REMEMBERED_FOR);
         sent.insert(

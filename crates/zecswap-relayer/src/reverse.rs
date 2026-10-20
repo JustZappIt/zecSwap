@@ -67,6 +67,15 @@ impl Relayer {
                 "an escrow is readied only before t0".into(),
             ));
         }
+        // A refund reveals the user's share, and a ready landing before it would revert it with
+        // the share public: none follows a refund sent for the escrow, nor one the claims account
+        // may still land from before a restart.
+        self.steps.after_earlier(&self.lanes.claims).await?;
+        if self.steps.sent(request.swap_id, Step::Refund) {
+            return Err(RelayerError::Rejected(
+                "a refund was sent for this escrow, which is never readied after one".into(),
+            ));
+        }
         let (id, locks) = (request.swap_id, &self.lanes.locks);
         let ready = locks.ready_with_sig(id, &terms, request.deadline, &request.signature.0);
         let sent = self.send_once(id, Step::Ready, locks, ready).await;
