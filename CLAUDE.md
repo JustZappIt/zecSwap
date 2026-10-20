@@ -89,7 +89,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract deployed before, for the migration tests), `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
-| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18; the droplet's switch to the windows contract (`switch-windows.sh`) |
+| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18; the windows contract on Sepolia (`deploy-windows.sh`) and the droplet's switch to it (`switch-windows.sh`) |
 
 ## Commands
 
