@@ -87,9 +87,9 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun, `deposit`) |
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
-| `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
+| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract deployed before, for the migration tests), `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
-| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18 |
+| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18; the droplet's switch to the windows contract (`switch-windows.sh`) |
 
 ## Commands
 
@@ -132,6 +132,32 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Windows (2026-10-20, branch `feature/windows`; the third audit, its port spec and model are in
+  `docs/local/windows/audit3/`): the contract has no locks. At every moment at most one side may
+  reveal, by the clock and the stage. Forward: the user claims once ready, or from `t0` unready,
+  until `t1`; the maker cancels an unready swap until `t0`, refunds from `t1` for `LATE_WINDOW`,
+  and then the user may claim for good. Reverse: the maker claims from ready until `t1`; the user
+  refunds while unready, and from `t1` for good. `ready` only before `t0`; `open` and `openReverse`
+  refuse a `t0` under `MIN_WINDOW` from when they land, or a `t1` under it from `t0` (the maker
+  checks its `[timing]` and `[reverse]` against them at start, the client a reverse quote).
+  `getSwap` returns four words; `/v1/lock-claim` and `/v1/reverse/lock-refund` are gone. Off-chain
+  (audit 3, each tested): a reveal is judged on one read, the swap at the newest block's hash
+  (`Settlement::read`, `reveal_window`), start edges by that block's time and end edges by the
+  later of it and the wall clock, with its margin left (`Window::leaves`); every service and
+  client reads `MIN_WINDOW()`/`LATE_WINDOW()` (`Settlement::windows`) and refuses the lock
+  contract, whose six-word record alloy decodes silently under the four-word ABI; a privately
+  sent reveal is never simulated (fixed `REVEAL_GAS`), so its share reaches no RPC before it
+  mines; a public send unmined three blocks on goes again at its nonce at the fees then
+  (`land_publicly`). The maker records a ready before sending it (`ready_sent`) and never cancels
+  behind one, decides a cancel at `t0 - t0_margin` with `reveal_margin` under that, claims a
+  reverse escrow only on a finalized ready, and with `[reveals] private_rpc` (optional; staged
+  commented out on mainnet) sends its cancels and refunds through Protect. The relayer claims
+  before `t0` only on a ready `READY_DEPTH` (12) blocks deep (`503` meanwhile) and holds a reverse
+  refund while its own ready may land; the client saves each ready signature's deadline before
+  handing it out and never readies after asking for a refund. Builds from here refuse the lock
+  contract: mainnet-beta's services stay on their release until mainnet moves to a windows
+  contract, and wallets keep the lock path for swaps still open there (`zecswap-core` keeps its
+  lock digests, which `zecswap-jni` uses).
 - Reveals keep fee headroom (2026-10-19, after an outside report confirmed on a mainnet fork): a
   claim or refund carries its share, and one the base fee outruns is mined after its lock lapses,
   reverting with the share public while the other side moves next (the maker refunds, then
@@ -458,10 +484,12 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's
   "implementation of `Send` is not general enough"); poll with plain predicates instead.
-- `terms_tests` runs within 128-256 KiB of the 2 MiB test-thread stack in debug builds: its body's
-  frame holds every relayer future it awaits, and Poseidon's setup (`Keys::from_seed`) recurses
-  deep. Larger `Settlement` send futures overflow it (the binary aborts and leaves its anvils
-  holding any pipe it wrote to): `submit_held` boxes each attempt, so keep send state in there.
+- `terms_tests` runs within 256-384 KiB of the 2 MiB test-thread stack in debug builds (it passes
+  with `RUST_MIN_STACK=1835008`, not 1703936): its body's frame holds a slot for every relayer
+  future it awaits, and Poseidon's setup (`Keys::from_seed`) recurses deep. Larger relayer or
+  `Settlement` send futures overflow it (the binary aborts and leaves its anvils holding any pipe
+  it wrote to): `submit_held` boxes each attempt and `send_once` its send, so keep send state in
+  there.
 - The agent shell is zsh: `grep` is a wrapper function (use `command grep`), `$vars` don't
   word-split, and unquoted globs in flags fail (`--include='*.rs'`).
 
