@@ -196,8 +196,8 @@ async fn late_claim(p: &Player) -> Result<()> {
     p.sweep_back(&swap, account).await
 }
 
-/// Paid into Railgun: after `ready`, the relayer takes the signed claim lock, reveals, and
-/// shields the payout to the note the swap committed to; the maker sweeps the ZEC.
+/// Paid into Railgun: after `ready`, the relayer reveals in a claim and shields the payout to the
+/// note the swap committed to; the maker sweeps the ZEC.
 async fn railgun_happy(p: &Player) -> Result<()> {
     let swap = p.open().await?;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;

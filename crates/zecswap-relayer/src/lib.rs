@@ -76,12 +76,12 @@ pub struct Config {
     /// The one maker whose swaps it sends for.
     pub maker: Address,
     pub listen: SocketAddr,
-    /// Token base units each payout keeps at least, for the gas of the lock, the claim and the
-    /// payout: the floor of its fee.
+    /// Token base units each payout keeps at least, for the gas of the claim and the payout: the
+    /// floor of its fee.
     pub fee: u64,
     /// With `providers`, the gas a payout's fee pays for, priced at the gas price and ETH price
-    /// when it is quoted: the claim lock, the claim and the payout, or a refund's lock, the
-    /// refund and its payout. None leaves the fee at `fee`.
+    /// when it is quoted: the claim and the payout, or the refund and its payout. None leaves
+    /// the fee at `fee`.
     #[serde(default)]
     pub fee_gas: u64,
     /// Live ETH and USDC prices, asked in order (keys as the maker's: `ZCASH_CMC_KEY`,
@@ -309,7 +309,7 @@ impl From<zecswap_chain::Error> for RelayerError {
             zecswap_chain::Error::Unconfirmed(_) => RelayerError::Unsettled(turns::UNMINED),
             // It never landed and now can't: the same request, posted again, sends it anew.
             zecswap_chain::Error::Dropped(_) => RelayerError::Unsettled(turns::DROPPED),
-            // Nothing was sent, the share still secret, and the lock only runs down.
+            // Nothing was sent, the share still secret, and the window only runs down.
             e @ zecswap_chain::Error::Late(_) => RelayerError::Rejected(e.to_string()),
             e => RelayerError::Internal(e.into()),
         }

@@ -24,9 +24,9 @@ listen = "127.0.0.1:8788"
 fee = 100000
 # With `providers`, every fee follows gas: the larger of its floor and the gas it pays for at
 # the gas price and ETH price when it is quoted, with `fee_margin_bps` on top. A quoted swap fee
-# is honored for an hour, a send's rate for ten minutes. A payout's fee pays for the claim lock,
-# the claim and the payout (on a refund, its lock, the refund and its payout): 1.65M gas on
-# Sepolia, where new state is repriced.
+# is honored for an hour, a send's rate for ten minutes. A payout's fee pays for the claim and the
+# payout (on a refund, the refund and its payout); with the lock contract's claim lock, 1.65M gas
+# on Sepolia, where new state is repriced.
 fee_gas = 1800000
 providers = ["coinmarketcap", "alchemy"]
 fee_margin_bps = 1000
