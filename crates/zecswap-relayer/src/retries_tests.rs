@@ -20,31 +20,32 @@ use zecswap_core::{NetworkType, UserSwapKeys, derive_maker_share, derive_user_ke
 use super::*;
 use crate::turns::Step;
 
-const SEED: [u8; 64] = [7; 64];
-const FEE: u128 = 20_000;
+pub(crate) const SEED: [u8; 64] = [7; 64];
+pub(crate) const FEE: u128 = 20_000;
 
-struct Deployment {
-    _anvil: AnvilInstance,
-    url: String,
-    chain: DynProvider,
-    funder: DynProvider,
-    maker: Settlement,
-    maker_account: Address,
-    contract: Address,
-    token: Address,
-    domain: Domain,
-    relayer_key: PrivateKeySigner,
-    wallet: zecswap_railgun::Keys,
+pub(crate) struct Deployment {
+    pub(crate) anvil: AnvilInstance,
+    pub(crate) url: String,
+    pub(crate) chain: DynProvider,
+    /// Anvil's third account, which sends what neither the maker nor the relayer does.
+    pub(crate) funder: DynProvider,
+    pub(crate) maker: Settlement,
+    pub(crate) maker_account: Address,
+    pub(crate) contract: Address,
+    pub(crate) token: Address,
+    pub(crate) domain: Domain,
+    pub(crate) relayer_key: PrivateKeySigner,
+    pub(crate) wallet: zecswap_railgun::Keys,
 }
 
 /// A swap open and ready, paying into the user's Railgun wallet.
-struct Swap {
-    id: B256,
-    terms: zecswap_core::Terms,
-    keys: UserSwapKeys,
+pub(crate) struct Swap {
+    pub(crate) id: B256,
+    pub(crate) terms: zecswap_core::Terms,
+    pub(crate) keys: UserSwapKeys,
 }
 
-async fn deployment() -> Option<Deployment> {
+pub(crate) async fn deployment() -> Option<Deployment> {
     let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
         eprintln!("skipped: anvil is not installed");
         return None;
@@ -94,7 +95,7 @@ async fn deployment() -> Option<Deployment> {
         .connect_http(url.parse().unwrap())
         .erased();
     Some(Deployment {
-        _anvil: anvil,
+        anvil,
         url,
         chain,
         funder,
@@ -109,9 +110,9 @@ async fn deployment() -> Option<Deployment> {
 }
 
 impl Deployment {
-    /// A relayer process for the relayer's key, as `Relayer::new` makes it.
-    async fn relayer(&self) -> Arc<Relayer> {
-        let config = Config {
+    /// The relayer's config, for its key on anvil's node.
+    pub(crate) fn config(&self) -> Config {
+        Config {
             network: zecswap_api::Network::Testnet,
             evm_rpc: self.url.clone(),
             contract: self.contract,
@@ -123,19 +124,36 @@ impl Deployment {
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            reveals: None,
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
             gas_alerts: None,
             deposits: None,
-        };
+        }
+    }
+
+    /// A relayer process for the relayer's key, as `Relayer::new` makes it.
+    pub(crate) async fn relayer(&self) -> Arc<Relayer> {
+        self.relayer_with(self.config()).await
+    }
+
+    /// A relayer process for the relayer's key and `config`, as `Relayer::new` makes it.
+    pub(crate) async fn relayer_with(&self, config: Config) -> Arc<Relayer> {
         let key = &self.relayer_key;
+        let meter = RpcMeter::default();
         let relayer = Relayer {
+            settlement: Settlement::connect_metered(
+                &config.evm_rpc,
+                self.contract,
+                key.clone(),
+                &meter,
+            )
+            .unwrap(),
+            lanes: crate::lanes::Lanes::of(&config, key, &meter).await.unwrap(),
             config,
             account: key.address(),
             domain: self.domain,
-            settlement: Settlement::connect(&self.url, self.contract, key.clone()).unwrap(),
-            lanes: crate::lanes::Lanes::connect(&self.url, self.contract, key).unwrap(),
             lock_duration: 600,
             turns: Default::default(),
             steps: Default::default(),
@@ -161,7 +179,7 @@ impl Deployment {
         Arc::new(relayer)
     }
 
-    async fn open(&self, index: u32) -> Swap {
+    pub(crate) async fn open(&self, index: u32) -> Swap {
         let keys = derive_user_keys(&SEED, NetworkType::Test, 0, index).unwrap();
         let now = self.maker.now().await.unwrap();
         let terms = zecswap_core::Terms {
@@ -181,7 +199,7 @@ impl Deployment {
         Swap { id, terms, keys }
     }
 
-    async fn lock(&self, swap: &Swap) -> LockClaim {
+    pub(crate) async fn lock(&self, swap: &Swap) -> LockClaim {
         let deadline = self.maker.now().await.unwrap() + 60;
         LockClaim {
             swap_id: swap.id,
@@ -210,7 +228,7 @@ impl Deployment {
         }
     }
 
-    fn claim(&self, swap: &Swap) -> Claim {
+    pub(crate) fn claim(&self, swap: &Swap) -> Claim {
         Claim {
             swap_id: swap.id,
             terms: (&swap.terms).into(),
@@ -220,22 +238,30 @@ impl Deployment {
     }
 
     /// Mines a block every `seconds`; never, with none.
-    async fn mine_every(&self, seconds: u64) {
+    pub(crate) async fn mine_every(&self, seconds: u64) {
         self.chain
             .raw_request::<_, serde_json::Value>("evm_setIntervalMining".into(), (seconds,))
             .await
             .unwrap();
     }
 
-    async fn mine(&self) {
+    pub(crate) async fn mine(&self) {
         self.chain
             .raw_request::<_, serde_json::Value>("evm_mine".into(), ())
             .await
             .unwrap();
     }
 
+    /// Mines `blocks` blocks at once.
+    pub(crate) async fn mine_blocks(&self, blocks: u64) {
+        self.chain
+            .raw_request::<_, serde_json::Value>("anvil_mine".into(), (U256::from(blocks),))
+            .await
+            .unwrap();
+    }
+
     /// How many transactions `account` has sent, those in the pool included; and mined.
-    async fn sent(&self, account: Address) -> (u64, u64) {
+    pub(crate) async fn sent(&self, account: Address) -> (u64, u64) {
         let count = || self.chain.get_transaction_count(account);
         (
             count().pending().await.unwrap(),
@@ -244,7 +270,7 @@ impl Deployment {
     }
 
     /// Waits for `account` to have sent `count` transactions.
-    async fn sent_reaches(&self, account: Address, count: u64) {
+    pub(crate) async fn sent_reaches(&self, account: Address, count: u64) {
         for _ in 0..300 {
             if self.sent(account).await.0 >= count {
                 return;
@@ -255,7 +281,7 @@ impl Deployment {
     }
 }
 
-async fn post(
+pub(crate) async fn post(
     app: axum::Router,
     path: &'static str,
     body: impl serde::Serialize,

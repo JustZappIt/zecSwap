@@ -876,6 +876,34 @@ fixes, and each service refuses to start on anything of another network:
   `[reverse_funding] relay_adapt`; another one is refused.
 - The issuer on mainnet refuses `insecure-test`, whatever `allow_insecure` says.
 - `add-inventory --mint` is refused on mainnet, and the CLI's `--network` picks its lightwalletd.
+- The relayer on mainnet refuses to start without `[reveals] private_rpc`, below.
+
+Claims and reverse refunds reveal a share in their calldata. One that landed after its lock
+lapsed would revert with the share public, and the other side, whose turn comes next, could take
+both halves of the swap. So on mainnet the relayer sends them through Flashbots Protect, never the
+public mempool: `[reveals] private_rpc`, staged in `deploy/mainnet/relayer.toml` as
+`https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10`.
+Protect lands a transaction only if it succeeds and drops one it couldn't land within its
+`blockRange`. No node shows one until it mines, so the relayer sends them one at a time from its
+claims account, holding the account's turn until each mines or 5 blocks past its range (15 here)
+go by without it, and answers a dropped one `503`, to post again; a restarted relayer sends none
+for those 15 blocks, since one it sent before may still land. Only the broadcasts go to Protect,
+which limits reads to a few hundred an IP every five minutes: reads, nonces, simulations and
+receipts stay on `evm_rpc`. The relayer refuses Protect's `/fast`, which shows TEE searchers whole
+transactions (failed ones too, five minutes on); any `hint` but `hash` alone, since the default
+hints share logs and `Claimed` logs the share; and any parameter but `hint`, `blockRange`,
+`builder`, `refund`, `originId` and `auctionTimeout`, such as `canRevert` or `useMempool`.
+Flashbots' own builder, BuilderNet, always gets the transaction, but it built 14.3% of blocks in
+the day to October 19 (relayscan.io): alone it would land a claim in about 7 blocks and miss a
+10-block range one time in five. Naming Titan (51.6%), Quasar (21.4%) and Eureka (7.5%), as
+Flashbots' builder registry spells them (`builder-registrations.json` in github.com/flashbots/dowg),
+covers about 95%; each sees the whole transaction, as it must to include it, and nothing more is
+shared. Confirm the names on the first mainnet claim: Protect's status page for the transaction
+shows where it went. Names no builder answers to leave it to BuilderNet alone: slower, still
+private. Testnet keeps the public mempool, since Flashbots' Sepolia relay has included nothing
+since block 11,856,337. Wherever a reveal goes, it is broadcast only while its lock still has
+`claim_margin` left once its turn comes; one whose lock ran under it while it waited is refused
+with `400`, nothing sent, as on arrival.
 
 Swaps use the Ironwood pool, which NU6.3 brought (mainnet height 3,428,143; zec.rocks served
 mainnet on NU6.3's branch `0x37A5165B` on October 12), so a maker on the pinned crates runs on

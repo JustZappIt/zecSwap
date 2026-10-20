@@ -92,6 +92,7 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,

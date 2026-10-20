@@ -36,13 +36,16 @@ reverse_gas = 350000
 zcash_fee_zat = 15000
 margin_bps = 2000
 
-# For a contract with a 1,800 s lock; generous for deposits counted at 2 confirmations.
+# For a contract with a 1,800 s lock; generous for deposits counted at 2 confirmations. From t0
+# the user may claim, so a swap not paid in full is cancelled half an hour before it: a user can
+# keep a deposit pending to hold the cancel back until then, and a cancel's lock gets that long
+# to land.
 [timing]
 quote_ttl = 120
 t0_after = 3600
 t1_after = 7200
 cancel_after = 900
-t0_margin = 300
+t0_margin = 1800
 reveal_margin = 600
 tick = 15
 
@@ -55,10 +58,12 @@ refund_after = 10800
 deposit_margin = 1800
 fee_reserve_zat = 20000
 
-# Funded with 0.003 ETH: deploying takes 0.0005 at 0.12 gwei, a swap 0.00003 to 0.00006.
+# Funded with 0.003 ETH: deploying takes 0.0005 at 0.12 gwei, a swap 0.00003 to 0.00006. A
+# refund or reverse claim must hold its 240k gas at a cap 5 gwei higher, 0.0013 ETH: the alert
+# comes first.
 [gas_alerts]
-low_wei = 500000000000000
-recovery_wei = 1000000000000000
+low_wei = 1500000000000000
+recovery_wei = 3000000000000000
 interval_seconds = 300
 
 # Spam tokens, from deploy/mainnet/issuer.toml's issuer: on before the app ships. The CLI gets

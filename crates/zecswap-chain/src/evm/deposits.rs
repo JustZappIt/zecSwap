@@ -3,7 +3,7 @@
 //! what Railgun sent back to the address's vault. Wallets read it too: a vault's code says its
 //! address has deposited, and its rescue nonce is what a rescue signs.
 
-use alloy::eips::{BlockId, Encodable2718};
+use alloy::eips::BlockId;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::Bytes;
 use alloy::providers::Provider;
@@ -351,7 +351,7 @@ impl Settlement {
         covers: impl FnOnce(u64, u128) -> bool,
         record: impl FnOnce(&Signed) -> Result<(), Error>,
     ) -> Result<B256, SendError> {
-        let (Some(account), Some(wallet)) = (self.account, &self.wallet) else {
+        let Some(account) = self.account else {
             return Err(Error::Config("a read-only connection cannot send".into()).into());
         };
         let gas_price = self
@@ -409,24 +409,8 @@ impl Settlement {
             return Err(SendError::Later(Later::Eth));
         }
         let _sending = self.sending.turn().await;
-        let nonce = self
-            .provider
-            .get_transaction_count(account)
-            .pending()
-            .await
-            .map_err(|_| Error::Contract("the relayer's nonce is unavailable".into()))?
-            .max(least_nonce);
         tx.set_gas_limit(gas_limit);
-        tx.set_nonce(nonce);
-        let envelope = tx
-            .build(wallet)
-            .await
-            .map_err(|_| Error::Contract("cannot sign the transaction".into()))?;
-        let signed = Signed {
-            hash: *envelope.tx_hash(),
-            nonce,
-            raw: envelope.encoded_2718().into(),
-        };
+        let signed = self.sign_next(tx, least_nonce).await?;
         record(&signed)?;
         match self.broadcaster().send_raw_transaction(&signed.raw).await {
             Ok(_) => {
@@ -434,7 +418,7 @@ impl Settlement {
                 Ok(signed.hash)
             }
             // A private RPC that answers with an error never passes the transaction on.
-            Err(RpcError::ErrorResp(_)) if self.private_blocks().is_some() => {
+            Err(RpcError::ErrorResp(_)) if self.private.is_some() => {
                 Err(SendError::Refused(signed.hash))
             }
             Err(_) => Err(SendError::Unknown(signed.hash)),

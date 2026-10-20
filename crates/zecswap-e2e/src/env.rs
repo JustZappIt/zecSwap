@@ -838,6 +838,7 @@ async fn start_relayer(
             .collect(),
         fee_margin_bps: 1_000,
         claim_margin: 3 * 60,
+        reveals: None,
         top_up_transactions: LANE_TRANSACTIONS,
         reverse_funding: None,
         railgun_sends: sends.map(|(_, journal)| zecswap_relayer::RailgunSendsConfig {

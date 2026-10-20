@@ -80,7 +80,7 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it. `Depositor` plays a wallet's USDC deposits |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`), and with `[deposits]` deposit addresses' USDC into Railgun (`deposits.rs`, `docs/deposits.md`); never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, its claims and reverse refunds through Flashbots Protect with `[reveals]` (required on mainnet), with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`), and with `[deposits]` deposit addresses' USDC into Railgun (`deposits.rs`, `docs/deposits.md`); never run by a maker |
 | `crates/zecswap-alerts` | Telegram alerts for the maker and the relayer: the bot's client, the durable queue messages wait in, in each service's own SQLite, and the gas alerts of the account each sends from (`gas`) |
 | `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
@@ -132,6 +132,45 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Reveals keep fee headroom (2026-10-19, after an outside report confirmed on a mainnet fork): a
+  claim or refund carries its share, and one the base fee outruns is mined after its lock lapses,
+  reverting with the share public while the other side moves next (the maker refunds, then
+  sweeps the ZEC with the leaked `z`). Every send capped its fee at the next base fee twice over
+  and the tip, a fraction of a gwei at mainnet's base fees: in the year to 2026-10-19 surges
+  would have stranded such a send over 25 minutes 235 times. On mainnet a reveal's cap is now
+  5 gwei higher (`Network::reveal_headroom_wei`; twice in that year), on the maker's account and
+  the relayer's claims lane (`Settlement::set_reveal_headroom`), whose float holds its
+  transactions' gas at that cap: 0.01 ETH more at two transactions. The maker's cancel lock gets
+  it too: from `t0` a user may lock and claim a swap whose cancel hasn't landed, deposit or not,
+  so the staged mainnet maker now cancels a swap not paid in full 30 minutes before `t0` (was 5:
+  a user can keep a deposit pending to hold the cancel back until then). A send still pays only
+  the base fee and its tip; testnets keep no headroom. The maker's mainnet low-gas alert moved to
+  0.0015 ETH, what a reveal holds. The contract-side fix is the owner's open decision.
+- Reveals go through Flashbots Protect (2026-10-19): a security report, confirmed on a mainnet
+  fork, showed a claim broadcast in time but mined after its lock lapsed reverts with the share
+  public (mempool, then the reverted transaction), and the maker, whose turn comes next, refunds
+  and sweeps the user's ZEC too; a reverse refund is the mirror. The relayer's claims and reverse
+  refunds (its claims account) now go through `[reveals] private_rpc`, required on mainnet and
+  optional elsewhere (Flashbots' Sepolia relay includes nothing); `deploy/mainnet/relayer.toml`
+  stages `https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10`
+  (BuilderNet alone built 14% of blocks: confirm the builder names on the first mainnet claim on
+  Protect's status page; names nobody serves fall back to BuilderNet, slower but private). Loading
+  refuses any path (`/fast` shows TEE searchers whole transactions, failed ones too), any hint but
+  `hash` alone (the default ones share logs, and `Claimed` logs the share), and any parameter but
+  hint, blockRange (once, positive), builder, refund, originId and auctionTimeout
+  (`evm::check_keeps_secrets`), never echoing the URL. Only `eth_sendRawTransaction` and the
+  startup `eth_chainId` go to Protect. `Settlement::submit` on an account with a private RPC signs
+  at its pending nonce (past its last private send that mined), broadcasts there, and holds the
+  account's turn, reading the node, until the reveal mines or `blockRange` + 5 blocks pass from the
+  block it was signed in (`Error::Dropped`: `503`, post again): one at a time, and none is ever
+  left that may still land, so `send_once` needs no private case. A restarted relayer sends
+  nothing from such an account, ETH take-backs included, for that window from its start
+  (`Steps::note_earlier`). Every reveal, public or private, reads its lock again in its turn and
+  is refused unsent with under `claim_margin` left (`Settlement::reveal_with_margin`, set on the
+  claims lane by `Lanes::of`): `Error::Late`, `400 rejected`, final for that lock, as a `503`
+  would only be posted again under a lock that runs down. Deposits share the window
+  (`private_window`) and the signer (`sign_next`). Reveals, public or private, keep their
+  account's reveal headroom (above).
 - Every relayer `503` says when to come back (2026-10-18, `feature/deposits`): an earlier send's
   unknown outcome 15 s, unpriced gas 60 s, a monitor export 30 s, beside the cooldown's and the
   deposits' own waits. `zecswap-client` waits out any of 30 s or less and posts the same request
@@ -419,6 +458,10 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's
   "implementation of `Send` is not general enough"); poll with plain predicates instead.
+- `terms_tests` runs within 128-256 KiB of the 2 MiB test-thread stack in debug builds: its body's
+  frame holds every relayer future it awaits, and Poseidon's setup (`Keys::from_seed`) recurses
+  deep. Larger `Settlement` send futures overflow it (the binary aborts and leaves its anvils
+  holding any pipe it wrote to): `submit_held` boxes each attempt, so keep send state in there.
 - The agent shell is zsh: `grep` is a wrapper function (use `command grep`), `$vars` don't
   word-split, and unquoted globs in flags fail (`--include='*.rs'`).
 

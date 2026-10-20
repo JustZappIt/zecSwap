@@ -147,6 +147,7 @@ impl Chain {
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            reveals: None,
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
@@ -406,7 +407,7 @@ fn backdate(relayer: &Relayer, tx: B256, seconds: u64) {
 
 /// How Flashbots Protect's stand-in takes a transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Taking {
+pub(crate) enum Taking {
     /// On to the chain.
     Lands,
     /// Kept from it, as one it never lands.
@@ -414,41 +415,69 @@ enum Taking {
     Refuses,
 }
 
-/// Flashbots Protect's stand-in on a port of its own: it reads anvil, and sends as `taking` says.
-struct Protect {
-    url: String,
+/// Flashbots Protect's stand-in on a port of its own: it reads `node`, sends as `taking` says,
+/// and keeps every call it gets. Landing what it is sent, it stands in for the node as well.
+pub(crate) struct Protect {
+    pub(crate) url: String,
     taking: Arc<std::sync::Mutex<Taking>>,
+    calls: Arc<std::sync::Mutex<Vec<Called>>>,
+}
+
+/// A JSON-RPC call the stand-in got, and the node's latest block when it came.
+#[derive(Clone, Debug)]
+pub(crate) struct Called {
+    pub(crate) method: String,
+    pub(crate) params: serde_json::Value,
+    pub(crate) block: u64,
 }
 
 impl Protect {
-    async fn start(chain: &Chain) -> Self {
+    /// At `path`, query and all, of a port of its own.
+    pub(crate) async fn start(node: &DynProvider, path: &str) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/fast?blockRange=10",
-            listener.local_addr().unwrap()
-        );
+        let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let taking = Arc::new(std::sync::Mutex::new(Taking::Lands));
-        let (node, shared) = (chain.chain.clone(), Arc::clone(&taking));
-        let app = axum::Router::new().route(
-            "/fast",
-            axum::routing::post(move |axum::Json(call): axum::Json<serde_json::Value>| {
-                let (node, taking) = (node.clone(), *shared.lock().unwrap());
-                async move { axum::Json(answer(&node, taking, call).await) }
-            }),
-        );
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (node, shared, kept) = (node.clone(), Arc::clone(&taking), Arc::clone(&calls));
+        let app =
+            axum::Router::new().fallback(move |axum::Json(call): axum::Json<serde_json::Value>| {
+                let (node, taking, kept) = (node.clone(), *shared.lock().unwrap(), kept.clone());
+                async move { axum::Json(answer(&node, taking, &kept, call).await) }
+            });
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Self { url, taking }
+        Self { url, taking, calls }
     }
 
-    fn take(&self, taking: Taking) {
+    pub(crate) fn take(&self, taking: Taking) {
         *self.taking.lock().unwrap() = taking;
+    }
+
+    /// The calls it got, `method` alone if given.
+    pub(crate) fn calls(&self, method: Option<&str>) -> Vec<Called> {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .filter(|call| method.is_none_or(|method| call.method == method))
+            .cloned()
+            .collect()
     }
 }
 
-/// The stand-in's answer to a JSON-RPC `call`.
-async fn answer(node: &DynProvider, taking: Taking, call: serde_json::Value) -> serde_json::Value {
+/// The stand-in's answer to a JSON-RPC `call`, which it keeps.
+async fn answer(
+    node: &DynProvider,
+    taking: Taking,
+    kept: &std::sync::Mutex<Vec<Called>>,
+    call: serde_json::Value,
+) -> serde_json::Value {
     let (id, params) = (call["id"].clone(), call["params"].clone());
     let method = call["method"].as_str().unwrap_or_default().to_owned();
+    let block = node.get_block_number().await.unwrap();
+    kept.lock().unwrap().push(Called {
+        method: method.clone(),
+        params: params.clone(),
+        block,
+    });
     let sending = method == "eth_sendRawTransaction";
     let result = match taking {
         Taking::Refuses if sending => Err("refused".to_owned()),
@@ -911,12 +940,12 @@ async fn deposits_sent_privately_go_one_at_a_time() {
     let Some(chain) = chain().await else {
         return;
     };
-    let protect = Protect::start(&chain).await;
+    let protect = Protect::start(&chain.chain, "/fast?blockRange=10").await;
     let dir = tempfile::tempdir().unwrap();
     let relayer = chain
         .relayer(chain.private_config(dir.path(), &protect))
         .await;
-    assert_eq!(relayer.lanes.deposits.private_blocks(), Some(10));
+    assert_eq!(relayer.lanes.deposits.private_window(), Some(10 + 5));
     let (first, second) = (Depositor::new(1), Depositor::new(2));
     chain.mint(first.address(), VALUE).await;
     chain.mint(second.address(), VALUE).await;
@@ -949,7 +978,7 @@ async fn a_deposit_the_private_rpc_dropped_gives_its_nonce_to_the_next_once_its_
     let Some(chain) = chain().await else {
         return;
     };
-    let protect = Protect::start(&chain).await;
+    let protect = Protect::start(&chain.chain, "/fast?blockRange=10").await;
     let dir = tempfile::tempdir().unwrap();
     let relayer = chain
         .relayer(chain.private_config(dir.path(), &protect))
@@ -999,7 +1028,7 @@ async fn a_deposit_the_private_rpc_refuses_is_never_on_its_way() {
     let Some(chain) = chain().await else {
         return;
     };
-    let protect = Protect::start(&chain).await;
+    let protect = Protect::start(&chain.chain, "/fast?blockRange=10").await;
     let dir = tempfile::tempdir().unwrap();
     let relayer = chain
         .relayer(chain.private_config(dir.path(), &protect))
@@ -1035,7 +1064,7 @@ async fn the_deposits_account_takes_back_eth_only_with_no_deposit_on_its_way() {
     let Some(chain) = chain().await else {
         return;
     };
-    let protect = Protect::start(&chain).await;
+    let protect = Protect::start(&chain.chain, "/fast?blockRange=10").await;
     let dir = tempfile::tempdir().unwrap();
     let relayer = chain
         .relayer(chain.private_config(dir.path(), &protect))
@@ -1310,19 +1339,21 @@ fn a_mined_deposit_says_what_it_moved_and_earned_and_names_no_one() {
     }
 }
 
+/// A config staged in deploy/, its `"<...>"` placeholders filled with an address.
+pub(crate) fn filled(text: &str) -> String {
+    let mut text = text.to_owned();
+    while let Some(start) = text.find("\"<") {
+        let end = start + text[start..].find(">\"").unwrap() + 2;
+        text.replace_range(start..end, "\"0x1111111111111111111111111111111111111111\"");
+    }
+    text
+}
+
 /// The `[deposits]` tables staged in deploy/ load as the relayer's config, their placeholders
 /// filled in.
 #[test]
 fn the_staged_deposits_configs_load() {
     let deploy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy");
-    let filled = |text: &str| {
-        let mut text = text.to_owned();
-        while let Some(start) = text.find("\"<") {
-            let end = start + text[start..].find(">\"").unwrap() + 2;
-            text.replace_range(start..end, "\"0x1111111111111111111111111111111111111111\"");
-        }
-        text
-    };
     let testnet = std::fs::read_to_string(deploy.join("testnet/relayer-deposits.toml")).unwrap();
     let base = r#"
         network = "testnet"
@@ -1357,8 +1388,8 @@ fn the_staged_deposits_configs_load() {
     .unwrap();
     lane.broadcast_privately(deposits.private_rpc.as_deref().unwrap())
         .unwrap();
-    assert_eq!(lane.private_blocks(), Some(10));
+    assert_eq!(lane.private_window(), Some(10 + 5));
     lane.broadcast_privately("https://rpc.flashbots.net/fast")
         .unwrap();
-    assert_eq!(lane.private_blocks(), Some(25), "Flashbots' own");
+    assert_eq!(lane.private_window(), Some(25 + 5), "Flashbots' own");
 }

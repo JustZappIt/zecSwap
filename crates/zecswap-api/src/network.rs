@@ -107,6 +107,19 @@ impl Network {
             .is_some()
     }
 
+    /// What a reveal, a claim or refund carrying its share, may pay per gas over the usual cap of
+    /// the next base fee twice over: one the base fee outruns is mined after its lock, reverting
+    /// with its share public. A maker's cancel lock, which must land before the user may claim,
+    /// gets it too. Twice mainnet's tenth of a gwei let surges strand a send for over 25 minutes
+    /// 235 times in the year to 2026-10-19; with 5 gwei more, twice. A send still pays only the
+    /// base fee and its tip; testnets keep their accounts' ETH as it was.
+    pub fn reveal_headroom_wei(self) -> u128 {
+        match self {
+            Network::Testnet => 0,
+            Network::Mainnet => 5_000_000_000,
+        }
+    }
+
     /// The lightwalletd wallets sync from unless told otherwise.
     pub fn lightwalletd(self) -> &'static str {
         match self {

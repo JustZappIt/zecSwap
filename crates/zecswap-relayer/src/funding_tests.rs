@@ -19,6 +19,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: enabled.then_some(ReverseFundingConfig {
             relay_adapt: None,

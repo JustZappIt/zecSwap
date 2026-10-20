@@ -40,6 +40,7 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            reveals: None,
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,

@@ -204,8 +204,12 @@ matching Kotlin wrapper. Android reverse receives retain the reviewed sweep fee;
 and the maker use a fixed 320,000-zatoshi ceiling.
 
 Android rereads the matching confirmed escrow and current clock immediately before a reverse
-refund reveal. This closes preparation delays, but timely inclusion after sending the secret
-still depends on the relayer, chain availability, and the lock window.
+refund reveal. This closes preparation delays. The relayer reads the lock again once the refund's
+turn to broadcast comes and refuses it, `400` with nothing sent, if less than its margin is left;
+on mainnet it sends the refund through Flashbots Protect, which lands it only if it succeeds, so
+one that would land after the lock lapsed is dropped, its share never public
+([deployment.md](deployment.md#switching-to-mainnet)). On testnet, which sends through the public
+mempool, timely inclusion after the broadcast still depends on the chain and the lock window.
 
 ## Terms hash (2026-10-06)
 

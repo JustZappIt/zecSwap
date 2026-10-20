@@ -45,9 +45,13 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
         Some(Error::Lightwalletd(_) | Error::Connection(_)) => "lightwalletd",
         Some(Error::Rejected { .. }) => "transaction_rejected",
         Some(Error::Database(_) | Error::Wallet(_)) => "zcash_wallet",
-        Some(Error::Contract(_) | Error::Reverted(_) | Error::Unconfirmed(_)) => {
-            "evm_rpc_or_contract"
-        }
+        Some(
+            Error::Contract(_)
+            | Error::Reverted(_)
+            | Error::Unconfirmed(_)
+            | Error::Dropped(_)
+            | Error::Late(_),
+        ) => "evm_rpc_or_contract",
         Some(Error::Swap(_) | Error::WrongTerms(_)) => "swap_validation",
         Some(Error::Journal(_)) => "database",
         None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
@@ -199,7 +203,9 @@ impl Maker {
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
         let account = secrets.evm_key.address();
         info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
-        let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
+        let mut settlement =
+            Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
+        settlement.set_reveal_headroom(network.reveal_headroom_wei());
         let chain_id = settlement
             .chain_id()
             .await

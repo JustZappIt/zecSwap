@@ -24,6 +24,7 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            reveals: None,
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: Some(RailgunSendsConfig {
@@ -150,6 +151,25 @@ async fn lanes_are_kept_in_eth_from_the_relayers_own_account() {
 
     let poor = relayer_on(&url, &PrivateKeySigner::random());
     assert!(poor.top_up().await.unwrap().is_empty());
+}
+
+/// Claims and refunds may pay their network's reveal headroom over the usual fee cap, and a node
+/// refuses a transaction its account can't cover at its cap: the claims lane keeps its gas there.
+#[tokio::test]
+async fn the_claims_lane_holds_its_reveals_gas_at_their_higher_cap() {
+    let Some(anvil) = steady_anvil() else {
+        return;
+    };
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let mut relayer = relayer_on(&anvil.endpoint(), &key);
+    let headroom = zecswap_api::Network::Mainnet.reveal_headroom_wei();
+    relayer.lanes.claims.set_reveal_headroom(headroom);
+    let fee = U256::from(relayer.settlement.max_fee_per_gas().await.unwrap());
+    let float = |fee: U256| fee * U256::from(SETTLEMENT_GAS) * U256::from(8);
+    let sent = relayer.top_up().await.unwrap();
+    assert_eq!(sent[0], ("claims", float(fee + U256::from(headroom))));
+    assert_eq!(sent[1], ("locks", float(fee)));
+    assert!(relayer.top_up().await.unwrap().is_empty());
 }
 
 /// With no base fee, the fee cap is the tip alone and holds still from block to block.

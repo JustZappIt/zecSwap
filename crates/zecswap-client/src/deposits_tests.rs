@@ -79,6 +79,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,

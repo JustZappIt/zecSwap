@@ -78,6 +78,98 @@ async fn a_send_pays_the_gas_price_quotes_charge() {
     assert_eq!(receipt.effective_gas_price, price);
 }
 
+/// A claim or refund carries its share, and one the base fee outruns is mined after its lock
+/// with the share public; a cancel's lock must land before the user may claim. Each may pay its
+/// account's reveal headroom over the fee cap the account's other sends, a claim lock among them,
+/// keep to.
+#[tokio::test]
+async fn a_reveal_may_pay_its_headroom_over_the_usual_fee_cap() {
+    use alloy::consensus::Transaction as _;
+    use alloy::primitives::B256;
+    use alloy::providers::{Provider, ProviderBuilder};
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("ZecSwap.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let maker_key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let user_key = PrivateKeySigner::from(anvil.keys()[1].clone());
+    let (maker_account, user_account) = (maker_key.address(), user_key.address());
+    let token = deploy(
+        &url,
+        maker_key.clone(),
+        creation_code(&artifacts, "TestToken"),
+    )
+    .await
+    .unwrap();
+    let mut code = creation_code(&artifacts, "ZecSwap");
+    code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&[0; 32]);
+    let contract = deploy(&url, maker_key.clone(), code).await.unwrap();
+
+    let headroom = 5_000_000_000;
+    let mut maker = Settlement::connect(&url, contract, maker_key).unwrap();
+    maker.set_reveal_headroom(headroom);
+    let mut user = Settlement::connect(&url, contract, user_key).unwrap();
+    user.set_reveal_headroom(headroom);
+    maker
+        .mint_test_token(token, maker_account, 2)
+        .await
+        .unwrap();
+    maker.add_inventory(token, 2).await.unwrap();
+    let open = async |index: u32| {
+        let user_share = derive_user_keys(&[7; 64], NetworkType::Test, 0, index)
+            .unwrap()
+            .share;
+        let maker_share = derive_maker_share(&[9; 32], index.into()).unwrap();
+        let now = maker.now().await.unwrap();
+        let terms = Terms {
+            maker: maker_account.into(),
+            token: token.into(),
+            amount: 1,
+            maker_share: maker_share.public(),
+            user_share: user_share.public(),
+            user: user_account.into(),
+            t0: now + 3_600,
+            t1: now + 7_200,
+            payout_note: [0; 32],
+        };
+        maker.open(&terms).await.unwrap();
+        let id = swap_id(maker_account, &user_share.public());
+        (id, terms, maker_share, user_share)
+    };
+    // Each block mines its one transaction, so the cap read just before a send is the one it gets.
+    let reader = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    let cap = async |sent: B256| {
+        let tx = reader.get_transaction_by_hash(sent).await.unwrap().unwrap();
+        tx.max_fee_per_gas()
+    };
+
+    let (id, terms, _, user_share) = open(0).await;
+    maker.ready(id, &terms).await.unwrap();
+    let usual = user.max_fee_per_gas().await.unwrap();
+    assert_eq!(cap(user.lock_claim(id, &terms).await.unwrap()).await, usual);
+    let usual = user.max_fee_per_gas().await.unwrap();
+    let claim = user.claim(id, &terms, &user_share).await.unwrap();
+    assert_eq!(cap(claim).await, usual + headroom);
+
+    let (id, terms, maker_share, _) = open(1).await;
+    let usual = maker.max_fee_per_gas().await.unwrap();
+    assert_eq!(
+        cap(maker.lock_refund(id, &terms).await.unwrap()).await,
+        usual + headroom
+    );
+    let usual = maker.max_fee_per_gas().await.unwrap();
+    let refund = maker.refund(id, &terms, &maker_share).await.unwrap();
+    assert_eq!(cap(refund).await, usual + headroom);
+}
+
 /// A swap paid into Railgun, settled by a relayer on the user's signatures: the Rust signer,
 /// swap id, note commitment and `Shield` decoding all agree with the contract.
 #[tokio::test]

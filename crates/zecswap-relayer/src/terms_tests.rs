@@ -77,6 +77,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,

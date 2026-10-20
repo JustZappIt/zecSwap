@@ -24,6 +24,8 @@ mod monitor_tests;
 mod pricing;
 #[cfg(test)]
 mod retries_tests;
+#[cfg(test)]
+mod reveals_tests;
 mod reverse;
 mod sends;
 #[cfg(test)]
@@ -87,10 +89,14 @@ pub struct Config {
     /// The margin of a fee priced by gas over what the gas costs, in basis points.
     #[serde(default)]
     pub fee_margin_bps: u32,
-    /// Seconds a claim lock must still have when the relayer reveals under it: less, and the
-    /// claim could land after the lock lapses, handing the maker the next turn knowing both
-    /// halves.
+    /// Seconds a claim lock must still have when the relayer reveals under it, on arrival and
+    /// again when the reveal's turn to broadcast comes: less, and the claim could land after the
+    /// lock lapses, handing the maker the next turn knowing both halves. A reverse refund's lock
+    /// keeps as much.
     pub claim_margin: u64,
+    /// Claims and reverse refunds sent through a private RPC; required on mainnet.
+    #[serde(default)]
+    pub reveals: Option<RevealsConfig>,
     /// How many of its largest transactions each lane's account keeps ETH for.
     #[serde(default = "default_top_up_transactions")]
     pub top_up_transactions: u64,
@@ -109,6 +115,19 @@ pub struct Config {
     /// Railgun balances, through the Deposits contract.
     #[serde(default)]
     pub deposits: Option<DepositsConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevealsConfig {
+    /// Flashbots Protect's RPC, to send claims and reverse refunds through instead of the public
+    /// mempool: each reveals a share in its calldata, and one that landed after its lock lapsed
+    /// would revert with the share public, the other side's turn next. Protect lands a
+    /// transaction only if it succeeds, and drops one it couldn't land within its URL's
+    /// `blockRange` blocks (25 if none), so they go one at a time. Its default endpoint, never
+    /// `/fast`, sharing the hash alone (`hint=hash`), and naming the builders to reach beside
+    /// its own (`builder`).
+    pub private_rpc: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -195,7 +214,24 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        let config: Self =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        config.check_reveals()?;
+        Ok(config)
+    }
+
+    /// Reveals go through a private RPC that keeps them to itself until they land, and on
+    /// mainnet through nothing else.
+    fn check_reveals(&self) -> anyhow::Result<()> {
+        match &self.reveals {
+            None => ensure!(
+                self.network != Network::Mainnet,
+                "on mainnet claims and refunds go through a revert-protecting private RPC: set [reveals] private_rpc"
+            ),
+            Some(reveals) => zecswap_chain::evm::check_keeps_secrets(&reveals.private_rpc)
+                .context("[reveals] private_rpc")?,
+        }
+        Ok(())
     }
 
     /// The funding sponsorship's policy, if enabled, for the relayer's own token and maker,
@@ -241,8 +277,8 @@ pub enum RelayerError {
     /// the relayer's own that do, when it knows them.
     #[error("these notes are already spent, or a transaction already sent spends them")]
     Spent(Vec<B256>),
-    /// A send was attempted and its outcome is unknown, or one is still to be mined: the same
-    /// request is to be posted again.
+    /// A send was attempted and its outcome is unknown, or one is still to be mined, or the
+    /// private RPC dropped it unmined: the same request is to be posted again.
     #[error("{0}")]
     Unsettled(&'static str),
     /// A send of these notes reverted lately: the same request is to be posted again in this
@@ -268,6 +304,10 @@ impl From<zecswap_chain::Error> for RelayerError {
         match e {
             // Sent, and it may still land: the same request, posted again, learns how it went.
             zecswap_chain::Error::Unconfirmed(_) => RelayerError::Unsettled(turns::UNMINED),
+            // It never landed and now can't: the same request, posted again, sends it anew.
+            zecswap_chain::Error::Dropped(_) => RelayerError::Unsettled(turns::DROPPED),
+            // Nothing was sent, the share still secret, and the lock only runs down.
+            e @ zecswap_chain::Error::Late(_) => RelayerError::Rejected(e.to_string()),
             e => RelayerError::Internal(e.into()),
         }
     }
@@ -331,6 +371,7 @@ impl Relayer {
         railgun: Option<Keys>,
     ) -> anyhow::Result<Self> {
         let account = key.address();
+        config.check_reveals()?;
         ensure!(
             config.top_up_transactions > 0,
             "top_up_transactions must be positive"
@@ -343,6 +384,11 @@ impl Relayer {
             );
         }
         info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
+        info!(
+            private = ?config.reveals.as_ref().map(|reveals| endpoint(&reveals.private_rpc)),
+            claim_margin = config.claim_margin,
+            "claims and refunds"
+        );
         let meter = RpcMeter::default();
         let lanes = Lanes::of(&config, &key, &meter).await?;
         let settlement =
