@@ -73,6 +73,8 @@ impl Domain {
         ])
     }
 
+    /// The lock contract's refund lock, deployed on mainnet before the windows contract: for
+    /// wallets finishing escrows still open there. The windows contract has no locks.
     pub fn lock_refund(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
         self.digest(&[
             &keccak(&[b"LockRefund(bytes32 id,uint64 deadline)"]),
@@ -90,8 +92,9 @@ impl Domain {
         ])
     }
 
-    /// One claim lock, sent by `deadline`, which must fall within the contract's lock duration
-    /// of the time it lands.
+    /// One claim lock on the lock contract, sent by `deadline`, which must fall within its lock
+    /// duration of the time it lands: for wallets finishing swaps still open there. The windows
+    /// contract has no locks.
     pub fn lock_claim(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
         self.digest(&[&keccak(&[LOCK_CLAIM_TYPE]), id, &uint(deadline.into())])
     }
@@ -249,8 +252,8 @@ fn typed(separator: &[u8; 32], fields: &[&[u8]]) -> [u8; 32] {
 }
 
 /// A swap's own Ethereum key. A swap that pays into Railgun names its address as `user`: the
-/// user has no account on the chain, so this key signs for the claim lock and the payout and
-/// relayers send them. It is never funded.
+/// user has no account on the chain, so this key signs for the payout, and for a reverse escrow
+/// its opening and ready, and relayers send them. It is never funded.
 pub struct AuthKey(SigningKey);
 
 impl AuthKey {

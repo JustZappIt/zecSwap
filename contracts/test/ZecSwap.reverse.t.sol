@@ -61,14 +61,35 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.stopPrank();
     }
 
-    function test_reverseReadySignatureCannotAuthorizeRefundLock() public {
+    /// The escrowing user's `Ready` signature authorises nothing else of its: not the payout of
+    /// its refund, which it signs for separately.
+    function test_reverseReadySignatureAuthorisesOnlyReady() public {
         bytes32 id = funded();
         uint64 deadline = uint64(block.timestamp + 60);
         bytes memory signature =
             sign(keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline)));
+        refundReverse(id);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockRefundWithSig(id, reverseTerms(), deadline, signature);
-        swaps.readyWithSig(id, reverseTerms(), deadline, signature);
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, signature);
+        vm.prank(relayer);
+        swaps.refundPayout(id, reverseTerms(), npk, ciphertext, FEE, refundPayoutSig(id));
+        assertTrue(swaps.getSwap(id).paidOut);
+    }
+
+    /// The escrow must leave its user `MIN_WINDOW` to sign ready before `t0`, as a forward open
+    /// leaves its maker to cancel.
+    function test_reverseOpenLeavesTheUserAWindowToReadyBeforeT0() public {
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        request.t0 = uint64(block.timestamp + WINDOW - 1);
+        usdc.mint(relayer, AMOUNT);
+        vm.startPrank(relayer);
+        usdc.approve(address(swaps), AMOUNT);
+        vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
+        swaps.openReverse(request, openSig(request));
+        request.t0 = uint64(block.timestamp + WINDOW);
+        swaps.openReverse(request, openSig(request));
+        vm.stopPrank();
     }
 
     function reverseOpen() internal view returns (ZecSwap.ReverseOpen memory) {
@@ -136,18 +157,9 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         );
     }
 
-    function lockReverse(bytes32 id) internal {
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        swaps.lockRefundWithSig(
-            id,
-            reverseTerms(),
-            deadline,
-            sign(keccak256(abi.encode(keccak256("LockRefund(bytes32 id,uint64 deadline)"), id, deadline)))
-        );
-    }
-
+    /// The user's refund, which anyone may send: an unready escrow's at any time, a ready one's
+    /// from `t1`.
     function refundReverse(bytes32 id) internal {
-        lockReverse(id);
         swaps.refund(id, reverseTerms(), z.k);
     }
 
@@ -172,10 +184,12 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.prank(maker);
         vm.expectRevert(ZecSwap.Unauthorized.selector);
         swaps.ready(id, reverseTerms());
-        readyReverse(id);
         vm.prank(maker);
-        swaps.lockClaim(id, reverseTerms());
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
+        readyReverse(id);
         usdc.setPaused(true);
+        vm.prank(maker);
         swaps.claim(id, reverseTerms(), e.k);
         assertEq(swaps.getSwap(id).secret, e.k);
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY + AMOUNT);
@@ -185,8 +199,8 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         bytes32 id = funded();
         vm.warp(t1 + 30 days);
         vm.prank(maker);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaim(id, reverseTerms());
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
         vm.expectRevert(ZecSwap.Expired.selector);
         readyReverse(id);
         refundReverse(id);
@@ -249,16 +263,26 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.expectRevert(ZecSwap.WrongStage.selector);
         readyReverse(id);
         vm.prank(maker);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaim(id, reverseTerms());
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
     }
 
+    /// A ready escrow is the maker's to claim until `t1` sharp, and the user's to refund from
+    /// then, for good.
     function test_reverseReadyProtectsMakerUntilRefundDeadline() public {
         bytes32 id = funded();
         readyReverse(id);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        lockReverse(id);
+        vm.warp(t1 - 1);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        refundReverse(id);
         vm.warp(t1);
+        vm.prank(maker);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
+        vm.warp(t1 + LATE + 30 days);
+        vm.prank(maker);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
         refundReverse(id);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Refunded));
     }

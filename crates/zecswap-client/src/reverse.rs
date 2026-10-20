@@ -13,7 +13,7 @@ use zecswap_railgun::Keys as RailgunKeys;
 use zeroize::Zeroizing;
 
 use crate::api::{MakerApi, RelayerApi};
-use crate::user::{CLAIM_MARGIN, RAILGUN_WALLET};
+use crate::user::RAILGUN_WALLET;
 
 const SIGNATURE_TTL: u64 = 120;
 const MAX_READY_WAIT: u64 = 24 * 60 * 60;
@@ -26,6 +26,14 @@ pub struct ReverseSwap {
     /// The ticket the maker answered the accept with, once accepted.
     #[serde(default)]
     pub ticket: Option<String>,
+    /// The latest deadline of a ready this user signed: until the chain is past it, or past `t0`,
+    /// that ready may still land, and would revert a refund sent meanwhile with the user's share
+    /// public, the maker's to claim with.
+    #[serde(default)]
+    pub ready_signed_until: Option<u64>,
+    /// A refund was asked for: no ready is ever signed after it.
+    #[serde(default)]
+    pub refunding: bool,
 }
 
 /// A user with a wallet seed, which its swaps' keys derive from, refunded into the Railgun wallet
@@ -87,6 +95,8 @@ impl ReverseUser {
             quote,
             index,
             ticket: None,
+            ready_signed_until: None,
+            refunding: false,
         };
         self.verify_quote(&swap).await?;
         Ok(swap)
@@ -172,22 +182,27 @@ impl ReverseUser {
         ))
     }
 
-    /// Second authorization: only after an independent sync of this swap's joint account.
+    /// Second authorization: only after an independent sync of this swap's joint account, and
+    /// never once a refund was asked for. The signature's deadline goes into `swap`, and `save`
+    /// persists it, before the signature is handed out: a ready that may still land holds any
+    /// refund back.
     pub async fn ready(
         &self,
-        swap: &ReverseSwap,
+        swap: &mut ReverseSwap,
         wallet: &mut Wallet,
         client: &mut Lightwalletd,
         account: AccountUuid,
+        save: impl FnOnce(&ReverseSwap) -> Result<()>,
     ) -> Result<()> {
+        ensure!(
+            !swap.refunding,
+            "a refund was asked for; the escrow is never readied after it"
+        );
         let chain = self.state(swap).await?;
         if matches!(chain.stage, Stage::Ready | Stage::Claimed) {
             return Ok(());
         }
-        ensure!(
-            chain.stage == Stage::Open && chain.refund_lock_until == 0,
-            "escrow cannot be readied"
-        );
+        ensure!(chain.stage == Stage::Open, "escrow cannot be readied");
         ensure!(
             wallet.tracks_joint(account, &self.joint(swap)?)?,
             "wrong deposit account"
@@ -207,6 +222,8 @@ impl ReverseUser {
             .keys(swap.index)?
             .auth
             .sign(&self.domain(swap).ready(&swap.swap_id, deadline));
+        swap.ready_signed_until = Some(swap.ready_signed_until.unwrap_or(0).max(deadline));
+        save(swap)?;
         self.relayer
             .ready_reverse(
                 &Authorization {
@@ -260,8 +277,15 @@ impl ReverseUser {
         )?)
     }
 
-    /// Retry after each chain update. The first call takes a lock; only a later observation reveals.
-    pub async fn refund(&self, swap: &ReverseSwap) -> Result<()> {
+    /// Refunds the escrow into the committed note: an unready one once no ready signature of
+    /// ours can land, a ready one from `t1`, judged on the escrow and the newest block read as of
+    /// one block. Asking for it goes into `swap`, which `save` persists, before the share goes
+    /// out: no ready is signed after it. Retry after each chain update.
+    pub async fn refund(
+        &self,
+        swap: &mut ReverseSwap,
+        save: impl FnOnce(&ReverseSwap) -> Result<()>,
+    ) -> Result<()> {
         let chain = self.state(swap).await?;
         ensure!(
             chain.stage != Stage::Claimed,
@@ -307,29 +331,27 @@ impl ReverseUser {
                 .await?;
             return Ok(());
         }
-        let now = self.settlement.now().await?;
-        if chain.refund_lock_until <= now {
-            let deadline = now + SIGNATURE_TTL;
-            self.relayer
-                .lock_reverse_refund(
-                    &Authorization {
-                        swap_id: swap.swap_id,
-                        terms: escrow,
-                        deadline,
-                        signature: keys
-                            .auth
-                            .sign(&self.domain(swap).lock_refund(&swap.swap_id, deadline))
-                            .into(),
-                    },
-                    swap.ticket.as_deref(),
-                )
-                .await?;
-            return Ok(());
+        let (chain, head) = self
+            .settlement
+            .read(swap.swap_id, &self.terms(swap)?)
+            .await?;
+        let chain = chain.context("reverse escrow is not on-chain")?;
+        match chain.stage {
+            Stage::Ready => ensure!(
+                head.timestamp >= chain.t1,
+                "a ready escrow is its maker's to claim until t1; refund it from t1"
+            ),
+            _ => {
+                if let Some(until) = swap.ready_signed_until {
+                    ensure!(
+                        head.timestamp > until || head.timestamp >= chain.t0,
+                        "a ready signed until {until} may still land; refund once the chain is past it"
+                    );
+                }
+            }
         }
-        ensure!(
-            chain.refund_lock_until > now.saturating_add(CLAIM_MARGIN),
-            "refund lock expires too soon to reveal safely"
-        );
+        swap.refunding = true;
+        save(swap)?;
         self.relayer
             .refund_reverse(
                 &Refund {
@@ -367,9 +389,18 @@ impl ReverseUser {
             swap.swap_id == reverse_swap_id(quote.user, &quote.terms.maker_share),
             "wrong reverse swap id"
         );
+        // Escrows on the lock contract deployed before follow its rules, not ours; and one funded
+        // at its deadline must still leave the contract's minimum window before t0.
+        let windows = self
+            .settlement
+            .windows()
+            .await
+            .context("the quote's contract is not the windows contract")?;
         ensure!(
             quote.funding_deadline < quote.ready_deadline
                 && quote.ready_deadline < quote.refund_after
+                && quote.ready_deadline - quote.funding_deadline >= windows.min
+                && quote.refund_after - quote.ready_deadline >= windows.min
                 && quote.refund_after - quote.funding_deadline <= MAX_READY_WAIT,
             "invalid reverse deadlines"
         );

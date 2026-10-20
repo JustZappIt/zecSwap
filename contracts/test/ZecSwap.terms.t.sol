@@ -141,18 +141,14 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
     }
 
     function actions() internal pure returns (Action[] memory list) {
-        list = new Action[](11);
+        list = new Action[](7);
         list[0] = Action("ready", readyCall);
         list[1] = Action("readyWithSig", readyWithSigCall);
-        list[2] = Action("lockClaim", lockClaimCall);
-        list[3] = Action("lockClaimWithSig", lockClaimWithSigCall);
-        list[4] = Action("claim", claimCall);
-        list[5] = Action("payout", payoutCall);
-        list[6] = Action("rescue", rescueCall);
-        list[7] = Action("lockRefund", lockRefundCall);
-        list[8] = Action("lockRefundWithSig", lockRefundWithSigCall);
-        list[9] = Action("refund", refundCall);
-        list[10] = Action("refundPayout", refundPayoutCall);
+        list[2] = Action("claim", claimCall);
+        list[3] = Action("payout", payoutCall);
+        list[4] = Action("rescue", rescueCall);
+        list[5] = Action("refund", refundCall);
+        list[6] = Action("refundPayout", refundPayoutCall);
     }
 
     function readyCall(bytes32 id, ZecSwap.Terms memory t) internal pure returns (address, bytes memory) {
@@ -170,24 +166,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         return (relayer, abi.encodeCall(ZecSwap.readyWithSig, (id, t, deadline, sig)));
     }
 
-    function lockClaimCall(bytes32 id, ZecSwap.Terms memory t)
-        internal
-        pure
-        returns (address, bytes memory)
-    {
-        return (t.user, abi.encodeCall(ZecSwap.lockClaim, (id, t)));
-    }
-
-    function lockClaimWithSigCall(bytes32 id, ZecSwap.Terms memory t)
-        internal
-        view
-        returns (address, bytes memory)
-    {
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        return
-            (relayer, abi.encodeCall(ZecSwap.lockClaimWithSig, (id, t, deadline, lockClaimSig(id, deadline))));
-    }
-
     function claimCall(bytes32 id, ZecSwap.Terms memory t) internal view returns (address, bytes memory) {
         return (relayer, abi.encodeCall(ZecSwap.claim, (id, t, sharesOf[id].user)));
     }
@@ -201,25 +179,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         uint64 deadline = uint64(block.timestamp + 5 minutes);
         bytes memory sig = rescueSig(id, npk, ciphertext, relayer, FEE);
         return (relayer, abi.encodeCall(ZecSwap.rescue, (id, t, npk, ciphertext, FEE, 0, deadline, sig)));
-    }
-
-    function lockRefundCall(bytes32 id, ZecSwap.Terms memory t)
-        internal
-        pure
-        returns (address, bytes memory)
-    {
-        return (t.maker, abi.encodeCall(ZecSwap.lockRefund, (id, t)));
-    }
-
-    function lockRefundWithSigCall(bytes32 id, ZecSwap.Terms memory t)
-        internal
-        view
-        returns (address, bytes memory)
-    {
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        bytes memory sig =
-            sign(keccak256(abi.encode(keccak256("LockRefund(bytes32 id,uint64 deadline)"), id, deadline)));
-        return (relayer, abi.encodeCall(ZecSwap.lockRefundWithSig, (id, t, deadline, sig)));
     }
 
     function refundCall(bytes32 id, ZecSwap.Terms memory t) internal view returns (address, bytes memory) {
@@ -238,28 +197,22 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
 
     /// Railgun swaps at each stage a call can find one in, and a reverse swap refunded into Railgun.
     function swapsAtEveryStage() internal returns (Subject[] memory list) {
-        string[7] memory stages =
-            ["open", "ready", "claim locked", "claimed", "paid out", "refund locked", "refunded"];
+        string[5] memory stages = ["open", "ready", "claimed", "paid out", "refunded"];
         list = new Subject[](stages.length + 1);
         for (uint256 k; k < stages.length; ++k) {
             (bytes32 id, ZecSwap.Terms memory t) = openForward(k + 1);
             list[k] = Subject(stages[k], id, t);
-            if (k >= 5) {
-                vm.prank(maker);
-                swaps.lockRefund(id, t);
-                if (k == 6) swaps.refund(id, t, sharesOf[id].maker);
+            if (k == 4) {
+                // A cancel: the maker's refund of an unready swap before t0.
+                swaps.refund(id, t, sharesOf[id].maker);
                 continue;
             }
             if (k >= 1) {
                 vm.prank(maker);
                 swaps.ready(id, t);
             }
-            if (k >= 2) {
-                uint64 deadline = uint64(block.timestamp + 5 minutes);
-                swaps.lockClaimWithSig(id, t, deadline, lockClaimSig(id, deadline));
-            }
-            if (k >= 3) swaps.claim(id, t, sharesOf[id].user);
-            if (k >= 4) {
+            if (k >= 2) swaps.claim(id, t, sharesOf[id].user);
+            if (k >= 3) {
                 bytes memory sig = payoutSig(id, relayer, FEE);
                 vm.prank(relayer);
                 swaps.payout(id, t, npk, ciphertext, FEE, sig);

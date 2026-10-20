@@ -29,25 +29,33 @@ refresh_seconds = 60
 max_age_seconds = 300
 providers = ["coinmarketcap", "alchemy"]
 
-# Measured on a mainnet fork on 2026-10-12: open 108k and ready 44k; claim lock 48k and claim 237k.
+# Measured on a mainnet fork on 2026-10-12: open 108k and ready 44k; claim 237k, and the claim
+# lock of the lock contract 48k.
 [pricing.costs]
 forward_gas = 220000
 reverse_gas = 350000
 zcash_fee_zat = 15000
 margin_bps = 2000
 
-# For a contract with a 1,800 s lock; generous for deposits counted at 2 confirmations. From t0
-# the user may claim, so a swap not paid in full is cancelled half an hour before it: a user can
-# keep a deposit pending to hold the cancel back until then, and a cancel's lock gets that long
-# to land.
+# For the windows contract with a one-hour MIN_WINDOW and a 24-hour LATE_WINDOW: t0 an hour and a
+# half after the open, so the open has half an hour to land, and t1 an hour after t0. From t0 the
+# user may claim an unready swap, so one not paid in full is cancelled an hour before it, which a
+# user can hold back by keeping a deposit pending; no reveal is sent with under ten minutes left
+# in its window. Generous for deposits counted at 2 confirmations.
 [timing]
 quote_ttl = 120
-t0_after = 3600
-t1_after = 7200
+t0_after = 5400
+t1_after = 9000
 cancel_after = 900
-t0_margin = 1800
+t0_margin = 3600
 reveal_margin = 600
 tick = 15
+
+# Cancels, refunds and reverse claims through Flashbots Protect, which mines one only if it
+# succeeds: the maker's other contract calls go with them, one at a time. Without it they go to
+# the public mempool, priced again every three blocks until they mine. The owner's call.
+# [reveals]
+# private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
 
 # USDC to ZEC, paid from the inventory `zecswap-maker zec-inventory` shows.
 [reverse]

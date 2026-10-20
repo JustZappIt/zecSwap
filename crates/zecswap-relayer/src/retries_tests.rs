@@ -38,7 +38,8 @@ pub(crate) struct Deployment {
     pub(crate) wallet: zecswap_railgun::Keys,
 }
 
-/// A swap open and ready, paying into the user's Railgun wallet.
+/// A swap open and ready, its ready deep enough to claim on, paying into the user's Railgun
+/// wallet.
 pub(crate) struct Swap {
     pub(crate) id: B256,
     pub(crate) terms: zecswap_core::Terms,
@@ -75,6 +76,7 @@ pub(crate) async fn deployment() -> Option<Deployment> {
         .unwrap();
     let mut code = creation("ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deploy(&url, maker_key.clone(), code).await.unwrap();
     let maker = Settlement::connect(&url, contract, maker_key).unwrap();
@@ -154,7 +156,10 @@ impl Deployment {
             config,
             account: key.address(),
             domain: self.domain,
-            lock_duration: 600,
+            windows: zecswap_chain::evm::Windows {
+                min: 600,
+                late: 1_200,
+            },
             turns: Default::default(),
             steps: Default::default(),
             monitor: crate::monitor::Monitor::new(MonitorToken::default()),
@@ -196,21 +201,8 @@ impl Deployment {
         self.maker.open(&terms).await.unwrap();
         let id = swap_id(self.maker_account, &keys.share.public());
         self.maker.ready(id, &terms).await.unwrap();
+        self.mine_blocks(crate::READY_DEPTH).await;
         Swap { id, terms, keys }
-    }
-
-    pub(crate) async fn lock(&self, swap: &Swap) -> LockClaim {
-        let deadline = self.maker.now().await.unwrap() + 60;
-        LockClaim {
-            swap_id: swap.id,
-            terms: (&swap.terms).into(),
-            deadline,
-            signature: swap
-                .keys
-                .auth
-                .sign(&self.domain.lock_claim(&swap.id, deadline))
-                .into(),
-        }
     }
 
     fn payout(&self, swap: &Swap) -> Payout {
@@ -306,8 +298,6 @@ async fn a_claim_or_payout_posted_again_while_the_first_is_on_its_way_sends_noth
     let (claims, own) = (relayer.lane_accounts()["claims"], relayer.account);
     let app = api::router(Arc::clone(&relayer));
     let swap = chain.open(0).await;
-    let (status, body) = post(app.clone(), "/v1/lock-claim", chain.lock(&swap).await).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
     let ((claims_before, _), (own_before, _)) = (chain.sent(claims).await, chain.sent(own).await);
 
     chain.mine_every(0).await;
@@ -362,7 +352,6 @@ async fn a_relayer_restarted_while_a_payout_is_on_its_way_sends_no_other() {
     before.top_up().await.unwrap();
     let own = before.account;
     let swap = chain.open(0).await;
-    before.lock_claim(chain.lock(&swap).await).await.unwrap();
     chain
         .maker
         .claim(swap.id, &swap.terms, &swap.keys.share)

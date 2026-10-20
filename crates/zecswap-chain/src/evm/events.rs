@@ -9,11 +9,9 @@ use crate::Error;
 pub enum SwapEventKind {
     Opened,
     Ready,
-    ClaimLocked,
     Claimed,
     PaidOut,
     Rescued,
-    RefundLocked,
     Refunded,
 }
 
@@ -22,11 +20,9 @@ impl SwapEventKind {
         match self {
             Self::Opened => "opened",
             Self::Ready => "ready",
-            Self::ClaimLocked => "claim_locked",
             Self::Claimed => "claimed",
             Self::PaidOut => "paid_out",
             Self::Rescued => "rescued",
-            Self::RefundLocked => "refund_locked",
             Self::Refunded => "refunded",
         }
     }
@@ -46,11 +42,9 @@ fn signatures() -> Vec<B256> {
     vec![
         IZecSwap::Opened::SIGNATURE_HASH,
         IZecSwap::MarkedReady::SIGNATURE_HASH,
-        IZecSwap::ClaimLocked::SIGNATURE_HASH,
         IZecSwap::Claimed::SIGNATURE_HASH,
         IZecSwap::PaidOut::SIGNATURE_HASH,
         IZecSwap::Rescued::SIGNATURE_HASH,
-        IZecSwap::RefundLocked::SIGNATURE_HASH,
         IZecSwap::Refunded::SIGNATURE_HASH,
     ]
 }
@@ -76,9 +70,8 @@ fn decode(log: &Log) -> Option<SwapEvent> {
         };
     }
     event! {
-        Opened => Opened, MarkedReady => Ready, ClaimLocked => ClaimLocked,
-        Claimed => Claimed, PaidOut => PaidOut, Rescued => Rescued,
-        RefundLocked => RefundLocked, Refunded => Refunded,
+        Opened => Opened, MarkedReady => Ready, Claimed => Claimed,
+        PaidOut => PaidOut, Rescued => Rescued, Refunded => Refunded,
     }
     None
 }
@@ -189,7 +182,7 @@ mod tests {
         let mut log = log();
         log.inner.data.data = Default::default();
         assert!(decode(&log).is_none());
-        assert_eq!(signatures().len(), 8);
+        assert_eq!(signatures().len(), 6);
     }
 
     #[test]
@@ -218,10 +211,6 @@ mod tests {
                 SwapEventKind::Ready,
             ),
             (
-                IZecSwap::ClaimLocked { id, until: 100 }.encode_log_data(),
-                SwapEventKind::ClaimLocked,
-            ),
-            (
                 IZecSwap::Claimed {
                     id,
                     userSecret: U256::from(99),
@@ -246,10 +235,6 @@ mod tests {
                 }
                 .encode_log_data(),
                 SwapEventKind::Rescued,
-            ),
-            (
-                IZecSwap::RefundLocked { id, until: 100 }.encode_log_data(),
-                SwapEventKind::RefundLocked,
             ),
             (
                 IZecSwap::Refunded {

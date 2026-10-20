@@ -135,7 +135,12 @@ impl Maker {
         }
         let head = self.settlement.head().await?;
         let ids: Vec<_> = live.iter().map(|(id, _)| *id).collect();
-        let states = self.settlement.swap_states(&ids, BlockId::latest()).await?;
+        // As of the head itself: a decision never takes one block's time with another's state,
+        // as reads that a load-balanced RPC answers from nodes a block apart would.
+        let states = self
+            .settlement
+            .swap_states(&ids, BlockId::hash(head.hash))
+            .await?;
         reads.latest = ids.iter().copied().zip(states).collect();
         reads.head = Some(head);
         let wanted: Vec<_> = ids

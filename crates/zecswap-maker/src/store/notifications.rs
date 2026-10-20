@@ -110,6 +110,7 @@ mod tests {
             sweep: None,
             settled: false,
             refund_started: false,
+            ready_sent: false,
             token_request: None,
             token_return: None,
         };

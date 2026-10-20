@@ -59,7 +59,10 @@ async fn rejected_request_keeps_swap_context_without_logging_secret_payload() {
             &PrivateKeySigner::random(),
         )
         .unwrap(),
-        lock_duration: 600,
+        windows: zecswap_chain::evm::Windows {
+            min: 600,
+            late: 1_200,
+        },
         turns: Default::default(),
         steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),

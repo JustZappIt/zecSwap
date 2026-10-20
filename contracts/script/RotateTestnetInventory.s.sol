@@ -16,7 +16,16 @@ contract RotateTestnetInventory is Script {
         ZecSwap next = ZecSwap(vm.envAddress("NEW_CONTRACT"));
         address token = vm.envAddress("PAYOUT_TOKEN");
         require(address(previous) != address(next), "same deployment");
-        require(next.LOCK_DURATION() == previous.LOCK_DURATION(), "lock duration differs");
+        require(
+            next.MIN_WINDOW() != 0 && next.LATE_WINDOW() != 0, "the new deployment is not a windows contract"
+        );
+        // The previous deployment may be the lock contract, which has no windows to compare.
+        (bool windows, bytes memory minWindow) =
+            address(previous).staticcall(abi.encodeWithSignature("MIN_WINDOW()"));
+        if (windows) {
+            require(abi.decode(minWindow, (uint256)) == next.MIN_WINDOW(), "minimum window differs");
+            require(previous.LATE_WINDOW() == next.LATE_WINDOW(), "late window differs");
+        }
         require(address(next.RAILGUN()) == address(previous.RAILGUN()), "Railgun differs");
         require(next.rescueNonces(bytes32(0)) == 0, "unexpected rescue state");
         uint256 available = previous.balanceOf(maker, token);

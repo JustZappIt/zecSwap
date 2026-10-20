@@ -1,12 +1,18 @@
 //! What the maker does next for a swap, decided from what it can observe right now.
 //!
-//! Decisions use confirmed observations and persisted cancellation intent so a restart
-//! or reorg cannot turn a cancellation back into readiness.
+//! Decisions use confirmed observations and persisted intent, so a restart or reorg can turn
+//! neither a cancellation back into readiness nor a ready into a cancellation. Every reveal is
+//! judged by its window: sent only once the newest block is in it, and with `reveal_margin` to
+//! spare before it ends by the later of the chain's clock and the wall clock.
 
 use anyhow::{Result, ensure};
 use serde::Deserialize;
-use zecswap_chain::evm::{OnChainSwap, Stage};
+use zecswap_chain::evm::{OnChainSwap, Reveal, Stage, Windows};
 use zecswap_chain::zcash::Funds;
+
+/// What an open must leave for its own inclusion beyond the contract's minimum window before
+/// `t0`: one mined later reverts, and the swap never opens.
+pub const OPEN_INCLUSION: u64 = 10 * 60;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,22 +21,24 @@ pub struct Timing {
     pub quote_ttl: u64,
     /// `t0 = open + t0_after`: from then the user may claim without `ready`.
     pub t0_after: u64,
-    /// `t1 = open + t1_after`: from then a `Ready` swap may be refunded.
+    /// `t1 = open + t1_after`: from then the maker refunds a swap its user hasn't claimed.
     pub t1_after: u64,
     /// Cancel an open swap that has received nothing for this long.
     pub cancel_after: u64,
-    /// Cancel an unconfirmed deposit this long before `t0`, rather than let a claim land
-    /// against ZEC that may never confirm.
+    /// Cancel a deposit still unconfirmed this long before `t0`: from `t0` the user may claim,
+    /// paid in or not.
     pub t0_margin: u64,
-    /// Never reveal under a lock with less than this left to run.
+    /// Never send a reveal with less than this left before its window ends: it could land after,
+    /// reverted, the maker's share public.
     pub reveal_margin: u64,
     /// Seconds between watchtower passes.
     pub tick: u64,
 }
 
 impl Timing {
-    /// Rejects settings under which the watchtower could not act in time.
-    pub fn check(&self, lock_duration: u64) -> Result<()> {
+    /// Rejects settings under which the watchtower could not act in time on a contract with
+    /// `windows`.
+    pub fn check(&self, windows: Windows) -> Result<()> {
         ensure!(
             self.t0_after < self.t1_after,
             "t1_after must exceed t0_after"
@@ -40,8 +48,24 @@ impl Timing {
             "tick must be positive and shorter than t0_margin"
         );
         ensure!(
-            self.reveal_margin + self.tick < lock_duration,
-            "the contract's {lock_duration}s lock leaves no tick to reveal in"
+            self.t0_after >= windows.min + OPEN_INCLUSION,
+            "t0_after must leave the contract's {}s minimum window, and {OPEN_INCLUSION}s for the open to land, before t0",
+            windows.min
+        );
+        ensure!(
+            self.t1_after - self.t0_after >= windows.min,
+            "t1 must follow t0 by the contract's {}s minimum window",
+            windows.min
+        );
+        // Decided at t0 - t0_margin, a cancel must still leave its margin a pass later.
+        ensure!(
+            self.reveal_margin + self.tick < self.t0_margin,
+            "t0_margin must exceed reveal_margin by a tick, or an unconfirmed deposit is never cancelled"
+        );
+        ensure!(
+            self.reveal_margin + self.tick < windows.late,
+            "the contract's {}s late window leaves no pass to refund in",
+            windows.late
         );
         Ok(())
     }
@@ -51,14 +75,17 @@ impl Timing {
 pub enum Action {
     Wait,
     MarkReady,
-    LockRefund,
+    /// Reveals the maker's share: a cancel before `t0`, a refund from `t1`.
     Refund,
     Sweep,
     Settle,
 }
 
 pub struct Observation {
+    /// The newest block's time, which `chain` is read as of: windows open by it.
     pub now: u64,
+    /// The wall clock: windows end by the later of it and `now`.
+    pub wall: u64,
     pub opened_at: u64,
     pub expected_zat: u64,
     pub chain: OnChainSwap,
@@ -67,64 +94,71 @@ pub struct Observation {
     pub synced: bool,
     /// Whether the terminal EVM stage is also present at the required confirmation depth.
     pub chain_confirmed: bool,
-    /// Local cancellation intent survives a reorg of the refund lock or reveal.
+    /// A cancel of ours was started, which `ready` must never follow.
     pub cancelling: bool,
+    /// A ready of ours was sent: mined first on our account, it would revert any cancel sent
+    /// after it, the maker's share public.
+    pub readied: bool,
     /// `None` until a sweep is recorded, then whether it has enough confirmations.
     pub sweep_confirmed: Option<bool>,
-    /// The contract's lock duration, which is also the length of each side's turn.
-    pub lock_duration: u64,
+    pub windows: Windows,
 }
 
 pub fn decide(obs: &Observation, timing: &Timing) -> Action {
     let chain = &obs.chain;
-    let now = obs.now;
     match chain.stage {
-        Stage::Claimed if obs.synced && obs.funds.spendable > 0 => Action::Sweep,
+        Stage::Claimed if obs.synced && obs.funds.spendable > 0 => return Action::Sweep,
         Stage::Claimed
             if obs.chain_confirmed && obs.synced && obs.sweep_confirmed == Some(true) =>
         {
-            Action::Settle
+            return Action::Settle;
         }
-        Stage::Claimed => Action::Wait,
-        Stage::Refunded if obs.chain_confirmed => Action::Settle,
-        Stage::Refunded => Action::Wait,
-        _ if now < chain.refund_lock_until => {
-            if now + timing.reveal_margin < chain.refund_lock_until {
-                Action::Refund
-            } else {
-                Action::Wait
-            }
-        }
-        _ if now < chain.claim_lock_until => Action::Wait,
-        // Our refund lock lapsed unused, so the next turn is the user's.
-        _ if chain.refund_lock_until > chain.claim_lock_until
-            && now < chain.refund_lock_until + obs.lock_duration =>
-        {
+        Stage::Refunded if obs.chain_confirmed => return Action::Settle,
+        Stage::Claimed | Stage::Refunded => return Action::Wait,
+        Stage::Open | Stage::Ready => {}
+    }
+    let (now, latest) = (obs.now, obs.now.max(obs.wall));
+    let deadlines = (chain.t0, chain.t1);
+    let refund = obs
+        .windows
+        .window(Reveal::Refund, false, chain.stage, deadlines, now);
+    let refund = |wanted: bool| {
+        if wanted && refund.leaves(latest, timing.reveal_margin) {
+            Action::Refund
+        } else {
             Action::Wait
         }
-        // A cancellation we started can't be undone by `ready`; finish it.
-        Stage::Open if obs.cancelling || chain.refund_lock_until != 0 => Action::LockRefund,
-        Stage::Open => open_action(obs, timing),
-        Stage::Ready if now >= chain.t1 => Action::LockRefund,
-        Stage::Ready => Action::Wait,
+    };
+    // From t1 the maker refunds, for the late window; then its user may claim again.
+    if now >= chain.t1 {
+        return refund(true);
     }
-}
-
-fn open_action(obs: &Observation, timing: &Timing) -> Action {
+    // Until t1 a ready swap is its user's to claim, and from t0 an unready one too.
+    if chain.stage == Stage::Ready || now >= chain.t0 {
+        return Action::Wait;
+    }
+    // A cancellation we started can't be undone by `ready`; finish it.
+    if obs.cancelling {
+        return refund(true);
+    }
+    if obs.readied {
+        return Action::Wait;
+    }
     let funds = obs.funds;
     if obs.synced && funds.spendable >= obs.expected_zat {
-        return Action::MarkReady;
+        // A ready mined from t0 reverts, and from t0 the user claims anyway.
+        return if latest + timing.reveal_margin < chain.t0 {
+            Action::MarkReady
+        } else {
+            Action::Wait
+        };
     }
     // A stale wallet can miss a deposit, so only a fresh one may conclude none came.
     let nothing_arrived =
-        obs.synced && funds.total == 0 && obs.now >= obs.opened_at + timing.cancel_after;
+        obs.synced && funds.total == 0 && now >= obs.opened_at + timing.cancel_after;
     let underpaid = obs.synced && funds.total > 0 && funds.spendable == funds.total;
-    let out_of_time = obs.now + timing.t0_margin >= obs.chain.t0;
-    if nothing_arrived || underpaid || out_of_time {
-        Action::LockRefund
-    } else {
-        Action::Wait
-    }
+    let out_of_time = latest + timing.t0_margin >= chain.t0;
+    refund(nothing_arrived || underpaid || out_of_time)
 }
 
 #[cfg(test)]
@@ -136,17 +170,21 @@ mod tests {
     use super::*;
 
     const OPENED: u64 = 1_000_000;
-    const T0: u64 = OPENED + 2_700;
+    const T0: u64 = OPENED + 5_400;
+    const T1: u64 = OPENED + 9_000;
     const DEPOSIT: u64 = 5_000_000;
-    const LOCK: u64 = 7_200;
+    const WINDOWS: Windows = Windows {
+        min: 3_600,
+        late: 86_400,
+    };
 
     fn timing() -> Timing {
         Timing {
             quote_ttl: 120,
-            t0_after: 2_700,
-            t1_after: 6_300,
+            t0_after: 5_400,
+            t1_after: 9_000,
             cancel_after: 900,
-            t0_margin: 300,
+            t0_margin: 3_600,
             reveal_margin: 600,
             tick: 15,
         }
@@ -155,6 +193,7 @@ mod tests {
     fn observe(stage: Stage, now: u64, (total, spendable): (u64, u64)) -> Observation {
         Observation {
             now,
+            wall: now,
             opened_at: OPENED,
             expected_zat: DEPOSIT,
             chain: OnChainSwap {
@@ -164,9 +203,7 @@ mod tests {
                 token: Address::ZERO,
                 amount: 1,
                 t0: T0,
-                t1: OPENED + 6_300,
-                claim_lock_until: 0,
-                refund_lock_until: 0,
+                t1: T1,
                 maker_share: SecretShare::random(UnwrapErr(SysRng)).public(),
                 user_share: SecretShare::random(UnwrapErr(SysRng)).public(),
                 secret: [0; 32],
@@ -177,76 +214,114 @@ mod tests {
             synced: true,
             chain_confirmed: true,
             cancelling: false,
+            readied: false,
             sweep_confirmed: None,
-            lock_duration: LOCK,
+            windows: WINDOWS,
         }
     }
 
-    fn with_refund_lock(mut obs: Observation, until: u64) -> Observation {
-        obs.chain.refund_lock_until = until;
-        obs
+    fn decide_at(stage: Stage, now: u64, funds: (u64, u64)) -> Action {
+        decide(&observe(stage, now, funds), &timing())
     }
 
     #[test]
-    fn a_deposit_still_confirming_is_waited_for_until_t0_gets_close() {
-        for funds in [(DEPOSIT, 0), (DEPOSIT, DEPOSIT - 1)] {
-            let decide_at = |now| decide(&observe(Stage::Open, now, funds), &timing());
-            assert_eq!(decide_at(T0 - 301), Action::Wait);
-            assert_eq!(decide_at(T0 - 300), Action::LockRefund);
-        }
-    }
-
-    #[test]
-    fn the_share_is_revealed_only_under_our_lock_with_time_to_spare() {
-        let now = OPENED + 7_000;
-        let decide_at = |until| {
-            let obs = with_refund_lock(observe(Stage::Ready, now, (DEPOSIT, DEPOSIT)), until);
-            decide(&obs, &timing())
+    fn the_staged_timings_fit_the_windows_and_the_old_ones_do_not() {
+        timing().check(WINDOWS).unwrap();
+        let lock_era = Timing {
+            t0_after: 3_600,
+            t1_after: 7_200,
+            t0_margin: 1_800,
+            ..timing()
         };
-        assert_eq!(decide_at(now + 601), Action::Refund);
-        assert_eq!(decide_at(now + 600), Action::Wait);
-        assert_eq!(decide_at(now - 1), Action::Wait);
+        assert!(lock_era.check(WINDOWS).is_err(), "an open could never land");
+        // A cancel decided at t0 - t0_margin under a margin as long would never go out.
+        let even = Timing {
+            t0_margin: 600,
+            ..timing()
+        };
+        assert!(even.check(WINDOWS).is_err());
     }
 
     #[test]
-    fn a_lapsed_lock_of_ours_gives_the_user_a_turn_before_we_lock_again() {
-        let lapsed = OPENED + 7_000;
-        for stage in [Stage::Open, Stage::Ready] {
-            let decide_at = |now| {
-                let obs = with_refund_lock(observe(stage, now, (DEPOSIT, DEPOSIT)), lapsed);
-                decide(&obs, &timing())
-            };
-            assert_eq!(decide_at(lapsed + LOCK - 1), Action::Wait);
-            assert_eq!(decide_at(lapsed + LOCK), Action::LockRefund);
+    fn nothing_arrived_is_cancelled_after_cancel_after_and_never_within_its_margin_of_t0() {
+        assert_eq!(decide_at(Stage::Open, OPENED + 899, (0, 0)), Action::Wait);
+        assert_eq!(decide_at(Stage::Open, OPENED + 900, (0, 0)), Action::Refund);
+        assert_eq!(decide_at(Stage::Open, T0 - 601, (0, 0)), Action::Refund);
+        assert_eq!(decide_at(Stage::Open, T0 - 600, (0, 0)), Action::Wait);
+        assert_eq!(decide_at(Stage::Open, T0, (0, 0)), Action::Wait);
+    }
+
+    #[test]
+    fn a_deposit_still_confirming_is_waited_for_until_t0_margin() {
+        for funds in [(DEPOSIT, 0), (DEPOSIT, DEPOSIT - 1)] {
+            assert_eq!(decide_at(Stage::Open, T0 - 3_601, funds), Action::Wait);
+            assert_eq!(decide_at(Stage::Open, T0 - 3_600, funds), Action::Refund);
         }
     }
 
     #[test]
-    fn a_stale_wallet_never_cancels_for_a_missing_deposit_but_still_reveals() {
-        let now = OPENED + 1_000;
-        let mut stale = observe(Stage::Open, now, (0, 0));
-        stale.synced = false;
-        assert_eq!(decide(&stale, &timing()), Action::Wait);
-        let held = with_refund_lock(stale, now + LOCK);
-        assert_eq!(decide(&held, &timing()), Action::Refund);
+    fn a_wall_clock_ahead_of_the_chain_ends_the_cancel_early_and_never_opens_a_refund() {
+        let mut obs = observe(Stage::Open, T0 - 1_000, (0, 0));
+        obs.wall = T0 - 500;
+        assert_eq!(decide(&obs, &timing()), Action::Wait);
+        // From t1 by the wall alone the refund's window is not yet open: a claim may still land.
+        let mut obs = observe(Stage::Ready, T1 - 30, (DEPOSIT, DEPOSIT));
+        obs.wall = T1 + 30;
+        assert_eq!(decide(&obs, &timing()), Action::Wait);
+    }
+
+    #[test]
+    fn a_confirmed_deposit_is_readied_while_a_ready_can_land_before_t0() {
+        let paid = (DEPOSIT, DEPOSIT);
+        assert_eq!(decide_at(Stage::Open, T0 - 601, paid), Action::MarkReady);
+        assert_eq!(decide_at(Stage::Open, T0 - 600, paid), Action::Wait);
+        // Late and unready, it is the user's to claim from t0; the maker waits for t1.
+        assert_eq!(decide_at(Stage::Open, T0, paid), Action::Wait);
+    }
+
+    #[test]
+    fn a_ready_sent_is_never_followed_by_a_cancel() {
+        let mut obs = observe(Stage::Open, T0 - 3_000, (0, 0));
+        obs.readied = true;
+        obs.synced = false;
+        assert_eq!(decide(&obs, &timing()), Action::Wait);
+    }
+
+    #[test]
+    fn a_cancel_started_is_finished_and_never_readied() {
+        let mut obs = observe(Stage::Open, OPENED + 10, (DEPOSIT, DEPOSIT));
+        obs.cancelling = true;
+        assert_eq!(decide(&obs, &timing()), Action::Refund);
+        obs.now = T0 - 600;
+        obs.wall = obs.now;
+        assert_eq!(decide(&obs, &timing()), Action::Wait);
     }
 
     #[test]
     fn stalled_zcash_still_cancels_before_t0_even_with_a_stale_balance() {
         for funds in [(0, 0), (DEPOSIT, DEPOSIT)] {
-            let mut obs = observe(Stage::Open, T0 - 300, funds);
+            let mut obs = observe(Stage::Open, T0 - 3_600, funds);
             obs.synced = false;
-            assert_eq!(decide(&obs, &timing()), Action::LockRefund);
-            obs.chain.refund_lock_until = obs.now + LOCK;
             assert_eq!(decide(&obs, &timing()), Action::Refund);
+            obs.now = T0 - 3_601;
+            obs.wall = obs.now;
+            assert_eq!(
+                decide(&obs, &timing()),
+                Action::Wait,
+                "a stale wallet waits"
+            );
         }
     }
 
     #[test]
-    fn a_reorg_cannot_undo_local_cancellation_intent() {
-        let mut obs = observe(Stage::Open, OPENED + 10, (DEPOSIT, DEPOSIT));
-        obs.cancelling = true;
-        assert_eq!(decide(&obs, &timing()), Action::LockRefund);
+    fn from_t1_the_maker_refunds_for_the_late_window_then_leaves_the_swap_to_its_user() {
+        for stage in [Stage::Open, Stage::Ready] {
+            assert_eq!(decide_at(stage, T1 - 1, (0, 0)), Action::Wait);
+            assert_eq!(decide_at(stage, T1, (0, 0)), Action::Refund);
+            assert_eq!(decide_at(stage, T1 + 86_400 - 601, (0, 0)), Action::Refund);
+            assert_eq!(decide_at(stage, T1 + 86_400 - 600, (0, 0)), Action::Wait);
+            assert_eq!(decide_at(stage, T1 + 86_400, (0, 0)), Action::Wait);
+        }
     }
 
     #[test]

@@ -127,8 +127,13 @@ async fn main() -> Result<()> {
     let until = tokio::time::Instant::now() + Duration::from_secs(3600);
     while tokio::time::Instant::now() < until {
         let chain = user.state(&state.swap).await?;
+        let receive_tx = state.receive_tx;
+        let persist = |swap: &ReverseSwap| {
+            let swap = swap.clone();
+            save(&state_path, &State { swap, receive_tx })
+        };
         if operation == "refund" {
-            user.refund(&state.swap).await?;
+            user.refund(&mut state.swap, persist).await?;
             if chain.stage == Stage::Refunded && chain.paid_out {
                 println!("refunded {}", state.swap.swap_id);
                 return Ok(());
@@ -139,7 +144,7 @@ async fn main() -> Result<()> {
             println!("stage {:?}, spendable {} zat", chain.stage, funds.spendable);
             match chain.stage {
                 Stage::Open if funds.spendable >= state.swap.quote.terms.deposit_zat => {
-                    user.ready(&state.swap, &mut wallet, &mut client, account)
+                    user.ready(&mut state.swap, &mut wallet, &mut client, account, persist)
                         .await?;
                 }
                 Stage::Claimed => {

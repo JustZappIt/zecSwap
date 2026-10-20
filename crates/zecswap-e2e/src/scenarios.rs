@@ -24,7 +24,7 @@ const ACCOUNT: [&str; 6] = [
     "underpaid",
     "silent-maker",
     "never-claimed",
-    "abandoned-claim",
+    "late-claim",
 ];
 /// Paid into Railgun, where the deployment has it, private sends from it, and deposits into it.
 const RAILGUN: [&str; 5] = [
@@ -102,24 +102,21 @@ pub(crate) async fn run(env: Arc<Env>, name: &'static str) -> Result<()> {
         "underpaid" => underpaid(&player).await,
         "silent-maker" => silent_maker(&player).await,
         "never-claimed" => never_claimed(&player).await,
-        "abandoned-claim" => abandoned_claim(&player).await,
+        "late-claim" => late_claim(&player).await,
         "railgun-happy" => railgun_happy(&player).await,
         "railgun-resume" => railgun_resume(&player).await,
         other => bail!("unknown scenario {other}"),
     }
 }
 
-/// Deposit, `ready`, claim; the maker sweeps the ZEC. The claim resumes under a lock taken
-/// beforehand, as after an interruption, and claiming again once done changes nothing. Paid
-/// into, the swap hands its accept's token back, and the device, whose issuer gives it one
+/// Deposit, `ready`, claim; the maker sweeps the ZEC. Claiming again once done changes nothing.
+/// Paid into, the swap hands its accept's token back, and the device, whose issuer gives it one
 /// accept a day, pays for a second swap with it: one it walks away from.
 async fn happy(p: &Player) -> Result<()> {
     let swap = p.open().await?;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
     p.wait_for(&swap, Stage::Ready).await?;
     p.collect_token(&swap).await?;
-    p.user.lock_claim(&swap).await?;
-    p.claim_lock_until(&swap).await?;
     p.claim(&swap).await?;
     let (user, swap) = (&p.user, &swap);
     p.poll("a repeated claim to withdraw nothing", move || async move {
@@ -179,19 +176,22 @@ async fn never_claimed(p: &Player) -> Result<()> {
     p.sweep_back(&swap, account).await
 }
 
-/// The user takes the claim lock and walks away; once it lapses and `t1` passes, the
-/// maker refunds.
-async fn abandoned_claim(p: &Player) -> Result<()> {
+/// The user comes back only at `t1`, when the claim's window has closed: its claim is refused
+/// before anything goes out, so its share stays secret, and the maker's refund gives its deposit
+/// back.
+async fn late_claim(p: &Player) -> Result<()> {
     let swap = p.open().await?;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
     p.wait_for(&swap, Stage::Ready).await?;
-    p.user.lock_claim(&swap).await?;
-    let lock_until = p.claim_lock_until(&swap).await?;
-    p.log(format!("abandoned the claim lock, held until {lock_until}"));
+    p.wait_for_chain_time(swap.t1).await?;
+    let refused = p.user.claim(&swap).await;
+    ensure!(refused.is_err(), "a claim from t1 went through");
+    p.log(format!("claim refused: {:#}", refused.unwrap_err()));
     let refunded = p.wait_for(&swap, Stage::Refunded).await?;
+    let share = derive_user_keys(&p.env.seed, p.env.network.network_type(), 0, swap.index)?.share;
     ensure!(
-        refunded.refund_lock_until > lock_until,
-        "the refund lock overlapped the claim lock"
+        refunded.secret != share.to_be_bytes(),
+        "the user's share reached the chain"
     );
     p.sweep_back(&swap, account).await
 }
@@ -215,8 +215,6 @@ async fn railgun_resume(p: &Player) -> Result<()> {
     let swap = p.open().await?;
     let account = p.deposit(&swap, swap.quote.deposit_zat).await?;
     p.wait_for(&swap, Stage::Ready).await?;
-    p.user.lock_claim(&swap).await?;
-    p.claim_lock_until(&swap).await?;
     p.reveal_only(&swap).await?;
     p.claim(&swap).await?;
     p.expect_swept_by_maker(&swap).await?;
@@ -399,7 +397,7 @@ impl Player {
     }
 
     /// Sends the claim alone, as a relayer that reveals and is then cut off would have. Anyone
-    /// may send it while the lock is held.
+    /// may send it in the claim's window.
     async fn reveal_only(&self, swap: &UserSwap) -> Result<()> {
         let network = self.env.network.network_type();
         let z = derive_user_keys(&self.env.seed, network, 0, swap.index)?.share;
@@ -426,20 +424,6 @@ impl Player {
             .await?;
         self.log(format!("the swap is {stage:?}"));
         Ok(chain)
-    }
-
-    /// The claim lock's expiry, once our RPC node has seen the lock.
-    async fn claim_lock_until(&self, swap: &UserSwap) -> Result<u64> {
-        let user = &self.user;
-        self.poll("the claim lock", move || async move {
-            let until = user.state(swap).await?.claim_lock_until;
-            Ok(if until > 0 {
-                Step::Done(until)
-            } else {
-                Step::Wait
-            })
-        })
-        .await
     }
 
     async fn wait_for_chain_time(&self, time: u64) -> Result<()> {

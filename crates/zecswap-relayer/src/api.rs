@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tracing::error;
 use zecswap_api::relayer::{
-    Claim, Conflict, LockClaim, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
+    Claim, Conflict, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
 };
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
@@ -33,7 +33,6 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
     Router::new()
         .route("/v1/terms", get(terms))
         .merge(monitor)
-        .route("/v1/lock-claim", post(lock_claim))
         .route("/v1/claim", post(claim))
         .route("/v1/payout", post(payout))
         .route("/v1/rescue", post(rescue))
@@ -42,7 +41,6 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
             post(fund_reverse).layer(DefaultBodyLimit::max(132 * 1024)),
         )
         .route("/v1/reverse/ready", post(ready_reverse))
-        .route("/v1/reverse/lock-refund", post(lock_reverse_refund))
         .route("/v1/reverse/refund", post(refund_reverse))
         .route("/v1/reverse/refund-payout", post(reverse_refund_payout))
         .route("/v1/reverse/rescue", post(rescue_reverse))
@@ -112,18 +110,6 @@ fn unavailable(message: impl Into<String>, seconds: u64) -> Response {
     response
 }
 
-async fn lock_claim(
-    State(relayer): State<Arc<Relayer>>,
-    Json(request): Json<LockClaim>,
-) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer
-        .in_turn("lock_claim", request.swap_id, |relayer| async move {
-            relayer.lock_claim(request).await
-        })
-        .await;
-    Ok(Json(sent?))
-}
-
 async fn claim(
     State(relayer): State<Arc<Relayer>>,
     Json(request): Json<Claim>,
@@ -180,20 +166,6 @@ async fn fund_reverse(
         .in_turn("fund_reverse", request.swap_id, |relayer| async move {
             relayer.fund_reverse(request).await
         })
-        .await;
-    Ok(Json(sent?))
-}
-
-async fn lock_reverse_refund(
-    State(relayer): State<Arc<Relayer>>,
-    Json(request): Json<zecswap_api::reverse::Authorization>,
-) -> Result<Json<Sent>, RelayerError> {
-    let sent = relayer
-        .in_turn(
-            "lock_reverse_refund",
-            request.swap_id,
-            |relayer| async move { relayer.lock_reverse_refund(request).await },
-        )
         .await;
     Ok(Json(sent?))
 }

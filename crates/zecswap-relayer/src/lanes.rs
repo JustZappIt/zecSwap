@@ -23,8 +23,9 @@ pub(crate) const PAYOUT_GAS: u64 = 1_500_000;
 /// besides, as the fee cap their float is kept at follows the base fee.
 const TOP_UP_INTERVAL: Duration = Duration::from_secs(120);
 
-/// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings; deposits,
-/// whose fees in the relayer's token collect in their account.
+/// Claims and refunds; readies, from the account named for the locks it took on the lock
+/// contract; Railgun sends; fundings; deposits, whose fees in the relayer's token collect in their
+/// account.
 pub(crate) struct Lanes {
     pub(crate) claims: Settlement,
     pub(crate) locks: Settlement,
@@ -43,7 +44,7 @@ impl Lanes {
     }
 
     /// The lanes as `config` has them, counting their requests on `meter`: claims and refunds
-    /// with their network's reveal headroom, broadcast only with `claim_margin` of their lock
+    /// with their network's reveal headroom, broadcast only with `claim_margin` of their window
     /// left, and they and deposits through their private RPCs, where it names them on the chain
     /// they read.
     pub(crate) async fn of(

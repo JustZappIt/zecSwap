@@ -43,7 +43,10 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
         },
         settlement: Settlement::connect(url, CONTRACT, key.clone()).unwrap(),
         lanes: Lanes::connect(url, CONTRACT, key).unwrap(),
-        lock_duration: 600,
+        windows: zecswap_chain::evm::Windows {
+            min: 600,
+            late: 1_200,
+        },
         turns: Default::default(),
         steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),

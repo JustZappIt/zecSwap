@@ -10,7 +10,8 @@ import {TestToken} from "./utils/TestToken.sol";
 
 /// Swaps that pay into Railgun: the user is a per-swap key that only signs, relayers send.
 contract ZecSwapRailgunTest is SpendAuthVectors {
-    uint256 internal constant LOCK = 2 hours;
+    uint256 internal constant WINDOW = 1 hours;
+    uint256 internal constant LATE = 24 hours;
     uint128 internal constant AMOUNT = 500e6;
     uint128 internal constant FEE = 3e6;
     uint256 internal constant INVENTORY = 10_000e6;
@@ -33,10 +34,10 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
     /// Read once: `vm.prank` would apply to a `noteCommitment` call made among a call's arguments.
     bytes32 internal committedNote;
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         railgun = new MockRailgun();
-        swaps = new ZecSwap(LOCK, railgun);
+        swaps = new ZecSwap(WINDOW, LATE, railgun);
         usdc = new TestToken();
         usdc.mint(maker, INVENTORY);
         vm.startPrank(maker);
@@ -47,86 +48,57 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         (auth, authKey) = makeAddrAndKey("auth");
         e = randomVector(0);
         z = randomVector(1);
-        t0 = uint64(block.timestamp + 45 minutes);
-        t1 = uint64(block.timestamp + 105 minutes);
+        t0 = uint64(block.timestamp + 90 minutes);
+        t1 = uint64(block.timestamp + 150 minutes);
         ciphertext = cipher("ciphertext");
         committedNote = swaps.noteCommitment(npk, ciphertext);
     }
 
-    // the claim lock, by signature
+    // the claim, sent by a relayer
 
-    function test_lockClaimWithSig_isTheSignersAndAnyoneSendsIt() public {
-        bytes32 id = openReady();
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
+    function test_claim_isSentByAnyoneOnceReady() public {
+        bytes32 id = open();
         vm.prank(relayer);
-        swaps.lockClaimWithSig(id, terms(), deadline, lockClaimSig(id, deadline));
-        assertEq(swaps.getSwap(id).claimLockUntil, block.timestamp + LOCK);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
 
+        vm.prank(maker);
+        swaps.ready(id, terms());
         vm.prank(relayer);
         swaps.claim(id, terms(), z.k);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Claimed));
+        assertEq(swaps.balanceOf(auth, address(usdc)), 0, "held for the payout, not credited");
     }
 
-    function test_lockClaimWithSig_takesOneLockPerSignature() public {
-        bytes32 id = openReady();
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        bytes memory sig = lockClaimSig(id, deadline);
-        swaps.lockClaimWithSig(id, terms(), deadline, sig);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, sig);
-
-        vm.warp(block.timestamp + 2 * LOCK);
-        vm.expectRevert(ZecSwap.Expired.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, sig);
-    }
-
-    function test_lockClaimWithSig_rejectsExpiredAndDistantDeadlines() public {
-        bytes32 id = openReady();
-        uint64 past = uint64(block.timestamp - 1);
-        vm.expectRevert(ZecSwap.Expired.selector);
-        swaps.lockClaimWithSig(id, terms(), past, lockClaimSig(id, past));
-
-        uint64 distant = uint64(block.timestamp + LOCK);
-        vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        swaps.lockClaimWithSig(id, terms(), distant, lockClaimSig(id, distant));
-    }
-
-    function test_lockClaimWithSig_keepsTheLockRules() public {
-        bytes32 id = open();
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, lockClaimSig(id, deadline));
-
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-        vm.warp(t0);
-        deadline = uint64(block.timestamp + 5 minutes);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, lockClaimSig(id, deadline));
-    }
+    // the payout, on the user's signature
 
     function test_signatures_authoriseOnlyTheirSwapActionChainAndContract() public {
-        bytes32 id = openReady();
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes32 id = claimed();
+        bytes memory sig = payoutSig(id, relayer, FEE);
 
         bytes32 other = openWith(randomVector(2), randomVector(3));
         ZecSwap.Terms memory otherTerms = termsWith(randomVector(2), randomVector(3));
+        vm.prank(maker);
+        swaps.ready(other, otherTerms);
+        swaps.claim(other, otherTerms, randomVector(3).k);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(other, otherTerms, deadline, lockClaimSig(id, deadline));
+        swaps.payout(other, otherTerms, npk, ciphertext, FEE, sig);
 
-        // A payout signature over the same words is not a lock signature.
-        bytes memory payoutAsLock = sign(keccak256(abi.encode(PAYOUT_TYPEHASH, id, deadline)));
+        // A rescue signature over the same words is not a payout signature.
+        bytes memory rescueAsPayout = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, relayer, FEE)));
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, payoutAsLock);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, rescueAsPayout);
 
-        bytes memory sig = lockClaimSig(id, deadline);
         uint256 chain = block.chainid;
         vm.chainId(chain + 1);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, sig);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, sig);
         vm.chainId(chain);
 
-        ZecSwap twin = new ZecSwap(LOCK, railgun);
+        ZecSwap twin = new ZecSwap(WINDOW, LATE, railgun);
         vm.startPrank(maker);
         usdc.approve(address(twin), AMOUNT);
         usdc.mint(maker, AMOUNT);
@@ -134,31 +106,39 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         bytes32 twinId = twin.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
         twin.ready(twinId, terms());
         vm.stopPrank();
+        twin.claim(twinId, terms(), z.k);
         assertEq(twinId, id);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        twin.lockClaimWithSig(id, terms(), deadline, sig);
+        twin.payout(id, terms(), npk, ciphertext, FEE, sig);
 
-        swaps.lockClaimWithSig(id, terms(), deadline, sig);
+        vm.prank(relayer);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, sig);
+        assertTrue(swaps.getSwap(id).paidOut);
     }
 
     function test_signatures_mustBeTheUsersAndUnmalleated() public {
-        bytes32 id = openReady();
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        bytes32 digest = digestOf(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
+        bytes32 id = claimed();
+        bytes32 digest = digestOf(keccak256(abi.encode(PAYOUT_TYPEHASH, id, relayer, FEE)));
 
         (, uint256 strangerKey) = makeAddrAndKey("stranger");
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerKey, digest);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, abi.encodePacked(r, s, v));
+        swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s, v));
 
         (v, r, s) = vm.sign(authKey, digest);
         bytes memory malleated = abi.encodePacked(r, bytes32(SECP256K1_N - uint256(s)), v == 27 ? 28 : 27);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, malleated);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, malleated);
+        vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
-        swaps.lockClaimWithSig(id, terms(), deadline, abi.encodePacked(r, s));
+        swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s));
 
-        swaps.lockClaimWithSig(id, terms(), deadline, abi.encodePacked(r, s, v));
+        vm.prank(relayer);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s, v));
+        assertTrue(swaps.getSwap(id).paidOut);
     }
 
     // payout
@@ -223,7 +203,7 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.payout(id, terms(), npk, ciphertext, FEE, sig);
         vm.stopPrank();
 
-        lockAndClaim(id);
+        claimAs(id);
         vm.startPrank(relayer);
         swaps.payout(id, terms(), npk, ciphertext, FEE, sig);
         vm.expectRevert(ZecSwap.WrongStage.selector);
@@ -234,7 +214,7 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         bytes32 id = openReady();
         railgun.setPaused(true);
         usdc.setPaused(true);
-        lockAndClaim(id);
+        claimAs(id);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Claimed));
 
         bytes memory sig = payoutSig(id, relayer, FEE);
@@ -259,16 +239,16 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         paysAccount.payoutNote = 0;
         vm.prank(maker);
         swaps.ready(id, paysAccount);
-        lockAndClaim(id, paysAccount);
+        claimAs(id, paysAccount);
         assertEq(swaps.balanceOf(auth, address(usdc)), AMOUNT);
         vm.expectRevert(ZecSwap.WrongStage.selector);
         swaps.payout(id, paysAccount, npk, ciphertext, FEE, payoutSig(id, address(this), FEE));
     }
 
+    /// A cancel before `t0`.
     function test_refund_ofARailgunSwapReturnsTheMakersInventory() public {
         bytes32 id = open();
         vm.startPrank(maker);
-        swaps.lockRefund(id, terms());
         swaps.refund(id, terms(), e.k);
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
         vm.expectRevert(ZecSwap.WrongStage.selector);
@@ -440,7 +420,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
 
     // helpers
 
-    bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
         keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
@@ -492,21 +471,19 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.ready(id, terms());
     }
 
-    function lockAndClaim(bytes32 id) internal {
-        lockAndClaim(id, terms());
+    /// The relayer sends the claim, in the user's window.
+    function claimAs(bytes32 id) internal {
+        claimAs(id, terms());
     }
 
-    function lockAndClaim(bytes32 id, ZecSwap.Terms memory swapTerms) internal {
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        vm.startPrank(relayer);
-        swaps.lockClaimWithSig(id, swapTerms, deadline, lockClaimSig(id, deadline));
+    function claimAs(bytes32 id, ZecSwap.Terms memory swapTerms) internal {
+        vm.prank(relayer);
         swaps.claim(id, swapTerms, z.k);
-        vm.stopPrank();
     }
 
     function claimed() internal returns (bytes32 id) {
         id = openReady();
-        lockAndClaim(id);
+        claimAs(id);
     }
 
     function paidOut() internal returns (bytes32 id) {
@@ -524,10 +501,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
             c.encryptedBundle[i] = keccak256(abi.encode(seed, i));
         }
         c.shieldKey = keccak256(abi.encode(seed, "shield key"));
-    }
-
-    function lockClaimSig(bytes32 id, uint64 deadline) internal view returns (bytes memory) {
-        return sign(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
     }
 
     function payoutSig(bytes32 id, address by, uint128 fee) internal view returns (bytes memory) {

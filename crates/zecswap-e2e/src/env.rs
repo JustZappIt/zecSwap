@@ -15,14 +15,17 @@ use zcash_address::ZcashAddress;
 use zcash_keys::keys::UnifiedSpendingKey;
 use zecswap_chain::evm::{Address, B256, PrivateKeySigner, Settlement, U256, deploy};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Network, Prover, Wallet, connect};
-use zecswap_maker::policy::Timing;
+use zecswap_maker::policy::{OPEN_INCLUSION, Timing};
 use zecswap_maker::pricing::Pricing;
 use zecswap_maker::{Config, Maker, Secrets};
 use zecswap_relayer::Relayer;
 use zeroize::Zeroizing;
 
-/// Short enough to exercise lock expiry in one run, long enough to land any reveal.
-const LOCK_DURATION: u64 = 10 * 60;
+/// The windows of the contract each run deploys: short, so a run sees every one end, and long
+/// enough to land any reveal in. An open must leave `MIN_WINDOW` before `t0`, and `t1` follow `t0`
+/// by as much; the maker's refund lasts `LATE_WINDOW` from `t1`.
+const MIN_WINDOW: u64 = 5 * 60;
+const LATE_WINDOW: u64 = 10 * 60;
 /// One unit of the test token costs about 202 000 zatoshis; the rest covers the fee.
 pub(crate) const NOTE_ZAT: u64 = 300_000;
 const INVENTORY: u128 = 1_000_000_000;
@@ -48,7 +51,7 @@ const DEPOSIT_GAS_LIMIT: u64 = 3_000_000;
 pub(crate) const SEND_MAX_GAS_PRICE: u64 = 200_000_000_000;
 /// Gas each account is funded for, at the chain's gas price and `GAS_MARGIN` times over. The
 /// deployer's covers both contracts, the silent maker's its inventory and moves, a payout
-/// account's a claim lock, claim and withdrawal, the relayer's a lock, claim and payout each.
+/// account's a claim and withdrawal, the relayer's a claim and payout each.
 const DEPLOY_GAS: u64 = 5_000_000;
 const MAKER_GAS: u64 = 1_500_000;
 const PAYOUT_GAS: u64 = 500_000;
@@ -161,12 +164,12 @@ impl Settings {
     fn pace(&self) -> Pace {
         let confirmations = self.confirmations.map_or(10, NonZeroU32::get);
         let confirm = u64::from(confirmations) * BLOCK_TIME;
-        let t0_after = 10 * 60 + 2 * confirm;
+        let t0_after = (10 * 60 + 2 * confirm).max(OPEN_INCLUSION + MIN_WINDOW);
         Pace {
             timing: Timing {
                 quote_ttl: 300,
                 t0_after,
-                t1_after: t0_after + 5 * 60,
+                t1_after: t0_after + MIN_WINDOW,
                 // One wallet pays every deposit, so the last leaves a minute after its open,
                 // and a testnet block can take minutes: room for both before calling a swap
                 // unpaid.
@@ -419,6 +422,7 @@ impl Env {
 
         let maker_config = |name: &str| Config {
             reverse: None,
+            reveals: None,
             gas_alerts: None,
             max_awaiting_deposit: None,
             tokens: Some(gate(
@@ -745,7 +749,8 @@ async fn deploy_contracts(
     )
     .await?;
     let mut code = creation_code(&settings.artifacts, "ZecSwap")?;
-    code.extend_from_slice(&U256::from(LOCK_DURATION).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(MIN_WINDOW).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(LATE_WINDOW).to_be_bytes::<32>());
     code.extend_from_slice(&settings.railgun.unwrap_or_default().into_word().0);
     let contract = deploy(&settings.evm_rpc, settings.funder.clone(), code).await?;
     let deposits = match settings.railgun {

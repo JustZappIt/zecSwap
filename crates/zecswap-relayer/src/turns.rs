@@ -145,6 +145,23 @@ impl Steps {
         self.sent.lock().unwrap().remove(&(swap_id, step));
     }
 
+    /// Whether the transaction `sender` sent for the swap's `step`, if any, may still land.
+    pub(crate) async fn may_land(
+        &self,
+        sender: &Settlement,
+        swap_id: B256,
+        step: Step,
+    ) -> Result<bool> {
+        let Some(sent) = self.get(swap_id, step).filter(|sent| !sent.landed) else {
+            return Ok(false);
+        };
+        Ok(match sender.transaction_status(sent.tx).await? {
+            Status::Mined { .. } => false,
+            Status::Pending => true,
+            Status::Unknown => sent.at.elapsed() < MISSING_FOR,
+        })
+    }
+
     /// Refuses for now while `sender` has transactions from before this start that may land.
     pub(crate) async fn after_earlier(&self, sender: &Settlement) -> Result<()> {
         let Some(account) = sender.account() else {
@@ -220,41 +237,45 @@ impl Relayer {
     /// it before landed. While one sent before may still land, nothing is sent. A send through a
     /// private RPC, which no node shows until it mines, ends only once it mined or can no longer
     /// land, waiting for it in its account's turn: none is left that may still land.
-    pub(crate) async fn send_once(
+    pub(crate) fn send_once(
         &self,
         swap_id: B256,
         step: Step,
         sender: &Settlement,
         send: impl Future<Output = std::result::Result<B256, zecswap_chain::Error>>,
-    ) -> Result<Option<B256>> {
-        if let Some(sent) = self.steps.get(swap_id, step) {
-            if sent.landed {
-                return Ok(None);
-            }
-            match sender.transaction_status(sent.tx).await? {
-                Status::Mined { succeeded: true } => {
-                    self.steps.record(swap_id, step, sent.tx, true);
+    ) -> impl Future<Output = Result<Option<B256>>> {
+        // Boxed at once: a send's future is large, and a request's would hold it twice over.
+        let send = Box::pin(send);
+        async move {
+            if let Some(sent) = self.steps.get(swap_id, step) {
+                if sent.landed {
                     return Ok(None);
                 }
-                Status::Mined { succeeded: false } => {}
-                Status::Unknown if sent.at.elapsed() >= MISSING_FOR => {}
-                Status::Pending | Status::Unknown => {
-                    return Err(RelayerError::Unsettled(UNMINED));
+                match sender.transaction_status(sent.tx).await? {
+                    Status::Mined { succeeded: true } => {
+                        self.steps.record(swap_id, step, sent.tx, true);
+                        return Ok(None);
+                    }
+                    Status::Mined { succeeded: false } => {}
+                    Status::Unknown if sent.at.elapsed() >= MISSING_FOR => {}
+                    Status::Pending | Status::Unknown => {
+                        return Err(RelayerError::Unsettled(UNMINED));
+                    }
                 }
+                self.steps.forget(swap_id, step);
             }
-            self.steps.forget(swap_id, step);
-        }
-        self.steps.after_earlier(sender).await?;
-        match send.await {
-            Ok(tx) => {
-                self.steps.record(swap_id, step, tx, true);
-                Ok(Some(tx))
+            self.steps.after_earlier(sender).await?;
+            match send.await {
+                Ok(tx) => {
+                    self.steps.record(swap_id, step, tx, true);
+                    Ok(Some(tx))
+                }
+                Err(zecswap_chain::Error::Unconfirmed(tx)) => {
+                    self.steps.record(swap_id, step, tx, false);
+                    Err(RelayerError::Unsettled(UNMINED))
+                }
+                Err(e) => Err(e.into()),
             }
-            Err(zecswap_chain::Error::Unconfirmed(tx)) => {
-                self.steps.record(swap_id, step, tx, false);
-                Err(RelayerError::Unsettled(UNMINED))
-            }
-            Err(e) => Err(e.into()),
         }
     }
 

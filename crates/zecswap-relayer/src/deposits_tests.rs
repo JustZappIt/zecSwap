@@ -92,6 +92,7 @@ async fn chain() -> Option<Chain> {
     let token = deployed(creation(&artifacts, "TestToken")).await.unwrap();
     let mut code = creation(&artifacts, "ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deployed(code).await.unwrap();
     let deposits = deployed(deposits_code(&artifacts, token, railgun))
@@ -209,7 +210,10 @@ impl Chain {
             },
             settlement,
             lanes,
-            lock_duration: 600,
+            windows: zecswap_chain::evm::Windows {
+                min: 600,
+                late: 1_200,
+            },
             turns: Default::default(),
             steps: Default::default(),
             monitor: crate::monitor::Monitor::new(MonitorToken::default()),

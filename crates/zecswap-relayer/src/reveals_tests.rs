@@ -51,11 +51,9 @@ async fn private_relayer(chain: &Deployment) -> (Protect, Protect, Arc<Relayer>)
     (node, protect, relayer)
 }
 
-/// A swap open, ready and claim-locked through `app`, with the window a start leaves passed.
-async fn locked(chain: &Deployment, app: &axum::Router) -> Swap {
+/// A swap open and ready, with the window a start leaves passed.
+async fn ready(chain: &Deployment) -> Swap {
     let swap = chain.open(0).await;
-    let (status, body) = post(app.clone(), "/v1/lock-claim", chain.lock(&swap).await).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
     chain.mine_blocks(WINDOW).await;
     swap
 }
@@ -109,13 +107,13 @@ async fn a_reveal_goes_through_the_private_rpc_alone() {
     };
     let (node, protect, relayer) = private_relayer(&chain).await;
     let app = api::router(relayer);
-    let swap = locked(&chain, &app).await;
+    let swap = ready(&chain).await;
 
     let (status, body) = post(app, "/v1/claim", chain.claim(&swap)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(claimed_and_paid_out(&chain, &swap).await);
     // Protect got its chain asked at the start, and the claim: every read, nonce and simulation
-    // went to the node.
+    // went to the node, none of them carrying the share, as a gas estimate of the claim would.
     let methods: Vec<String> = protect
         .calls(None)
         .into_iter()
@@ -126,14 +124,14 @@ async fn a_reveal_goes_through_the_private_rpc_alone() {
         hash(&broadcasts(&protect, 1).await[0]),
         transaction(&body, 0)
     );
-    // The node broadcast the lock and the payout, and nothing carrying the share.
+    // The node broadcast the payout, and saw the share nowhere.
     let public = node.calls(Some("eth_sendRawTransaction"));
     assert!(
         public
             .iter()
             .any(|sent| hash(sent) == transaction(&body, 1))
     );
-    assert!(!public.iter().any(|sent| carries(sent, &swap)));
+    assert!(!node.calls(None).iter().any(|call| carries(call, &swap)));
 }
 
 #[tokio::test]
@@ -143,7 +141,7 @@ async fn a_reveal_that_may_still_land_is_never_sent_again_until_its_window_passe
     };
     let (_node, protect, relayer) = private_relayer(&chain).await;
     let app = api::router(relayer);
-    let swap = locked(&chain, &app).await;
+    let swap = ready(&chain).await;
 
     protect.take(Taking::Holds);
     let first = tokio::spawn(post(app.clone(), "/v1/claim", chain.claim(&swap)));
@@ -186,7 +184,7 @@ async fn a_restarted_relayer_sends_no_reveal_until_one_sent_before_can_no_longer
         return;
     };
     let (node, protect, before) = private_relayer(&chain).await;
-    let swap = locked(&chain, &api::router(before.clone())).await;
+    let swap = ready(&chain).await;
     protect.take(Taking::Holds);
     let _first = tokio::spawn(post(api::router(before), "/v1/claim", chain.claim(&swap)));
     broadcasts(&protect, 1).await;
@@ -263,7 +261,7 @@ impl Escrow {
         }
     }
 
-    async fn lock_refund(&self, chain: &Deployment) -> Authorization {
+    async fn ready(&self, chain: &Deployment) -> Authorization {
         let deadline = chain.maker.now().await.unwrap() + 60;
         Authorization {
             swap_id: self.id,
@@ -272,7 +270,7 @@ impl Escrow {
             signature: self
                 .keys
                 .auth
-                .sign(&chain.domain.lock_refund(&self.id, deadline))
+                .sign(&chain.domain.ready(&self.id, deadline))
                 .into(),
         }
     }
@@ -296,9 +294,10 @@ impl Escrow {
 }
 
 /// Through the public mempool as on testnet: what makes them wait is a transfer of the claims
-/// account's, waiting to be mined.
+/// account's, waiting to be mined. Meanwhile the claim's window, which ends at `t1`, runs under
+/// the margin, while the reverse refund's window, open for good on an unready escrow, cannot.
 #[tokio::test]
-async fn a_reveal_whose_lock_ran_under_the_margin_while_it_waited_its_turn_is_refused_unsent() {
+async fn a_claim_whose_window_ran_under_the_margin_while_it_waited_its_turn_is_refused_unsent() {
     let Some(chain) = deployment().await else {
         return;
     };
@@ -307,11 +306,6 @@ async fn a_reveal_whose_lock_ran_under_the_margin_while_it_waited_its_turn_is_re
     let app = api::router(Arc::clone(&relayer));
     let escrow = Escrow::open(&chain, 1).await;
     let swap = chain.open(0).await;
-    let (status, body) = post(app.clone(), "/v1/lock-claim", chain.lock(&swap).await).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let lock_refund = escrow.lock_refund(&chain).await;
-    let (status, body) = post(app.clone(), "/v1/reverse/lock-refund", lock_refund).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
     let claims = relayer.lane_accounts()["claims"];
     let (sent, _) = chain.sent(claims).await;
 
@@ -340,22 +334,7 @@ async fn a_reveal_whose_lock_ran_under_the_margin_while_it_waited_its_turn_is_re
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(estimates(), estimated + 2);
-    // Meanwhile both locks run under the margin, though neither lapses.
-    let claim_lock = chain
-        .maker
-        .swap(swap.id, &swap.terms)
-        .await
-        .unwrap()
-        .unwrap();
-    let refund_lock = chain
-        .maker
-        .swap(escrow.id, &escrow.terms)
-        .await
-        .unwrap()
-        .unwrap();
-    let (claim_lock, refund_lock) = (claim_lock.claim_lock_until, refund_lock.refund_lock_until);
-    let now = claim_lock.max(refund_lock) - 25;
-    assert!(claim_lock.min(refund_lock) > now);
+    let now = swap.terms.t1 - 25;
     chain
         .chain
         .raw_request::<_, serde_json::Value>("evm_setNextBlockTimestamp".into(), (now,))
@@ -363,24 +342,73 @@ async fn a_reveal_whose_lock_ran_under_the_margin_while_it_waited_its_turn_is_re
         .unwrap();
     chain.mine().await;
     busy.await.unwrap().unwrap();
+    chain.mine_every(1).await;
 
-    for refused in [claim, refund] {
-        let (status, body) = refused.await.unwrap();
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["code"], "rejected");
-        let error = body["error"].as_str().unwrap();
-        assert!(error.contains("too little time left"), "{error}");
-    }
-    assert_eq!(chain.sent(claims).await.0, sent + 1, "a reveal went out");
-    let open = |stage| matches!(stage, Stage::Open | Stage::Ready);
+    let (status, body) = claim.await.unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "rejected");
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("ends too soon"), "{error}");
+    let (status, body) = refund.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(chain.sent(claims).await.0, sent + 2, "the claim went out");
     let forward = chain
         .maker
         .swap(swap.id, &swap.terms)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(forward.stage, Stage::Ready);
     let reverse = chain.maker.swap(escrow.id, &escrow.terms).await.unwrap();
-    assert!(open(forward.stage) && open(reverse.unwrap().stage));
+    assert_eq!(reverse.unwrap().stage, Stage::Refunded);
+}
+
+/// A reverse refund waits for a ready the relayer sent for the same escrow while that one may
+/// still land: mined first, it would revert the refund with the user's share public.
+#[tokio::test]
+async fn a_reverse_refund_waits_for_the_relayers_own_ready_to_land_or_fail() {
+    let Some(chain) = deployment().await else {
+        return;
+    };
+    let relayer = chain.relayer().await;
+    relayer.top_up().await.unwrap();
+    let app = api::router(Arc::clone(&relayer));
+    let escrow = Escrow::open(&chain, 1).await;
+    let readies = relayer.lane_accounts()["locks"];
+    let (sent, _) = chain.sent(readies).await;
+    let claims = relayer.lane_accounts()["claims"];
+    let (refunds, _) = chain.sent(claims).await;
+
+    chain.mine_every(0).await;
+    let ready = tokio::spawn(post(
+        app.clone(),
+        "/v1/reverse/ready",
+        escrow.ready(&chain).await,
+    ));
+    chain.sent_reaches(readies, sent + 1).await;
+    // The refund posted meanwhile takes its turn after the ready's request, which waits for its
+    // transaction to mine; the relayer that answered it may have restarted since.
+    let restarted = chain.relayer().await;
+    let (status, body) = post(
+        api::router(Arc::clone(&restarted)),
+        "/v1/reverse/refund",
+        escrow.refund(&chain),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(chain.sent(claims).await.0, refunds, "the refund went out");
+
+    chain.mine_every(1).await;
+    let (status, body) = ready.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Ready now, the escrow is the maker's to claim until t1: the refund is refused, unsent.
+    let (status, body) = post(app, "/v1/reverse/refund", escrow.refund(&chain)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("from t1"),
+        "{body}"
+    );
+    assert_eq!(chain.sent(claims).await.0, refunds);
 }
 
 #[test]

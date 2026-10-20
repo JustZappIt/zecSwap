@@ -22,8 +22,8 @@ pub enum Error {
     Unconfirmed(alloy::primitives::B256),
     #[error("the private RPC dropped transaction {0} unmined: it never landed")]
     Dropped(alloy::primitives::B256),
-    /// A reveal waited its turn to broadcast, and found its lock run down: nothing was sent.
-    #[error("the swap's {0} lock has too little time left to reveal under; nothing was sent")]
+    /// A reveal found its window shut, or ending too soon to land in: nothing was sent.
+    #[error("the swap's {0} window is shut, or ends too soon to send it in; nothing was sent")]
     Late(&'static str),
     #[error("swap {0} opened on other terms than these")]
     WrongTerms(alloy::primitives::B256),

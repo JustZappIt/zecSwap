@@ -40,40 +40,51 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
             .unwrap()
             .public()
     };
-    let lock = |maker: Address| LockClaim {
-        swap_id: B256::repeat_byte(8),
-        terms: zecswap_api::Terms {
-            maker,
-            token: Address::repeat_byte(3),
-            amount: 1,
-            maker_key: share(0),
-            user_key: share(1),
-            user: Address::repeat_byte(6),
-            t0: 1,
-            t1: 2,
-            payout_note: B256::repeat_byte(7),
-        },
-        deadline: 1,
-        signature: [9; 65].into(),
+    let terms = |maker| zecswap_api::Terms {
+        maker,
+        token: Address::repeat_byte(3),
+        amount: 1,
+        maker_key: share(0),
+        user_key: share(1),
+        user: Address::repeat_byte(6),
+        t0: 1,
+        t1: 2,
+        payout_note: B256::repeat_byte(7),
     };
-    let post = |claim: LockClaim| {
-        Request::post("/v1/lock-claim")
+    let claim = |maker: Address| Claim {
+        swap_id: B256::repeat_byte(8),
+        terms: terms(maker),
+        secret: B256::repeat_byte(2),
+        payout: Payout {
+            swap_id: B256::repeat_byte(8),
+            terms: terms(maker),
+            note: zecswap_api::relayer::Note {
+                npk: B256::repeat_byte(3),
+                encrypted_bundle: [B256::repeat_byte(4); 3],
+                shield_key: B256::repeat_byte(5),
+            },
+            fee: 1,
+            signature: [9; 65].into(),
+        },
+    };
+    let post = |claim: Claim| {
+        Request::post("/v1/claim")
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&claim).unwrap()))
             .unwrap()
     };
     // Another maker's swap is refused before anything is read; this maker's fails to reach
     // the chain.
-    let refused = send(&app, post(lock(Address::repeat_byte(0x66)))).await;
+    let refused = send(&app, post(claim(Address::repeat_byte(0x66)))).await;
     assert_eq!(refused.0, StatusCode::BAD_REQUEST);
-    let failed = send(&app, post(lock(Address::repeat_byte(4)))).await;
+    let failed = send(&app, post(claim(Address::repeat_byte(4)))).await;
     assert_eq!(failed.0, StatusCode::INTERNAL_SERVER_ERROR);
 
     let (status, shown) = send(&app, monitor(Some("monitor-test-token"))).await;
     assert_eq!(status, StatusCode::OK);
     let operations = shown["operations"].as_object().unwrap();
-    assert_eq!(operations.len(), 13);
-    let locked = &operations["lock_claim"];
+    assert_eq!(operations.len(), 11);
+    let locked = &operations["claim"];
     assert_eq!(
         (&locked["sent"], &locked["refused"], &locked["failed"]),
         (&0.into(), &1.into(), &1.into())
@@ -84,7 +95,7 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
     );
     assert!(locked["lastAt"].as_u64().is_some());
     assert!(operations["payout"]["lastAt"].is_null());
-    assert_eq!(shown["lastFailure"]["operation"], "lock_claim");
+    assert_eq!(shown["lastFailure"]["operation"], "claim");
     assert_eq!(shown["lastFailure"]["kind"], "internal");
     assert_eq!(
         shown["fees"],

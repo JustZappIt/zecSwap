@@ -36,7 +36,10 @@ fn maker() -> (TempDir, Arc<Maker>) {
         monitoring: monitoring::Monitoring::new(Default::default()),
         inventory: None,
         account: key.address(),
-        lock_duration: 7200,
+        windows: Windows {
+            min: 1_800,
+            late: 7_200,
+        },
         root: Zeroizing::new([7; 32]),
         ticket_key: Zeroizing::new(TICKET_KEY),
         chain_id: 1,
@@ -135,6 +138,7 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
         sweep: None,
         settled: false,
         refund_started: false,
+        ready_sent: false,
         token_request: None,
         token_return: None,
     };
@@ -173,8 +177,6 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
         amount: 1234567,
         t0: 3700,
         t1: 7300,
-        claim_lock_until: 0,
-        refund_lock_until: 0,
         maker_share: share.public(),
         user_share: swap.user_share,
         secret: [0; 32],
@@ -194,7 +196,7 @@ async fn bridge_alerts_are_short_public_and_isolate_both_networks() {
             zecswap_chain::evm::SwapEventKind::Opened,
             zecswap_chain::evm::SwapEventKind::Claimed,
             zecswap_chain::evm::SwapEventKind::PaidOut,
-            zecswap_chain::evm::SwapEventKind::ClaimLocked,
+            zecswap_chain::evm::SwapEventKind::Ready,
         ];
         let events: Vec<_> = (0..4u8)
             .map(|index| {
@@ -432,6 +434,7 @@ async fn monitoring_never_waits_on_the_chain() {
         sweep: None,
         settled: false,
         refund_started: false,
+        ready_sent: false,
         token_request: None,
         token_return: None,
     };
@@ -879,6 +882,7 @@ async fn accepts_stop_while_too_many_swaps_await_deposits() {
         sweep: None,
         settled: false,
         refund_started: false,
+        ready_sent: false,
         token_request: None,
         token_return: None,
     };
@@ -1075,7 +1079,8 @@ async fn on_anvil() -> Option<(alloy::node_bindings::AnvilInstance, TempDir, Mak
         .await
         .unwrap();
     let mut code = creation("ZecSwap");
-    code.extend_from_slice(&U256::from(maker.lock_duration).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(maker.windows.min).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(maker.windows.late).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deploy(&url, key.clone(), code).await.unwrap();
     maker.account = key.address();
@@ -1126,11 +1131,12 @@ async fn recorded_swap(maker: &Maker, id: u8, token_request: Option<Vec<u8>>) ->
         zcash_account: AccountUuid::from_uuid(uuid::Uuid::from_bytes([id; 16])),
         opened_at: now,
         token: maker.config.token,
-        t0: now + 3600,
-        t1: now + 7200,
+        t0: now + maker.config.timing.t0_after,
+        t1: now + maker.config.timing.t1_after,
         sweep: None,
         settled: false,
         refund_started: false,
+        ready_sent: false,
         token_request,
         token_return: None,
     };
@@ -1382,10 +1388,11 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         return;
     };
     let (url, now) = (anvil.endpoint(), swap.opened_at);
+    // Nothing came, and the wallet can't say so: its deposit is out of time all the same.
     anvil_rpc(
         &url,
         "evm_setNextBlockTimestamp",
-        serde_json::json!([now + 3300]),
+        serde_json::json!([now + 3000]),
     )
     .await;
     anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
@@ -1422,7 +1429,7 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
     drop(busy);
 
     // Reopen persisted state, as a restart on a config that now names another token would,
-    // then remove both the lock and the refund from the chain.
+    // then remove the refund from the chain.
     let store_path = _dir.path().join("maker.sqlite");
     maker.store = Store::open(&store_path).unwrap();
     maker.config.token = Address::repeat_byte(0x99);
@@ -1432,26 +1439,13 @@ async fn a_locked_wallet_cannot_block_refunds_and_reorgs_resume_after_restart() 
         anvil_rpc(&url, "evm_revert", serde_json::json!([before_cancel])).await,
         true
     );
+    // The cancel it started is sent again, whatever the wallet says.
     let busy = maker.zcash.lock().await;
     tokio::time::timeout(Duration::from_secs(10), maker.tick())
         .await
         .unwrap()
         .unwrap();
     assert!(!maker.status(swap.id).unwrap().unwrap().settled);
-    assert!(
-        maker
-            .settlement
-            .swap(swap.id, &terms)
-            .await
-            .unwrap()
-            .unwrap()
-            .refund_lock_until
-            > 0
-    );
-    tokio::time::timeout(Duration::from_secs(10), maker.tick())
-        .await
-        .unwrap()
-        .unwrap();
     assert_eq!(
         maker
             .settlement
@@ -1595,7 +1589,7 @@ async fn only_a_swap_paid_into_hands_its_token_back() {
     );
 
     let url = anvil.endpoint();
-    let at = serde_json::json!([left.opened_at + 3300]);
+    let at = serde_json::json!([left.opened_at + 1200]);
     anvil_rpc(&url, "evm_setNextBlockTimestamp", at).await;
     anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
     for _ in 0..2 {
@@ -1832,7 +1826,7 @@ async fn a_finalized_refund_is_never_read_again() {
     anvil_rpc(
         &url,
         "evm_setNextBlockTimestamp",
-        serde_json::json!([swap.opened_at + 3300]),
+        serde_json::json!([swap.opened_at + 3000]),
     )
     .await;
     anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
@@ -1883,4 +1877,186 @@ async fn an_observer_reads_each_block_once() {
     let before = usage(&maker);
     maker.transaction_pass().await.unwrap();
     assert_eq!(logs(&maker, before), 1, "the new blocks, once");
+}
+
+/// A ready recorded as sent, as when the maker stopped before its receipt came, survives a
+/// restart, and no cancel ever follows it, though the deposit is out of time and the wallet,
+/// rescanning, can't vouch for it: the ready, first on the account, would mine first and revert
+/// the cancel with the maker's share public.
+#[tokio::test]
+async fn a_ready_sent_before_a_restart_is_never_followed_by_a_cancel() {
+    let Some((anvil, dir, mut maker, swap, terms)) = opened_swap().await else {
+        return;
+    };
+    maker.store.mark_ready_sent(&swap.id).unwrap();
+    maker.store = Store::open(&dir.path().join("maker.sqlite")).unwrap();
+    assert!(maker.store.swap(&swap.id).unwrap().unwrap().ready_sent);
+    let url = anvil.endpoint();
+    let out_of_time = swap.t0 - maker.config.timing.t0_margin;
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([out_of_time]),
+    )
+    .await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    let sent = |maker: &Maker| {
+        maker
+            .settlement
+            .meter()
+            .usage()
+            .requests
+            .get("eth_sendRawTransaction")
+            .copied()
+    };
+    let before = sent(&maker);
+    maker.tick().await.unwrap();
+    assert_eq!(sent(&maker), before, "it sent something");
+    let chain = maker
+        .settlement
+        .swap(swap.id, &terms)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(chain.stage, Stage::Open);
+    // Without the record the same pass cancels.
+    let other = recorded_swap(&maker, 2, None).await;
+    maker
+        .settlement
+        .open(&maker.terms(&other).unwrap())
+        .await
+        .unwrap();
+    let out_of_time = other.t0 - maker.config.timing.t0_margin;
+    anvil_rpc(
+        &url,
+        "evm_setNextBlockTimestamp",
+        serde_json::json!([out_of_time]),
+    )
+    .await;
+    anvil_rpc(&url, "evm_mine", serde_json::json!([])).await;
+    maker.tick().await.unwrap();
+    let other_terms = maker.terms(&other).unwrap();
+    let chain = maker
+        .settlement
+        .swap(other.id, &other_terms)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(chain.stage, Stage::Refunded);
+}
+
+/// A reverse escrow's claim waits for its ready to be final: the user's ready signature lives
+/// minutes, and a claim sent on a ready a reorganisation then dropped would revert with the
+/// maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
+#[tokio::test]
+async fn a_reverse_claim_waits_for_its_ready_to_be_final() {
+    use zecswap_chain::evm::{reverse_funding_calls, reverse_swap_id};
+    use zecswap_core::{Domain, NetworkType, derive_user_keys};
+
+    let Some((anvil, _dir, maker)) = on_anvil().await else {
+        return;
+    };
+    let keys = derive_user_keys(&[7; 64], NetworkType::Test, 0, 0).unwrap();
+    let now = maker.settlement.now().await.unwrap();
+    let mut nonce = 0;
+    let quote = maker
+        .store
+        .insert_reverse_quote(|index| {
+            nonce = index;
+            let share = maker.maker_share(index)?;
+            Ok(zecswap_api::reverse::Quote {
+                terms: Quote {
+                    quote_id: B256::repeat_byte(2),
+                    maker: maker.account,
+                    maker_share: share.public(),
+                    maker_proof: maker
+                        .context([2; 32])
+                        .prove_maker(&share, UnwrapErr(SysRng)),
+                    chain_id: maker.chain_id,
+                    contract: maker.config.contract,
+                    token: maker.config.token,
+                    amount: 1_000_000,
+                    deposit_zat: 100_000,
+                    expires_at: unix_now() + 60,
+                    network_cost: None,
+                },
+                user: keys.auth.address().into(),
+                refund_note: B256::repeat_byte(5),
+                funding_deadline: now + 300,
+                ready_deadline: now + 3600,
+                refund_after: now + 7200,
+            })
+        })
+        .unwrap();
+    let account = AccountUuid::from_uuid(uuid::Uuid::from_bytes([9; 16]));
+    let swap = crate::store::ReverseSwap {
+        id: reverse_swap_id(quote.user, &quote.terms.maker_share),
+        nonce,
+        quote,
+        acceptance: Acceptance {
+            user_share: keys.share.public(),
+            user_proof: ShareProof::from_bytes([0; 64]),
+            viewing_keys: keys.viewing,
+            token_request: None,
+        },
+        account,
+        deposit: Some(TxId::from_bytes([1; 32])),
+        sweep: None,
+        settled: false,
+        token_return: None,
+    };
+    maker
+        .store
+        .insert_reverse_swap(&swap, unix_now(), None)
+        .unwrap();
+    let url = anvil.endpoint();
+    let payer = anvil.addresses()[1];
+    maker
+        .settlement
+        .mint_test_token(maker.config.token, payer, 1_000_000)
+        .await
+        .unwrap();
+    let open = swap.quote.open(keys.share.public());
+    let domain = Domain {
+        chain_id: maker.chain_id,
+        contract: maker.config.contract.into(),
+    };
+    let signature = keys.auth.sign(&domain.open_reverse(&open));
+    for (to, data) in reverse_funding_calls(maker.config.contract, &open, &signature) {
+        let call = serde_json::json!([{"from": payer, "to": to, "data": format!("0x{}", hex::encode(data))}]);
+        anvil_rpc(&url, "eth_sendTransaction", call).await;
+    }
+    let deadline = maker.settlement.now().await.unwrap() + 60;
+    let ready = keys.auth.sign(&domain.ready(&swap.id.0, deadline));
+    maker
+        .settlement
+        .ready_with_sig(swap.id, &swap.terms(), deadline, &ready)
+        .await
+        .unwrap();
+    maker.wallet_snapshots.lock().unwrap().insert(
+        account,
+        WalletSnapshot {
+            funds: Funds {
+                total: 100_000,
+                spendable: 100_000,
+            },
+            sweep: None,
+        },
+    );
+    maker.zcash_health.completed();
+    let stage = async |maker: &Maker| {
+        let chain = maker.settlement.swap(swap.id, &swap.terms()).await.unwrap();
+        chain.unwrap().stage
+    };
+    maker.advance_reverse_claim(&swap).await.unwrap();
+    assert_eq!(
+        stage(&maker).await,
+        Stage::Ready,
+        "claimed on a ready not yet final"
+    );
+    // anvil finalizes 64 blocks back.
+    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x41"])).await;
+    maker.zcash_health.completed();
+    maker.advance_reverse_claim(&swap).await.unwrap();
+    assert_eq!(stage(&maker).await, Stage::Claimed);
 }

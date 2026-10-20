@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_api::reverse::{self, Phase};
 use zecswap_api::{Acceptance, Accepted, Quote};
-use zecswap_chain::evm::{B256, OnChainSwap, Stage, reverse_swap_id};
+use zecswap_chain::evm::{B256, BlockId, OnChainSwap, Reveal, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
 use super::notifications::{Alert, Ending, reverse_ending};
@@ -257,11 +257,8 @@ impl Maker {
                     Stage::Claimed => Phase::ZecAvailable,
                     Stage::Refunded if chain.paid_out => Phase::Refunded,
                     Stage::Refunded => Phase::Refunding,
-                    _ if chain.refund_lock_until != 0 => Phase::Refunding,
                     Stage::Open if now >= chain.t0 => Phase::RefundAvailable,
-                    Stage::Ready if now >= chain.t1 && now >= chain.claim_lock_until => {
-                        Phase::RefundAvailable
-                    }
+                    Stage::Ready if now >= chain.t1 => Phase::RefundAvailable,
                     Stage::Ready => Phase::Claiming,
                     Stage::Open if swap.deposit.is_some() => Phase::AwaitingReady,
                     Stage::Open => {
@@ -434,10 +431,7 @@ impl Maker {
             Stage::Ready => {} // The independent EVM loop handles claim deadlines.
             Stage::Open => {
                 let now = reads.now().context("the pass read no clock")?;
-                if !synced
-                    || chain.refund_lock_until != 0
-                    || now.saturating_add(config.deposit_margin) >= chain.t0
-                {
+                if !synced || now.saturating_add(config.deposit_margin) >= chain.t0 {
                     return Ok(());
                 }
                 let Some(funding) = self
@@ -460,6 +454,10 @@ impl Maker {
         Ok(())
     }
 
+    /// Claims a ready escrow whose ZEC deposit is spendable, once its ready is final and with
+    /// the reveal margin left before `t1`. The user's ready signature lives minutes: a ready a
+    /// reorganisation dropped could never be sent again, and a claim sent on it would revert with
+    /// the maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_reverse_claim"), err(level = "warn"))]
     pub(super) async fn advance_reverse_claim(&self, swap: &ReverseSwap) -> Result<()> {
         let Some(snapshot) = self.wallet_snapshot(swap.account) else {
@@ -469,28 +467,39 @@ impl Maker {
             return Ok(());
         }
         let terms = swap.terms();
-        let Some(chain) = self.settlement.swap(swap.id, &terms).await? else {
+        let (Some(chain), head) = self.settlement.read(swap.id, &terms).await? else {
             return Ok(());
         };
         if chain.stage != Stage::Ready {
             return Ok(());
         }
         self.verify_reverse(swap).await?;
-        let now = self.settlement.now().await?;
-        if now.saturating_add(self.config.timing.reveal_margin) < chain.claim_lock_until {
-            let sent = self
-                .settlement
-                .claim(swap.id, &terms, &self.maker_share(swap.nonce)?)
-                .await;
-            self.journal(swap.id, "claim", sent)?;
-        } else if now >= chain.claim_lock_until
-            && now >= chain.refund_lock_until
-            && !(chain.claim_lock_until > chain.refund_lock_until
-                && now < chain.claim_lock_until.saturating_add(self.lock_duration))
-        {
-            let sent = self.settlement.lock_claim(swap.id, &terms).await;
-            self.journal(swap.id, "lock_claim", sent)?;
+        let window = self.windows.window(
+            Reveal::Claim,
+            true,
+            chain.stage,
+            (chain.t0, chain.t1),
+            head.timestamp,
+        );
+        let latest = head.timestamp.max(unix_now());
+        if !window.leaves(latest, self.config.timing.reveal_margin) {
+            return Ok(());
         }
+        // A finalized block from before the contract was deployed has no swap to read.
+        let finalized = self
+            .settlement
+            .swap_at(swap.id, &terms, BlockId::finalized())
+            .await
+            .ok()
+            .flatten();
+        if finalized.is_none_or(|finalized| finalized.stage != Stage::Ready) {
+            return Ok(());
+        }
+        let sent = self
+            .settlement
+            .claim(swap.id, &terms, &self.maker_share(swap.nonce)?)
+            .await;
+        self.journal(swap.id, "claim", sent)?;
         Ok(())
     }
 
