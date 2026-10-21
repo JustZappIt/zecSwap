@@ -6,6 +6,7 @@ use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::relayer::{self, Claim, Sent};
 use zecswap_api::{Acceptance, Network, Quote};
+use zecswap_chain::evm::judge::{self, Go, READY_DEPTH, Refusal};
 use zecswap_chain::evm::{
     BlockId, OnChainSwap, Reveal, Settlement, Stage, Window, swap_id, wall_now,
 };
@@ -24,10 +25,6 @@ pub const MAX_TIME_TO_T0: u64 = 2 * 60 * 60;
 /// Never reveal with less than this left in the claim's window: a claim landing after `t1`
 /// reverts, its share public, with the swap the maker's to refund.
 pub const CLAIM_MARGIN: u64 = 5 * 60;
-/// Blocks deep a ready must be before a claim is revealed on it ahead of `t0`: one a
-/// reorganisation drops would leave a claim sent on it reverted, its share public, the swap the
-/// maker's to cancel.
-pub const READY_DEPTH: u64 = 12;
 /// How long a claim waits for its ready to be deep enough.
 const DEPTH_WAIT: Duration = Duration::from_secs(10 * 60);
 const CATCH_UP: Duration = Duration::from_secs(60);
@@ -444,8 +441,8 @@ impl User {
     }
 
     /// The claim's window, once it is open with `CLAIM_MARGIN` to spare and, before `t0`, the
-    /// swap's ready is `READY_DEPTH` blocks deep, which it waits for: judged on the swap and the
-    /// newest block read as of one block, by the later of its time and the wall clock.
+    /// swap's ready has `READY_DEPTH` blocks above it, which it waits for: judged on the swap and
+    /// the newest block read as of one block, by the later of its time and the wall clock.
     async fn claim_window(&self, swap: &UserSwap) -> Result<Window> {
         let terms = self.terms(swap)?;
         let windows = self.settlement.windows().await?;
@@ -456,26 +453,31 @@ impl User {
             let deadlines = (chain.t0, chain.t1);
             let window =
                 windows.window(Reveal::Claim, false, chain.stage, deadlines, head.timestamp);
-            if window == Window::Shut {
-                let late = chain.t1.saturating_add(windows.late);
-                if head.timestamp >= chain.t1 {
-                    bail!(
-                        "from t1 the swap is its maker's to refund, which gives the deposit back; it can be claimed again from {late}"
-                    );
+            match judge::forward_claim(
+                windows,
+                chain.stage,
+                deadlines,
+                &head,
+                wall_now(),
+                CLAIM_MARGIN,
+            ) {
+                Ok(Go::Now) => return Ok(window),
+                Ok(Go::OnceReadyAt(block)) => {
+                    let then = self
+                        .settlement
+                        .swap_at(swap.swap_id, &terms, BlockId::number(block))
+                        .await?;
+                    if then.is_some_and(|then| then.stage == Stage::Ready) {
+                        return Ok(window);
+                    }
                 }
-                bail!("the swap can be claimed once ready, or from t0");
-            }
-            ensure!(
-                window.leaves(head.timestamp.max(wall_now()), CLAIM_MARGIN),
-                "the claim's window ends too soon to claim in; the share stays secret"
-            );
-            if head.timestamp >= chain.t0 {
-                return Ok(window);
-            }
-            let deep = BlockId::number(head.number.saturating_sub(READY_DEPTH - 1));
-            let then = self.settlement.swap_at(swap.swap_id, &terms, deep).await?;
-            if then.is_some_and(|then| then.stage == Stage::Ready) {
-                return Ok(window);
+                Err(Refusal::MakersUntil(late)) => bail!(
+                    "from t1 the swap is its maker's to refund, which gives the deposit back; it can be claimed again from {late}"
+                ),
+                Err(Refusal::TooSoon) => {
+                    bail!("the claim's window ends too soon to claim in; the share stays secret")
+                }
+                Err(_) => bail!("the swap can be claimed once ready, or from t0"),
             }
             ensure!(
                 Instant::now() < give_up,

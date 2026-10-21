@@ -352,4 +352,83 @@ mod tests {
         };
         assert_eq!(decide(&claim, &timing()), Action::Sweep);
     }
+
+    /// The third audit's port spec, replayed for the maker's forward reveals: in every case its
+    /// oracle decides whether a cancel, a ready or a refund may go now, the policy, asked when it
+    /// would want to send one, sends it exactly then. Its claims, refunds and readies replay in
+    /// `zecswap-chain`'s `windows_spec`.
+    #[test]
+    fn every_cancel_ready_and_refund_is_decided_as_the_port_spec_decides() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../zecswap-chain/tests/windows-spec-vectors.json");
+        let vectors: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let (mut replayed, mut wrong) = (0, Vec::new());
+        for (index, vector) in vectors.iter().enumerate() {
+            let (view, own, margins) = (&vector["view"], &vector["own"], &vector["margins"]);
+            let number = |value: &serde_json::Value| value.as_u64().unwrap();
+            let (reveal, margin, wanted) = match vector["reveal"].as_str().unwrap() {
+                "maker_cancel" => ("cancel", number(&margins["cancel"]), Action::Refund),
+                "maker_ready" => ("ready", number(&margins["ready_land"]), Action::MarkReady),
+                "maker_refund" => (
+                    "refund",
+                    number(&margins["refund_late_stop"]),
+                    Action::Refund,
+                ),
+                _ => continue,
+            };
+            replayed += 1;
+            let stage = match view["stage"].as_str().unwrap() {
+                "open" => Stage::Open,
+                "ready" => Stage::Ready,
+                "claimed" => Stage::Claimed,
+                "refunded" => Stage::Refunded,
+                // The maker decides only on swaps the chain holds.
+                _ => {
+                    if vector["expect"]["send"].as_bool().unwrap() {
+                        wrong.push(format!("#{index}: a swap not on the chain"));
+                    }
+                    continue;
+                }
+            };
+            let timing = Timing {
+                reveal_margin: margin,
+                ..timing()
+            };
+            let now = number(&view["head_ts"]);
+            // Its deposit confirmed in full, or for a cancel, none come by `cancel_after`.
+            let confirmed = view["deposit_confirmed"].as_bool().unwrap();
+            let funds = if confirmed {
+                (DEPOSIT, DEPOSIT)
+            } else {
+                (0, 0)
+            };
+            let mut observation = observe(stage, now, funds);
+            observation.wall = number(&view["wall_now"]);
+            observation.opened_at = now.saturating_sub(timing.cancel_after);
+            observation.chain.t0 = number(&view["t0"]);
+            observation.chain.t1 = number(&view["t1"]);
+            observation.windows = Windows {
+                min: number(&view["min_window"]),
+                late: number(&view["late_window"]),
+            };
+            observation.synced = view["wallet_synced"].as_bool().unwrap();
+            observation.cancelling = own["cancel_sent"].as_bool().unwrap();
+            observation.readied = own["ready_sent"].as_bool().unwrap();
+            let action = decide(&observation, &timing);
+            let send = action == wanted && (reveal != "cancel" || now < observation.chain.t1);
+            let expected = vector["expect"]["send"].as_bool().unwrap();
+            if send != expected {
+                wrong.push(format!(
+                    "#{index} {reveal}: decides {action:?}, the spec says {expected} ({})",
+                    vector["expect"]["reason"]
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_eq!(
+            replayed, 36,
+            "every cancel, ready and refund the spec decides"
+        );
+    }
 }

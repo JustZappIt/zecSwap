@@ -2,7 +2,8 @@ use anyhow::{Context, Result, ensure};
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_api::reverse::{self, Phase};
 use zecswap_api::{Acceptance, Accepted, Quote};
-use zecswap_chain::evm::{B256, BlockId, OnChainSwap, Reveal, Stage, reverse_swap_id};
+use zecswap_chain::evm::judge::{self, Go};
+use zecswap_chain::evm::{B256, BlockId, OnChainSwap, Stage, reverse_swap_id};
 use zecswap_core::{JointAccount, Payout};
 
 use super::notifications::{Alert, Ending, reverse_ending};
@@ -474,26 +475,36 @@ impl Maker {
             return Ok(());
         }
         self.verify_reverse(swap).await?;
-        let window = self.windows.window(
-            Reveal::Claim,
-            true,
+        let deadlines = (chain.t0, chain.t1);
+        let margin = self.config.timing.reveal_margin;
+        let judged = judge::reverse_claim(
+            self.windows,
             chain.stage,
-            (chain.t0, chain.t1),
-            head.timestamp,
+            deadlines,
+            &head,
+            unix_now(),
+            margin,
         );
-        let latest = head.timestamp.max(unix_now());
-        if !window.leaves(latest, self.config.timing.reveal_margin) {
+        let Ok(Go::OnceReadyAt(deep)) = judged else {
             return Ok(());
-        }
-        // A finalized block from before the contract was deployed has no swap to read.
+        };
+        // Its user can't sign a ready again: claim only on one a finalized block holds, or one
+        // `FINAL_DEPTH` blocks deep. A finalized block from before the contract has no swap.
+        let ready = |then: Result<Option<OnChainSwap>, zecswap_chain::Error>| {
+            then.ok()
+                .flatten()
+                .is_some_and(|then| then.stage == Stage::Ready)
+        };
         let finalized = self
             .settlement
-            .swap_at(swap.id, &terms, BlockId::finalized())
-            .await
-            .ok()
-            .flatten();
-        if finalized.is_none_or(|finalized| finalized.stage != Stage::Ready) {
-            return Ok(());
+            .swap_at(swap.id, &terms, BlockId::finalized());
+        if !ready(finalized.await) {
+            let then = self
+                .settlement
+                .swap_at(swap.id, &terms, BlockId::number(deep));
+            if !ready(then.await) {
+                return Ok(());
+            }
         }
         let sent = self
             .settlement

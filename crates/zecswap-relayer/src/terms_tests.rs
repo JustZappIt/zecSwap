@@ -131,7 +131,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
     // Deep enough that the relayer claims on a ready before t0.
     let deepen = async || {
-        let blocks = U256::from(crate::READY_DEPTH);
+        let blocks = U256::from(zecswap_chain::evm::judge::READY_DEPTH);
         chain
             .raw_request::<_, serde_json::Value>("anvil_mine".into(), (blocks,))
             .await

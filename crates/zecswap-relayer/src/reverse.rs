@@ -1,6 +1,7 @@
 use zecswap_api::relayer::{Payout, Sent};
 use zecswap_api::reverse::{Authorization, Refund};
-use zecswap_chain::evm::{B256, Head, OnChainSwap, Reveal, Stage, wall_now};
+use zecswap_chain::evm::judge::{self, Refusal};
+use zecswap_chain::evm::{B256, Head, OnChainSwap, Stage};
 use zecswap_core::{SecretShare, Terms, signer};
 use zecswap_railgun::ShieldNote;
 
@@ -62,10 +63,19 @@ impl Relayer {
                 transactions: vec![],
             });
         }
-        if head.timestamp >= swap.t0 {
-            return Err(RelayerError::Rejected(
-                "an escrow is readied only before t0".into(),
-            ));
+        match judge::reverse_ready(swap.stage, swap.t0, &head, 0) {
+            Ok(()) => {}
+            Err(Refusal::TooSoon) => {
+                return Err(RelayerError::Rejected(
+                    "an escrow is readied only before t0".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(RelayerError::Rejected(format!(
+                    "the escrow is {:?}",
+                    swap.stage
+                )));
+            }
         }
         // A refund reveals the user's share, and a ready landing before it would revert it with
         // the share public: none follows a refund sent for the escrow, nor one the claims account
@@ -100,14 +110,8 @@ impl Relayer {
         if swap.stage == Stage::Refunded {
             return self.reverse_refund_payout(request.payout).await;
         }
-        let window = self.windows.window(
-            Reveal::Refund,
-            true,
-            swap.stage,
-            (swap.t0, swap.t1),
-            head.timestamp,
-        );
-        if !window.leaves(head.timestamp.max(wall_now()), self.config.claim_margin) {
+        let deadlines = (swap.t0, swap.t1);
+        if judge::reverse_refund(self.windows, swap.stage, deadlines, &head, None, false).is_err() {
             return Err(RelayerError::Rejected(match swap.stage {
                 Stage::Ready => "a ready escrow is its maker's to claim until t1; its user may refund it from t1".into(),
                 stage => format!("the escrow is {stage:?}"),

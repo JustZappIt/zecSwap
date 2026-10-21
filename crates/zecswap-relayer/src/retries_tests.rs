@@ -201,7 +201,8 @@ impl Deployment {
         self.maker.open(&terms).await.unwrap();
         let id = swap_id(self.maker_account, &keys.share.public());
         self.maker.ready(id, &terms).await.unwrap();
-        self.mine_blocks(crate::READY_DEPTH).await;
+        self.mine_blocks(zecswap_chain::evm::judge::READY_DEPTH)
+            .await;
         Swap { id, terms, keys }
     }
 

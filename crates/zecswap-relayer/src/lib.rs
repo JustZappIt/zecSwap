@@ -47,10 +47,11 @@ use zecswap_api::Network;
 use zecswap_api::relayer::{Claim, Payout, Sent, Terms};
 use zecswap_api::server::MonitorToken;
 use zecswap_chain::evm::funding::FundingPolicy;
+use zecswap_chain::evm::judge::{self, Go, Refusal};
 use zecswap_chain::evm::railgun::{MAX_CALLDATA_BYTES, SendPolicy};
 use zecswap_chain::evm::{
-    BlockId, Head, OnChainSwap, PrivateKeySigner, Reveal, RpcMeter, Settlement, Stage, Window,
-    Windows, endpoint, wall_now,
+    BlockId, Head, OnChainSwap, PrivateKeySigner, RpcMeter, Settlement, Stage, Windows, endpoint,
+    wall_now,
 };
 use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
@@ -343,9 +344,6 @@ impl RelayerError {
 }
 
 type Result<T> = std::result::Result<T, RelayerError>;
-
-/// Blocks deep a swap's ready must be before the relayer reveals a claim on it ahead of `t0`.
-pub(crate) const READY_DEPTH: u64 = 12;
 
 pub struct Relayer {
     config: Config,
@@ -770,35 +768,39 @@ impl Relayer {
         head: Head,
     ) -> Result<()> {
         let deadlines = (swap.t0, swap.t1);
-        let window =
-            self.windows
-                .window(Reveal::Claim, false, swap.stage, deadlines, head.timestamp);
-        if window == Window::Shut {
-            let late = swap.t1.saturating_add(self.windows.late);
-            return Err(RelayerError::Rejected(if head.timestamp >= swap.t1 {
-                format!(
-                    "from t1 the swap is its maker's to refund; it can be claimed again from {late}"
-                )
-            } else {
-                "the swap can be claimed once ready, or from t0".into()
-            }));
-        }
-        if !window.leaves(head.timestamp.max(wall_now()), self.config.claim_margin) {
-            return Err(RelayerError::Rejected(
-                "the claim's window ends too soon to land a claim in; nothing was sent".into(),
-            ));
-        }
-        if head.timestamp < swap.t0 {
-            let deep = BlockId::number(head.number.saturating_sub(READY_DEPTH - 1));
-            let then = self.settlement.swap_at(id, terms, deep).await?;
-            if then.is_none_or(|then| then.stage != Stage::Ready) {
-                return Err(RelayerError::Busy(
-                    "the swap's ready is not yet deep enough to claim on before t0",
-                    30,
-                ));
+        let margin = self.config.claim_margin;
+        match judge::forward_claim(
+            self.windows,
+            swap.stage,
+            deadlines,
+            &head,
+            wall_now(),
+            margin,
+        ) {
+            Ok(Go::Now) => Ok(()),
+            Ok(Go::OnceReadyAt(block)) => {
+                let then = self
+                    .settlement
+                    .swap_at(id, terms, BlockId::number(block))
+                    .await?;
+                if then.is_none_or(|then| then.stage != Stage::Ready) {
+                    return Err(RelayerError::Busy(
+                        "the swap's ready is not yet deep enough to claim on before t0",
+                        30,
+                    ));
+                }
+                Ok(())
             }
+            Err(Refusal::MakersUntil(late)) => Err(RelayerError::Rejected(format!(
+                "from t1 the swap is its maker's to refund; it can be claimed again from {late}"
+            ))),
+            Err(Refusal::TooSoon) => Err(RelayerError::Rejected(
+                "the claim's window ends too soon to land a claim in; nothing was sent".into(),
+            )),
+            Err(_) => Err(RelayerError::Rejected(
+                "the swap can be claimed once ready, or from t0".into(),
+            )),
         }
-        Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "payout"), err(level = "warn"))]

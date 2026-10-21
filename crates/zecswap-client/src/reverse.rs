@@ -4,6 +4,7 @@ use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::reverse::{Authorization, Quote, QuoteRequest, Refund};
 use zecswap_api::{Acceptance, Network, relayer};
+use zecswap_chain::evm::judge::{self, Refusal};
 use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, reverse_funding_calls, reverse_swap_id};
 use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Wallet};
 use zecswap_core::{
@@ -212,12 +213,17 @@ impl ReverseUser {
             wallet.funds(account)?.spendable >= swap.quote.terms.deposit_zat,
             "ZEC deposit is not confirmed in full"
         );
-        let now = self.settlement.now().await?;
-        ensure!(
-            now.saturating_add(SIGNATURE_TTL) < chain.t0,
-            "too little time left to authorize ready"
-        );
-        let deadline = now + SIGNATURE_TTL;
+        let (chain, head) = self
+            .settlement
+            .read(swap.swap_id, &self.terms(swap)?)
+            .await?;
+        let chain = chain.context("reverse escrow is not on-chain")?;
+        match judge::reverse_ready(chain.stage, chain.t0, &head, SIGNATURE_TTL) {
+            Ok(()) => {}
+            Err(Refusal::TooSoon) => anyhow::bail!("too little time left to authorize ready"),
+            Err(_) => anyhow::bail!("escrow cannot be readied"),
+        }
+        let deadline = head.timestamp + SIGNATURE_TTL;
         let signature = self
             .keys(swap.index)?
             .auth
@@ -336,18 +342,17 @@ impl ReverseUser {
             .read(swap.swap_id, &self.terms(swap)?)
             .await?;
         let chain = chain.context("reverse escrow is not on-chain")?;
-        match chain.stage {
-            Stage::Ready => ensure!(
-                head.timestamp >= chain.t1,
-                "a ready escrow is its maker's to claim until t1; refund it from t1"
+        let windows = self.settlement.windows().await?;
+        let deadlines = (chain.t0, chain.t1);
+        let until = swap.ready_signed_until;
+        match judge::reverse_refund(windows, chain.stage, deadlines, &head, until, false) {
+            Ok(()) => {}
+            Err(Refusal::ReadyMayLand) => anyhow::bail!(
+                "a ready signed until {} may still land; refund once the chain is past it",
+                until.unwrap_or_default()
             ),
-            _ => {
-                if let Some(until) = swap.ready_signed_until {
-                    ensure!(
-                        head.timestamp > until || head.timestamp >= chain.t0,
-                        "a ready signed until {until} may still land; refund once the chain is past it"
-                    );
-                }
+            Err(_) => {
+                anyhow::bail!("a ready escrow is its maker's to claim until t1; refund it from t1")
             }
         }
         swap.refunding = true;

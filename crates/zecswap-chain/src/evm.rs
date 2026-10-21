@@ -4,6 +4,7 @@ mod canonical;
 pub mod deposits;
 mod events;
 pub mod funding;
+pub mod judge;
 mod meter;
 pub mod railgun;
 pub use events::{SwapEvent, SwapEventKind};

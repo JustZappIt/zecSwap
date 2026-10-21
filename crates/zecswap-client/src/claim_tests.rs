@@ -180,7 +180,7 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
     maker.ready(id, &terms).await.unwrap();
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
     // Deep enough to claim on before t0.
-    let blocks = U256::from(crate::user::READY_DEPTH);
+    let blocks = U256::from(zecswap_chain::evm::judge::READY_DEPTH);
     chain
         .raw_request::<_, serde_json::Value>("anvil_mine".into(), (blocks,))
         .await
