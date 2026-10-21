@@ -74,6 +74,22 @@ pub struct Acceptance {
 
 /// The header every relayer request for a swap carries its `Accepted::ticket` in.
 pub const TICKET_HEADER: &str = "ZecSwap-Ticket";
+/// What the maker's info and the relayer's terms call the windows contract (`contractKind`).
+pub const WINDOWS_CONTRACT: &str = "windows";
+
+/// Whether what a service says of its contract fits a windows contract with `windows`, the
+/// minimum and late windows the contract itself reports. A service that says nothing of it fits:
+/// the wallet reads the contract either way.
+pub fn fits_windows(
+    kind: Option<&str>,
+    min_window: Option<u64>,
+    late_window: Option<u64>,
+    (min, late): (u64, u64),
+) -> bool {
+    kind.is_none_or(|kind| kind == WINDOWS_CONTRACT)
+        && min_window.is_none_or(|window| window == min)
+        && late_window.is_none_or(|window| window == late)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +100,11 @@ pub struct Accepted {
     /// the wallet checks on-chain.
     pub t0: u64,
     pub t1: u64,
+    /// How long from `t1` the maker may refund a forward swap, in seconds: a claim it never
+    /// refunded opens again at `t1 + lateWindow`. Absent on a reverse escrow, and from a maker on
+    /// the lock contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_window: Option<u64>,
     /// Sent as it is in the `ZecSwap-Ticket` header of every relayer request for this swap,
     /// which then has an allowance at the gateway of its own: the swap id, a dot, and an
     /// HMAC-SHA256 of the id's 32 bytes under a secret the maker shares with the gateway alone,

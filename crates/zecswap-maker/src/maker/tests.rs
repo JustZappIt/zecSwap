@@ -708,16 +708,38 @@ async fn accept_answers_carry_a_ticket_that_verifies_under_the_secret() {
         .await
         .unwrap();
     assert_eq!(reverse.swap_id, swap_id);
+    assert_eq!(
+        reverse.late_window, None,
+        "a reverse escrow has no late window"
+    );
     assert!(verifies(&reverse.ticket, swap_id, &TICKET_KEY));
     assert!(!verifies(&reverse.ticket, swap_id, &[9; 32]));
     let forward_id = B256::repeat_byte(4);
-    let forward = maker.accepted(forward_id, 3700, 7300);
+    let forward = maker.accepted(forward_id, 3700, 7300, true);
+    assert_eq!(forward.late_window, Some(maker.windows.late));
     assert!(verifies(&forward.ticket, forward_id, &TICKET_KEY));
     assert!(!verifies(
         &forward.ticket,
         B256::repeat_byte(5),
         &TICKET_KEY
     ));
+}
+
+#[tokio::test]
+async fn the_info_names_the_windows_contract_and_its_windows() {
+    let (_dir, maker) = maker();
+    let info = maker.info();
+    assert_eq!(
+        info.contract_kind.as_deref(),
+        Some(zecswap_api::WINDOWS_CONTRACT)
+    );
+    let windows = (maker.windows.min, maker.windows.late);
+    assert_eq!(
+        (info.min_window, info.late_window),
+        (Some(windows.0), Some(windows.1))
+    );
+    assert!(info.fits_windows(windows));
+    assert!(!info.fits_windows((windows.0, windows.1 + 1)));
 }
 
 #[tokio::test(start_paused = true)]

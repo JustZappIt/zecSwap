@@ -109,6 +109,24 @@
           "shielded": "1900000"
         }
       }
+    },
+    {
+      "at": "2026-10-21T03:22:00Z",
+      "sourceCommit": "a28ab10dabe489baa662491eae6402a0d14a3207",
+      "release": "/opt/zecswap/releases/20261021-wire-fields-a28ab10",
+      "previousRelease": "/opt/zecswap/releases/20261021-windows-e7c5467",
+      "backup": "/var/backups/zecswap/20261021-wire-fields-a28ab10",
+      "makerSha256": "759ed49740fb6c7e74af3fdfc61c8f71d09a74d1c8e6fe8b4061e4ad693e23bd",
+      "relayerSha256": "1e55812bfdc1c6a9fbd46cfb598ea476e4c4128d81097806aed4d96c1882342c",
+      "changes": "the relayer's terms and the maker's info name the contract (contractKind windows, minWindow, lateWindow) and a forward accept answers lateWindow",
+      "liveSwap": {
+        "swap": "0xd85e3cd37dc1c4f2a97f69747157dccd254bf7b92267370eb371f77a82e63f45",
+        "depositZat": 98132,
+        "paidOut": {
+          "transaction": "0xaa8cedea860c9c7f9b998061ed1e1cb87e424d734304c452b17d70f38a5f1995",
+          "shielded": "900000"
+        }
+      }
     }
   ]
 }

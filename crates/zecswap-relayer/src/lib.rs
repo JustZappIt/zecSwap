@@ -599,6 +599,9 @@ impl Relayer {
             relayer: self.account,
             chain_id: self.domain.chain_id,
             contract: self.config.contract,
+            contract_kind: Some(zecswap_api::WINDOWS_CONTRACT.into()),
+            min_window: Some(self.windows.min),
+            late_window: Some(self.windows.late),
             fee,
             fee_expires_at: swap_fees_priced.then_some(now + pricing::SWAP_FEE_VALIDITY),
             reverse_funding: self

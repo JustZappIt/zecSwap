@@ -242,6 +242,9 @@ leaves both from its funding deadline. `getSwap` returns four words (hash, stage
 secret), and `/v1/reverse/lock-refund` is gone. Read `MIN_WINDOW()` and `LATE_WINDOW()` to tell
 the contract apart: the lock contract has `LOCK_DURATION()` instead, and its record decodes
 silently under the windows ABI, so a client that skips the check would refund there without the
-lock it needs. A swap on the lock contract ends under its rules: a deployment switches contracts
+lock it needs. The relayer's `GET /v1/terms` and the maker's `GET /v1/info` name the contract
+too, `contractKind: "windows"` with `minWindow` and `lateWindow` in seconds, and a forward accept
+answers `lateWindow`: a wallet refuses a service that names another kind or other windows. A
+swap on the lock contract ends under its rules: a deployment switches contracts
 only once none is live there. This changes the ABI: ship the contract, maker, relayer, native
 library and wallet together.

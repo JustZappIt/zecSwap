@@ -301,8 +301,11 @@ impl User {
     ) -> Result<Paid> {
         let chain = self.state(swap).await?;
         let terms = relayer.terms().await?;
+        let windows = self.settlement.windows().await?;
         ensure!(
-            terms.chain_id == swap.quote.chain_id && terms.contract == swap.quote.contract,
+            terms.chain_id == swap.quote.chain_id
+                && terms.contract == swap.quote.contract
+                && terms.fits_windows((windows.min, windows.late)),
             "the relayer serves another deployment"
         );
         ensure!(
