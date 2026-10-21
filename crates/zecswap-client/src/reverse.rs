@@ -301,9 +301,11 @@ impl ReverseUser {
             return Ok(());
         }
         let terms = self.relayer.terms().await?;
+        let windows = self.settlement.windows().await?;
         ensure!(
             terms.chain_id == swap.quote.terms.chain_id
-                && terms.contract == swap.quote.terms.contract,
+                && terms.contract == swap.quote.terms.contract
+                && terms.fits_windows((windows.min, windows.late)),
             "relayer serves another deployment"
         );
         ensure!(

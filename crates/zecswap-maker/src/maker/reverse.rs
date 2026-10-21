@@ -146,7 +146,7 @@ impl Maker {
                     "quote was accepted with other keys".into(),
                 ));
             }
-            return Ok(self.accepted(swap_id, quote.ready_deadline, quote.refund_after));
+            return Ok(self.accepted(swap_id, quote.ready_deadline, quote.refund_after, false));
         }
         if unix_now() >= quote.terms.expires_at {
             return Err(MakerError::UnknownQuote);
@@ -194,7 +194,12 @@ impl Maker {
             spend.keep()?;
         }
         tracing::info!(%swap_id, outcome = "accepted", "reverse swap accepted; awaiting escrow funding");
-        Ok(self.accepted(swap_id, swap.quote.ready_deadline, swap.quote.refund_after))
+        Ok(self.accepted(
+            swap_id,
+            swap.quote.ready_deadline,
+            swap.quote.refund_after,
+            false,
+        ))
     }
 
     pub(super) fn reverse_reserved(&self) -> Result<u64> {

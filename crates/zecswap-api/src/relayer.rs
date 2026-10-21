@@ -16,6 +16,14 @@ pub struct Terms {
     pub relayer: Address,
     pub chain_id: u64,
     pub contract: Address,
+    /// The contract's kind, `windows` (`WINDOWS_CONTRACT`), and its minimum and late windows in
+    /// seconds, as the contract reports them. Absent from a relayer on the lock contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_window: Option<u64>,
     /// Token base units the relayer keeps from a payout, as a decimal string. Where the relayer
     /// prices gas, the larger of its floor and the gas a swap's claim and payout (or refund and
     /// its payout) burn, at the gas price and ETH price now.
@@ -250,6 +258,18 @@ pub struct Sent {
     pub transactions: Vec<B256>,
 }
 
+impl Terms {
+    /// Whether these terms fit a windows contract with these windows (`fits_windows`).
+    pub fn fits_windows(&self, windows: (u64, u64)) -> bool {
+        crate::fits_windows(
+            self.contract_kind.as_deref(),
+            self.min_window,
+            self.late_window,
+            windows,
+        )
+    }
+}
+
 impl From<&ShieldNote> for Note {
     fn from(note: &ShieldNote) -> Self {
         Self {
@@ -284,5 +304,37 @@ mod tests {
         assert_eq!(deposit_fee(0, 10, 10_000), 10);
         assert_eq!(deposit_fee(100_000, 0, 25_000_000), 100_000);
         assert_eq!(deposit_fee(u128::MAX, 10, u128::MAX), u128::MAX);
+    }
+
+    #[test]
+    fn terms_name_the_windows_contract_and_a_lock_relayers_still_read() {
+        let lock = r#"{"relayer":"0x2222222222222222222222222222222222222222","chainId":11155111,
+            "contract":"0x3333333333333333333333333333333333333333","fee":"100000"}"#;
+        let lock: Terms = serde_json::from_str(lock).unwrap();
+        assert_eq!(lock.contract_kind, None);
+        assert!(
+            lock.fits_windows((1_800, 3_600)),
+            "the wallet reads the contract itself"
+        );
+        let windows = Terms {
+            contract_kind: Some(crate::WINDOWS_CONTRACT.into()),
+            min_window: Some(1_800),
+            late_window: Some(3_600),
+            ..lock
+        };
+        let json = serde_json::to_value(&windows).unwrap();
+        assert_eq!(json["contractKind"], "windows");
+        assert_eq!(
+            (json["minWindow"].clone(), json["lateWindow"].clone()),
+            (1_800.into(), 3_600.into())
+        );
+        assert!(windows.fits_windows((1_800, 3_600)));
+        assert!(!windows.fits_windows((1_800, 7_200)));
+        assert!(!windows.fits_windows((600, 3_600)));
+        let other = Terms {
+            contract_kind: Some("locks".into()),
+            ..windows
+        };
+        assert!(!other.fits_windows((1_800, 3_600)));
     }
 }

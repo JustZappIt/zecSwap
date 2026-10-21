@@ -377,6 +377,9 @@ impl Maker {
             maker: self.account,
             chain_id: self.chain_id,
             contract: self.config.contract,
+            contract_kind: Some(zecswap_api::WINDOWS_CONTRACT.into()),
+            min_window: Some(self.windows.min),
+            late_window: Some(self.windows.late),
             token: self.config.token,
             zcash_network: self.config.network,
             reverse_enabled: self.inventory.is_some(),
@@ -571,11 +574,11 @@ impl Maker {
         self.store
             .set_opened_at(&id, self.settlement.now().await?)?;
         info!(swap_id = %id, %transaction_hash, outcome = "mined", amount = swap.quote.amount, deposit_zat = swap.quote.deposit_zat, "opened swap");
-        Ok(self.accepted(id, swap.t0, swap.t1))
+        Ok(self.accepted(id, swap.t0, swap.t1, true))
     }
 
-    /// The answer to an accept of `swap_id`, forward or reverse, with the swap's ticket.
-    pub(crate) fn accepted(&self, swap_id: B256, t0: u64, t1: u64) -> Accepted {
+    /// The answer to an accept of `swap_id`, `forward` or reverse, with the swap's ticket.
+    pub(crate) fn accepted(&self, swap_id: B256, t0: u64, t1: u64, forward: bool) -> Accepted {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.ticket_key.as_ref())
             .expect("HMAC takes keys of any length");
         mac.update(swap_id.as_slice());
@@ -583,6 +586,7 @@ impl Maker {
             swap_id,
             t0,
             t1,
+            late_window: forward.then_some(self.windows.late),
             ticket: format!("{swap_id}.{}", hex::encode(mac.finalize().into_bytes())),
         }
     }

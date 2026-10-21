@@ -369,6 +369,7 @@ pub(crate) mod tests {
                 swap_id: quote,
                 t0: 0,
                 t1: 0,
+                late_window: None,
                 ticket: String::new(),
             }))
         }

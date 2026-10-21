@@ -7017,6 +7017,7 @@ dependencies = [
  "axum",
  "blake2b_simd",
  "serde",
+ "serde_json",
  "zcash_protocol",
  "zecswap-core",
  "zecswap-railgun",

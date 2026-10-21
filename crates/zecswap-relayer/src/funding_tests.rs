@@ -124,6 +124,18 @@ async fn funding_capability_is_opt_in_and_old_config_still_loads() {
     assert_eq!(enabled["reverseFunding"]["fee"], "250000");
 }
 
+#[tokio::test]
+async fn the_terms_name_the_windows_contract_and_its_windows() {
+    let relayer = relayer(false);
+    let terms = serde_json::to_value(relayer.terms().await).unwrap();
+    assert_eq!(terms["contractKind"], zecswap_api::WINDOWS_CONTRACT);
+    let windows = (relayer.windows.min, relayer.windows.late);
+    assert_eq!(
+        (terms["minWindow"].as_u64(), terms["lateWindow"].as_u64()),
+        (Some(windows.0), Some(windows.1))
+    );
+}
+
 #[test]
 fn fundings_go_through_railguns_own_relay_adapt_on_the_networks_chain() {
     let account = Address::repeat_byte(5);
