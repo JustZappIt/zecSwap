@@ -166,7 +166,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   only on a ready with `READY_DEPTH` (12) blocks above it (the relayer answers `503` meanwhile);
   the relayer holds a reverse refund while its own ready may land and never readies after a
   refund it sent; the client saves each ready signature's deadline before handing it out and
-  never readies after asking for a refund. These decisions are pure functions in
+  never readies after asking for a refund. The relayer's `/v1/terms` and the maker's `/v1/info`
+  name the contract (`contractKind: "windows"`, `minWindow`, `lateWindow`, seconds) and a forward
+  accept answers `lateWindow`; the client refuses a relayer whose terms name other ones. These decisions are pure functions in
   `evm/judge.rs` (claims, reverse refunds and readies) and the maker's `policy::decide`, and the
   third audit's 97 spec cases (`crates/zecswap-chain/tests/windows-spec-vectors.json`) replay
   against them (`tests/windows_spec.rs`, `policy::tests`): a Kotlin port must pass them too. Builds from here refuse the lock
@@ -365,7 +367,9 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   quick sync at the fork block and turns screening off. The relayer's Sepolia Railgun seed and
   mnemonic are in `.env.testnet`. Open: on live Sepolia a relayed send's outputs never clear
   screening, since Railgun's indexer breaks its txid verification-hash chain at index 4188 and
-  SDK wallets can't prove their own sends; forwarding the SDK's pre-send POIs would fix it.
+  SDK wallets can't prove their own sends. Forwarding the SDK's pre-send POIs would not fix it:
+  they name placeholder note positions, and a broadcaster can screen a landed note only for its
+  own fee note (`docs/railgun-sends.md`, Screening). Veylor plans to repair the list it syncs.
 - Monitoring (2026-10-08, branch `feature/monitoring`): the maker's `/v1/monitor` is schema 2
   and reads nothing from the chain (the dashboard, `~/dev/zapp-dashboard`, reads swap states and
   balances on its own RPC through Multicall3); it adds per-swap accept/open/settle times, block

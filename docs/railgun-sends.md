@@ -160,20 +160,27 @@ retries.
 
 Where Railgun screens (POI), as on Sepolia and Ethereum, a send's outputs, the change, the
 recipient's note and the relayer's fee, are spendable only once screening proofs of the send
-reach Railgun's screening nodes. The SDK builds such proofs before a send
-(`preTransactionPOIsPerTxidLeafPerList`, which public broadcasters receive with the
-transaction); this relayer neither takes, checks nor forwards them. Otherwise the sender's wallet
-proves its landed send itself after a balance scan, once its tree of Railgun transaction IDs
-holds the send (`generatePOIsForWallet` runs this on demand).
+reach Railgun's screening nodes. The sender's wallet proves its landed send itself after a
+balance scan, once its tree of Railgun transaction IDs holds the send (`generatePOIsForWallet`
+runs this on demand). The SDK also builds proofs before a send
+(`preTransactionPOIsPerTxidLeafPerList`), which public broadcasters receive with the transaction
+to check that its inputs were screened; this relayer neither takes nor checks them. They can't
+screen the outputs: they are built on a stand-in transaction-ID tree and placeholder note
+positions (`createDummyMerkleProof`, `getGlobalTreePositionPreTransactionPOIProof` in Railgun's
+engine), so they name no note that lands, and forwarding them frees nothing. A landed note can
+be screened on its own (`ppoi_submit_single_commitment_proofs`), but only with its key and
+position: a broadcaster has those for its own fee note alone, and with them the screening node
+can work out the note's amount against its commitment.
 
-On Sepolia that second way is closed as of 2026-10-08: Railgun's indexer breaks its chain of
-transaction verification hashes at index 4188 (block 11816741), so the SDK stops syncing
-transaction IDs there and never proves a later send. Live, a relayed send's change stayed
+On Sepolia the wallet's own proofs are closed as of 2026-10-08: Railgun's indexer breaks its
+chain of transaction verification hashes at index 4188 (block 11816741), so the SDK stops
+syncing transaction IDs there and never proves a later send. Live, a relayed send's change stayed
 `MissingExternalPOI` for 40 minutes while the screening nodes had validated the send. Until
-Railgun mends the indexer, or the relayer forwards the pre-send proofs, a relayed send's outputs
-on Sepolia stay unspendable; spend other notes meanwhile. On Ethereum the indexer's chain is
-whole (140,430 transactions on 2026-10-08) and the screening node keeps up, so nothing blocks the
-wallet's own proofs there; a relayed send's outputs clear once the wallet has proved it.
+Railgun mends the indexer, or a wallet repairs the list it syncs from (Veylor's plan, 2026-10-21),
+a relayed send's outputs on Sepolia stay unspendable; spend other notes meanwhile. No relayer can
+free them. On Ethereum the indexer's chain is whole (140,430 transactions on 2026-10-08) and the
+screening node keeps up, so nothing blocks the wallet's own proofs there; a relayed send's outputs
+clear once the wallet has proved it.
 
 ## Running a relayer that sends them
 
