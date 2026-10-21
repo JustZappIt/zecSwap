@@ -1,0 +1,82 @@
+{
+  "chainId": 11155111,
+  "contract": "0x459b0a69e0f736666b66a3ffe0fc17c11f05980d",
+  "token": "0x64c4a5cb09fe0b706d4cf24dc0a45fff275d727c",
+  "railgun": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
+  "minWindowSeconds": 1800,
+  "lateWindowSeconds": 3600,
+  "windows": "at every moment at most one side may reveal its share, by the clock and the swap's stage; no locks",
+  "deploymentTransaction": "0x21488d42cf426ae0bf7e435c93da27f6b99d5640faac3ea3c96cd26ecdbc6a83",
+  "deploymentBlock": 11958709,
+  "deploymentGasUsed": 27474590,
+  "zcashNetwork": "testnet",
+  "makerUrl": "https://<testnet gateway>.workers.dev/maker",
+  "relayerUrl": "https://<testnet gateway>.workers.dev/relayer",
+  "maker": "0x2bac02B5032e9092493814c705F156B49E288922",
+  "relayer": "0xd9633572041886Fa7584a2E12F36C8C7f1126412",
+  "deployer": "0x09ed1f966745be18c711c346242c0974dad7c3e5",
+  "sourceCommit": "0de4c0626acc7891b1393975c704b6295e65e16a",
+  "deployedAt": "2026-10-20",
+  "replaces": "0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c",
+  "status": "active",
+  "servicesSince": "2026-10-21T00:01:13Z",
+  "servicesSourceCommit": "0de4c0626acc7891b1393975c704b6295e65e16a",
+  "release": "/opt/zecswap/releases/20261020-windows-0de4c06",
+  "previousRelease": "/opt/zecswap/releases/20261018-deposits-120106d",
+  "backup": "/var/backups/zecswap/20261020-windows-0de4c06",
+  "makerSha256": "bdb12df377393b89f179ab5ec8cf5c74188a1f2107f02432378296bcbf80442e",
+  "relayerSha256": "e440aecb8d9946b001e371f58b75905efd8a30761b95ffe458832cd250343de2",
+  "issuer": "the previous release's, byte for byte",
+  "inventory": "2188628126",
+  "inventoryMigrationTransactions": [
+    {
+      "hash": "0x8409b62842368f137f64c6d27d82444c815f479a570e9d940d04d0bd51f45d28",
+      "block": 11958722,
+      "gasUsed": 138834
+    },
+    {
+      "hash": "0x105813d65055146842cb570e5d7992ac13a0fcc700c94f161de38a076c241036",
+      "block": 11958723,
+      "gasUsed": 128046
+    },
+    {
+      "hash": "0x68b8e6b64e8e1b61f3dfd0abafce99a8a6c2354497ceb5d95d1f21455442fe11",
+      "block": 11958724,
+      "gasUsed": 250946
+    }
+  ],
+  "validation": {
+    "liveSuiteOnASepoliaFork": "all eleven scenarios",
+    "linuxBuildFromCleanCommittedCheckout": true,
+    "uploadedBinaryChecksumVerified": true,
+    "noUnsettledSwapsOnTheOldContract": true,
+    "localAndPublicMakerInfoReportContract": true,
+    "localAndPublicRelayerTermsReportContract": true,
+    "publicMakerHealth": 204,
+    "serviceRestarts": 0,
+    "dashboard": "zapp-dashboard 6b510a3 reads the contract and the maker's windows",
+    "liveSwap": {
+      "swap": "0x6f522efa83d073bae139e88da29c51252821d4796ecaf5d269c7c09ae9aca216",
+      "route": "zecswap-cli swap --relayer through the public gateway, 2 tUSD",
+      "depositZat": 179155,
+      "opened": {
+        "transaction": "0x9e29f1099b8b2f783450a53e9fba6d58aa529164799fded01c9f93d603d9446a",
+        "block": 11958747
+      },
+      "ready": {
+        "transaction": "0x5341ef9101be44f9c0bfc7a95845c7475b296124487611e0eb7942342d92efc3",
+        "block": 11958761
+      },
+      "claimed": {
+        "transaction": "0x339d03abcb37c3ae4e94ea443499126cd887b023f9084071cc9b7c88d94aa43f",
+        "block": 11958773
+      },
+      "paidOut": {
+        "transaction": "0x136de6105b0b960debfcb8e4760120a7aea82e7b439841023f6cc3a363b4166e",
+        "block": 11958774,
+        "shielded": "1900000"
+      },
+      "makerSweep": "ba68939cb07ba3b18c2b502d3fc1a2cf35253cf0649d06d814fee21ad727cc80"
+    }
+  }
+}

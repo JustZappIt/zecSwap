@@ -24,7 +24,7 @@
   },
   "deployedAt": "2026-10-07",
   "replaces": "0xa067d2e46f7cea71f4e4fc862b6444ecc1450afc",
-  "status": "active",
+  "status": "retired",
   "servicesSince": "2026-10-07T04:42:18Z",
   "servicesSourceCommit": "9459be32442745421025bd1f9a246a4b1c7d39f2",
   "release": "/opt/zecswap/releases/20261007-terms-hash-9459be3",
@@ -62,5 +62,7 @@
     "publicForwardAndReverseQuotes": true,
     "serviceRestarts": 0,
     "liveSwap": false
-  }
+  },
+  "retiredAt": "2026-10-21",
+  "replacedBy": "0x459b0a69e0f736666b66a3ffe0fc17c11f05980d"
 }

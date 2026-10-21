@@ -63,12 +63,13 @@ vectors, a testnet maker. The original design and threat model are in
   `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with `RAILGUN_NETWORK=mainnet`.
 - **Windows contract (2026-10-20, PR #17, `feature/windows`)**: the lock contract's successor and
   its port (Recent fixes, first entry). All eleven live scenarios passed on a fork of Sepolia
-  (`.testnet/e2e-windows-fork.log`, and `-rerun.log` for the two fixed after it). The hosted
-  testnet's switch is staged, not run: `deploy/testnet/deploy-windows.sh` deploys the contract
-  (30-minute minimum window, 1-hour late window), then `switch-windows.sh`, uploaded with this
-  branch's Linux maker and relayer to the droplet's `/root/stage-windows`, moves the maker and
-  relayer onto it; zapp-dashboard reads both contracts from its `866df80` (not pushed). Android and
-  Veylor speak locks until ported.
+  (`.testnet/e2e-windows-fork.log`, and `-rerun.log` for the two fixed after it). Live on the
+  hosted testnet since 2026-10-21 00:01 UTC (`docs/deployment.md`, October 20 windows contract):
+  the contract `0x459b…980d` (30-minute minimum window, 1-hour late window), deployed by
+  `deploy/testnet/deploy-windows.sh`, and `switch-windows.sh` moved the maker, its inventory and
+  the relayer onto it. zapp-dashboard reads both contracts since its `866df80` and pins this one
+  since `6b510a3`, both deployed, not pushed. Android and Veylor speak locks until ported; mainnet
+  stays on the lock contract.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;

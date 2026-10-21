@@ -15,10 +15,14 @@ Both services are on the same host for this testnet deployment, under separate U
 and signing keys. This does not provide independent operators: the production relayer must
 remain independent of the maker, as the protocol requires.
 
-Both hosted services use the Sepolia contract
+Both hosted services use the Sepolia windows contract
+[`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d),
+on which at every moment at most one side may reveal its share
+([October 20](#october-20-windows-contract)); [sepolia-windows.json](../deployments/sepolia-windows.json)
+records it. Before it, from October 7, they used
 [`0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c`](https://sepolia.etherscan.io/address/0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c),
 which stores only a hash of each swap's terms ([October 7](#october-7-terms-hash-contract)).
-[sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records the transaction,
+[sepolia-terms-hash.json](../deployments/retired/sepolia-terms-hash.json) records the transaction,
 block, test token, Railgun proxy, lock duration and the services' release. Since 19:02 UTC that
 day the maker takes Privacy Pass tokens ([October 7 tokens](#october-7-tokens)): Android builds
 that pin this contract and both token keys can swap; earlier builds cannot. Since 04:45 UTC on
@@ -42,7 +46,9 @@ read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-
 Since 23:42 UTC on October 18 both swap a new test token, which the relayer also takes at wallets'
 deposit addresses and shields into their Railgun balances
 ([October 18 deposits](#october-18-deposits-and-a-new-test-token)). Since 02:27 UTC on October 19 a
-swap can be up to 200 tUSD, up from 20 ([October 19](#october-19-a-larger-swap-cap)).
+swap can be up to 200 tUSD, up from 20 ([October 19](#october-19-a-larger-swap-cap)). Since 00:01
+UTC on October 21 both run on the windows contract, and app builds that speak locks can no longer
+swap ([October 20](#october-20-windows-contract)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -183,7 +189,7 @@ point `/opt/zecswap/current` back at the previous release, and restart only the 
 
 At 04:15 UTC `0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c` was deployed on Ethereum Sepolia from
 `59b7d21` (#8), with Railgun's Sepolia proxy and a 600-second lock, paying in the existing test
-token; [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records it. A smoke test
+token; [sepolia-terms-hash.json](../deployments/retired/sepolia-terms-hash.json) records it. A smoke test
 deposited, opened, lock-refunded and refunded a swap on it.
 
 Sepolia now prices new state far higher than it did on October 2: the deployment used 30.2M gas
@@ -818,6 +824,58 @@ Rollback files are in `/var/backups/zecswap-mainnet/20261019-deposits-63803a6` (
 reload nginx, point `/opt/zecswap-mainnet/current` at the release `previous-current` names, and
 restart the relayer. Deposits then stop; their journal stays in
 `/var/lib/zecswap-mainnet-relayer/deposits.sqlite`.
+
+## October 20 windows contract
+
+The windows contract has no locks: at every moment at most one side may reveal its share, by the
+clock and the swap's stage alone ([reverse-flow.md](reverse-flow.md#windows-2026-10-20)). From
+`0de4c06` (#17), `deploy/testnet/deploy-windows.sh` deployed it on Sepolia from `0x09ed…c3e5` at
+23:58 UTC, with a 30-minute minimum window and a 1-hour late window, paying into Railgun's Sepolia
+proxy:
+
+| | Address | Block |
+| --- | --- | --- |
+| ZecSwap (windows) | [`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d) | 11,958,709 |
+
+It used 27,474,590 gas, and read back both windows and the proxy, and no `LOCK_DURATION()`.
+[sepolia-windows.json](../deployments/sepolia-windows.json) records it and the switch; the
+terms-hash contract's manifest moved to `deployments/retired/`.
+
+At 00:00 UTC on October 21 `deploy/testnet/switch-windows.sh` checked the maker's timing against
+the windows, found no live swap, stopped the maker and the relayer, and moved the maker's
+inventory: it withdrew the 2,188.628126 tUSD from the terms-hash contract (`0x8409b628…`, block
+11,958,722) and added them to the windows contract in `0x105813d6…` and `0x68b8e6b6…` (blocks
+11,958,723 and 11,958,724). Both configs name the new contract, and the maker started on a fresh
+store, keeping its keys, root secret, wallets and spent tokens. Both run a build of `0de4c06` in
+`/opt/zecswap/releases/20261020-windows-0de4c06`, now `/opt/zecswap/current`; the issuer is the
+previous release's, byte for byte. Both started at 00:01:13. The maker's timing stays as it was: t0
+45 minutes after its open, t1 an hour after t0, an unpaid swap cancelled 5 minutes before t0, and
+no reveal sent with under 2 minutes left in its window.
+
+After the restart the maker's health answered 204, and its info and the relayer's terms named the
+new contract, all the same through the public gateway. zapp-dashboard reads both contracts'
+records and both kinds of maker policy since `866df80`, and pins the new contract since `6b510a3`
+(`BRIDGE_TESTNET_CONTRACT` too); both are deployed, not yet pushed.
+
+Then `zecswap-cli swap --relayer` swapped 2 tUSD through the gateway (`0x6f522efa`): accepted at
+00:05:43, readied by the maker at 00:08:36 once the 179,155-zatoshi deposit had its two
+confirmations, claimed through the relayer at 00:11:00, twelve blocks after the ready as a claim
+before `t0` waits, and paid out at 00:11:12, 1.9 tUSD into the wallet's Railgun balance
+(`0x136de610…`, block 11,958,774). The maker then swept the deposit (`ba68939c…`).
+
+App builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and
+the maker's info and the relayer's terms name the new contract. Mainnet stays on the lock contract
+and its release.
+
+Rollback files are in `/var/backups/zecswap/20261020-windows-0de4c06` (root-only):
+`maker-config.toml`, `relayer-config.toml`, `previous-current`, and the retired store as
+`retired-maker.sqlite` with its backup `maker.sqlite`. Rolling back moves the inventory back on
+chain:
+1. Stop both services.
+2. Run `withdraw-inventory all` under the current maker config.
+3. Restore both configs and the retired store as `/var/lib/zecswap-maker/maker.sqlite`.
+4. Point `/opt/zecswap/current` at the release `previous-current` names.
+5. Run `add-inventory 2188628126` under the restored config, and start both.
 
 ## Deployment sequence
 
