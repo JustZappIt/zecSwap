@@ -8,8 +8,11 @@ a funding notification nor a reported ZEC transaction is proof that the other si
 
 1. Derive a fresh swap index and its auth key, user share, and Railgun refund note. Request
    `POST /v1/reverse/quote` with `units`, `user`, and `refundNote`. Persist the index and quote.
-2. Verify the deployment, token, amounts, deadlines, maker proof, and refund commitment.
-   Send the usual share proof and viewing keys to
+2. Verify the deployment, token, amounts, deadlines, maker proof, and refund commitment, and
+   that the contract is the windows contract (below). The quote's funding deadline, `t0`
+   (`readyDeadline`) and `t1` (`refundAfter`) must leave `MIN_WINDOW` from the funding deadline
+   to `t0` and from `t0` to `t1`: `openReverse` refuses a `t0` under `MIN_WINDOW` from when it
+   lands, or a `t1` under it from `t0`. Send the usual share proof and viewing keys to
    `POST /v1/reverse/quote/{quoteId}/accept`. Repeating the same acceptance returns the same
    swap. The maker reserves ZEC inventory and starts watching the joint account.
 3. Import the joint viewing key locally **before funding**, saving its account and birthday.
@@ -23,12 +26,16 @@ a funding notification nor a reported ZEC transaction is proof that the other si
    It records the payment transaction before broadcasting and retries the same transaction.
 5. The app scans the joint account and waits until the full quoted `depositZat` is spendable.
    The second authorization signs `Ready` and submits it to `POST /v1/reverse/ready` on the
-   independent relayer. Do not offer this action based only on maker progress.
-6. Once the ready is in a finalized block, the maker claims before `t1`, revealing its share
-   and crediting USDC to its inventory.
-   The app reads and verifies that share, combines it with its own, and sweeps ZEC home, to
-   a never-used address: the maker holds the joint viewing key.
-   `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
+   independent relayer. Do not offer this action based only on maker progress. The contract
+   takes a ready only before `t0`: sign none with less than its life left before `t0`, save its
+   deadline before handing the signature out, and sign none once a refund was asked for.
+6. Once the ready is final, in a finalized block or with 64 blocks above it, the maker claims
+   before `t1`, revealing its share and crediting USDC to its inventory. The app reads and
+   verifies that share, combines it with its own, and sweeps ZEC home, to a never-used address:
+   the maker holds the joint viewing key. `depositZat` is the gross joint-account payment; the
+   receive sweep has its own Zcash fee.
+
+## Terms and the contract
 
 The escrow's terms keep the contract's original roles: `Terms.maker` is the USDC side and
 `Terms.user` is the ZEC side. For reverse swaps these are the user's auth address and the
@@ -37,9 +44,27 @@ maker's address respectively; the shares are likewise reversed, and `payoutNote`
 meanings of maker and user. Its ID is `reverseSwapId`,
 `keccak256(abi.encode(userAuthAddress, makerShare, true))`, which is never a forward swap's
 `keccak256(abi.encode(maker, userShare))`: a maker can't open the forward swap a user verified
-as a reverse escrow, where that user would have no claim after `t0`. The contract stores only
-`hashTerms(terms)`, so every relayer request on the escrow carries `terms` (see
-[Terms hash](#terms-hash-2026-10-06)).
+as a reverse escrow, where that user would have no claim after `t0`.
+
+The contract keeps only `keccak256(abi.encode(terms))` of each swap's `Terms` (maker, token,
+amount, makerKey, userKey, user, t0, t1, payoutNote) and reverts `WrongTerms` on any call whose
+terms hash otherwise. Every call that acts on a swap takes `terms` after the id, and every relayer
+request on a swap carries them as a `terms` object: `/v1/reverse/ready`, `/refund` (and its
+nested payout), `/refund-payout` and `/rescue`. The relayer reads the escrow against them before
+sending and rejects a mismatch. `/v1/reverse/fund` takes none: `openReverse` takes the
+`ReverseOpen` and stores its hash. `getSwap` returns four words, the terms hash, stage, `paidOut`
+and the revealed secret, and `Opened` emits the terms. Read an escrow by comparing
+`getSwap(id).termsHash` with the hash of the terms the quote and the user's share give; a
+mismatch means it is not the quoted escrow.
+
+The contract has no locks: at every moment at most one side may reveal, by the clock and the
+stage alone. Read `MIN_WINDOW()` and `LATE_WINDOW()` to tell it from the lock contract, which has
+`LOCK_DURATION()` instead and whose six-word record decodes silently under the windows ABI: a
+client that skips the check would refund there without the lock it needs. The relayer's
+`GET /v1/terms` and the maker's `GET /v1/info` name the contract too, `contractKind: "windows"`
+with `minWindow` and `lateWindow` in seconds, and a forward accept answers `lateWindow`: refuse a
+service that names another kind or other windows. A swap opened on the lock contract ends under
+its rules; a deployment switches contracts only once none is live there.
 
 ## Waiting, cancellation, and recovery
 
@@ -49,24 +74,51 @@ Suggested app steps are “Sending private USDC”, “Confirming escrow”, “
 or readiness cannot finish. A submitted transaction is not a completed swap.
 
 Before ready, the user can refund at any time. Once ready, the escrow is the maker's to claim
-until `t1` (`refundAfter`), and the user's to refund from `t1` on, for good. The contract takes a
-ready only before `t0` (`readyDeadline`). Unlike the forward route, an unready reverse escrow
-**never becomes claimable just because time passed**. An offline phone therefore cannot lose its
-USDC to a timeout claim. Funds can stay in escrow until the phone resumes; the maker cannot sign
-a cancellation for the user.
+until `t1`, and the user's to refund from `t1` on, for good. Unlike the forward route, an unready
+reverse escrow **never becomes claimable just because time passed**. An offline phone therefore
+cannot lose its USDC to a timeout claim. Funds can stay in escrow until the phone resumes; the
+maker cannot sign a cancellation for the user.
 
-The relayer exposes `/v1/reverse/refund`, `/refund-payout`, and `/rescue`. The app sends its
-share only in a refund whose window, read with the newest block, leaves the reveal margin. It
-saves the deadline of every ready it signs before handing the signature out, and refunds an
-unready escrow only once the chain is past that deadline or `t0`: a ready landing first would
-revert the refund with the share public, the maker's to claim with. It saves that it asked for a
-refund before sending one, and never signs a ready after it. The relayer likewise holds a refund
-back, `503`, while a ready it sent may still land.
-Refund settlement reveals the user's share without making token calls; the maker can recover
-its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
-Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
-Ready submissions currently use sponsored relayer gas; refund payout uses its configured fee. Initial funding can also use the opt-in sponsorship below, which the funding transaction
-itself pays for with a relayer fee in the escrow token.
+**Refunds.** The relayer exposes `/v1/reverse/refund`, `/refund-payout`, and `/rescue`. Read the
+escrow and the newest block in one read right before revealing: refund a ready escrow only from
+`t1`, and an unready one only once the chain is past the deadline of every ready signed for it,
+or past `t0`. A ready landing first would revert the refund with the share public, the maker's
+to claim with; once that can't happen, a refund has no end. Save that a refund was asked for
+before sending one, and never sign a ready after it. The relayer holds a refund back, `503`, while
+a ready it sent may still land, and refuses a ready, `400`, from `t0` or for an escrow it sent a
+refund for; it reads the escrow again when a refund's turn to broadcast comes and refuses one the
+contract would revert, `400` with nothing sent. On mainnet it sends
+refunds through Flashbots Protect, which lands one only if it succeeds, so one that would land
+reverted is dropped with its share never public
+([deployment.md](deployment.md#switching-to-mainnet)). Refund settlement reveals the user's share
+without making token calls; the maker can recover its ZEC. A separate payout shields USDC only to
+the committed refund note, less the signed fee. Failed shielding can be retried.
+
+**Rescue.** Railgun returns a refused note to the swap's own vault, and a rescue shields it again.
+It signs `Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)`:
+read `rescueNonces(id)` before approving. The contract checks the deadline and consumes the nonce
+before calling the vault; a failed shield rolls the consumption back. Both relayer rescue
+endpoints require `nonce` and `deadline` in their JSON. Refuse to sign a rescue for a contract
+without `rescueNonces`, and never move a swap record to another contract.
+
+**Sweeps.** Joint sweeps require `SweepIntent` at the Rust and Kotlin signing boundaries. The
+caller selects the destination independently of the PCZT builder and supplies a minimum receipt
+and maximum fee. The signer verifies note and value commitments and encrypted outputs, rejects
+change to another receiver, rejects transparent and Sapling components and preauthorized nonzero
+spends, and signs only the matching joint inputs. Preserve note values and randomness until this
+check: Android signs the unredacted local PCZT before proving. Reverse receives keep the reviewed
+sweep fee; forward recovery and the maker use a fixed 320,000-zatoshi ceiling.
+
+Ready submissions use sponsored relayer gas; a refund payout pays its configured fee. Initial
+funding can use the opt-in sponsorship below, which the funding transaction pays for with a
+relayer fee in the escrow token.
+
+**Persistence.** Keep the app's foreground swap worker active through local deposit verification
+and settlement. Persist before submitting: swap index and quote, joint account and birthday,
+funding transaction, pending authorized action, each ready signature's deadline, a refund asked
+for, and the receive transaction. On restart, reconcile chain state first; never unshield a
+second time because an HTTP request timed out. A sweep resumes from the recorded transaction or
+is rebuilt only after expiry is established.
 
 ## Sponsored initial funding
 
@@ -116,47 +168,36 @@ body to 132 KiB; the nginx route has the matching limit.
 
 The response is `{ "transactions": ["0x<transaction hash>"] }` as soon as submission
 is acknowledged, **before confirmation**. Persist the hash and independently verify escrow
-with the required confirmations. A matching escrow already on-chain returns an empty list
-without another submission, including after a relayer restart. A different escrow is rejected.
-After any timeout or error, reconcile first and only retry the identical prepared proof;
-never generate another unshield merely because the response was lost. There is no durable
-relayer submission journal: an ambiguous send can require chain reconciliation and a retry
-can consume additional relayer gas. Railgun nullifiers and the unique escrow ID prevent
-funding twice. The client must retain its pending action and must not treat an error as proof
-that no transaction was submitted.
+with the required confirmations. The same funding posted again while the first may still land
+answers with its hash and sends nothing; once a matching escrow is on chain, it answers with an
+empty list, also after a relayer restart. A different escrow is rejected. After any timeout or
+error, reconcile first and only retry the identical prepared proof; never generate another
+unshield merely because the response was lost. The relayer keeps its record of a funding in
+memory: after a restart it sends nothing from its funding account until its earlier sends are
+mined, and a retry of a funding that never landed can cost it gas again. Railgun nullifiers and
+the unique escrow ID prevent funding twice. The client must retain its pending action and must
+not treat an error as proof that no transaction was submitted.
 
 Enable it in the relayer's configuration and fund its `RELAYER_PRIVATE_KEY` account with ETH,
 which tops its funding account up. Fundings go through Railgun's own Relay Adapt on the chain of
 the relayer's `network`. Startup rejects a chain, Railgun or token of another network, a
 `relay_adapt` other than Railgun's own there, the maker's own gas account, and adapters whose
 `railgun()` differs from settlement's `RAILGUN()`. There is no aggregate sponsorship budget.
-Operators opt in through configuration; the hosted Sepolia service is enabled as recorded
-in [deployment.md](deployment.md#october-2-initial-funding-sponsorship). Mainnet
-Railgun broadcaster submission (a private fee note with `requireSuccess=false`) remains
-separate work, including verification of escrow failure recovery on that submission path.
-
-Local tests cover a fixture encoded by the installed Railgun SDK, rejected transaction
-mutations, API limits, and Anvil submission with the real escrow and a **mock** adapter.
-The mock substitutes minting for Railgun unshield/proof verification. A real locally proved
-Railgun-to-escrow transaction and Android device flow remain live integration checks.
-
-Keep the app's foreground swap worker active through local deposit verification and settlement.
-Persist before submitting: swap index and quote, joint account/birthday, funding transaction,
-pending authorized action, and receive transaction. On restart, reconcile chain state first;
-never unshield a second time because an HTTP request timed out. A delayed ready signature cannot
-undo a cancellation. A sweep resumes from the recorded transaction or is rebuilt only after
-expiry is established.
+The hosted Sepolia relayer has it enabled. Mainnet Railgun broadcaster submission (a private
+fee note with `requireSuccess=false`) remains separate work, including verification of escrow
+failure recovery on that submission path.
 
 ## Service setup
 
 See [deployment.md](deployment.md) for public endpoints through Cloudflare and the persistent
 host requirement.
 
-Use a newly deployed contract with `openReverse`; existing deployed bytecode does not gain
-these methods. Leave `[reverse]` absent to keep the maker's reverse admission disabled.
-The example config includes optional settings. Supply `MAKER_ZCASH_SEED`, run `zec-inventory`
-to obtain its shielded address, fund it, and run the existing `serve` command. Reopening an
-inventory wallet with a different seed is rejected. Keep the seed, maker root, and databases.
+Leave `[reverse]` absent to keep the maker's reverse admission disabled. The example config
+includes optional settings; the maker refuses to start unless its reverse deadlines leave the
+contract's `MIN_WINDOW` from the funding deadline to `t0` and from `t0` to `t1`. Supply
+`MAKER_ZCASH_SEED`, run `zec-inventory` to obtain its shielded address, fund it, and run the
+existing `serve` command. Reopening an inventory wallet with a different seed is rejected. Keep
+the seed, maker root, and databases.
 
 Inventory is reserved at acceptance, including a configured Zcash fee reserve. Persisted
 records retain payment and recovery transactions across restarts. A replacement is prepared
@@ -165,11 +206,12 @@ the configured confirmations before the maker forgets the joint account.
 
 ## Integration boundary
 
-`GET /v1/info` reports the maker's chain, contract, token, Zcash network and whether reverse
-admission is enabled. Compare these with the app's pinned deployment before quoting; this
-metadata does not establish trust in a deployment. `GET /healthz` returns 204 only after a
-recent completed watchtower pass, otherwise 503. It does not guarantee available inventory
-or healthy upstream chains. Reverse startup rejects contracts without the reverse interface.
+`GET /v1/info` reports the maker's chain, contract, the contract's kind and windows, token,
+Zcash network, whether reverse admission is enabled, and the key accepts hand tokens back under.
+Compare these with the app's pinned deployment before quoting; this metadata does not establish
+trust in a deployment. `GET /healthz` returns 204 only after a recent completed watchtower pass,
+otherwise 503. It does not guarantee available inventory or healthy upstream chains. Reverse
+startup rejects contracts without the reverse interface.
 
 Both services return errors as `{ "code": "unknownSwap", "error": "swap is unknown" }`.
 `code` is the shared `service::ErrorCode` enum; `error` is display text, never a branching key.
@@ -177,74 +219,6 @@ Malformed JSON, fields and path parameters use `invalidRequest`; missing routes 
 methods also return JSON. Responses carry `Cache-Control: no-store`. Reconcile chain state
 after transport failures; an error does not establish that a transaction was never broadcast.
 
-`zecswap-client::reverse::ReverseUser` provides the reference flow. The Android library exposes
-`ReverseAtomicSwap` for opening, ready/refund authorizations, and the receive sweep, while
-reusing `AtomicSwap.accept`, `payoutNote`, and `depositAccount`. Its native binaries include
-the new methods.
-
-This change does not wire the sibling Android app's screens, foreground worker, or Railgun
-Relay Adapt proof bridge. Its submission can now use `RelayerApi::fund_reverse` and the
-endpoint above. Those integrations must follow the ordering above. Local
-tests cover signatures, escrow settlement, private refunds, persistence, and forward-flow
-regressions; a real Railgun-to-Zcash reverse swap remains a live integration check.
-
-## Authorization hardening (2026-10-02)
-
-Rescue uses `Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)`.
-Read `rescueNonces(id)` before approval. The contract checks the deadline and consumes the nonce
-before calling the vault; a failed shield rolls consumption back. Both relayer rescue endpoints
-require `nonce` and `deadline` in their JSON payloads. This changes the rescue ABI and typed data:
-ship the contract, relayer, native library and wallet together for a new deployment. Existing
-contracts cannot acquire this protection through an app update, and old signatures remain valid
-there. Updated Android clients refuse new rescue approvals for contracts without the nonce getter.
-Ordinary settlement and refunds for existing swaps remain supported. Do not move an existing
-swap record to a different contract or represent old approvals as revoked.
-
-Joint sweeps now require `SweepIntent` at the Rust and Kotlin signing boundaries. The caller
-selects the destination independently of the PCZT builder and supplies a minimum receipt and
-maximum fee. The signer verifies note/value commitments and encrypted outputs, rejects change
-to another receiver, rejects transparent/Sapling components and preauthorized nonzero spends,
-and signs only the matching joint inputs. Preserve note values and randomness until this check;
-Android signs the unredacted local PCZT before proving. Ship the rebuilt JNI libraries with the
-matching Kotlin wrapper. Android reverse receives retain the reviewed sweep fee; forward recovery
-and the maker use a fixed 320,000-zatoshi ceiling.
-
-Android rereads the matching confirmed escrow and current clock immediately before a reverse
-refund reveal. This closes preparation delays. The relayer reads the refund's window again once
-its turn to broadcast comes and refuses it, `400` with nothing sent, if less than its margin is
-left; on mainnet it sends the refund through Flashbots Protect, which lands it only if it
-succeeds, so one that would land reverted is dropped, its share never public
-([deployment.md](deployment.md#switching-to-mainnet)). A user's refund has no end, an unready
-escrow's from funding and a ready one's from `t1`: only a ready landing first can revert it, and
-neither the app nor the relayer refunds while a ready it sent may still land.
-
-## Terms hash (2026-10-06)
-
-The contract keeps only `keccak256(abi.encode(terms))` of each swap's `Terms` (maker, token,
-amount, makerKey, userKey, user, t0, t1, payoutNote) and reverts `WrongTerms` on any call whose
-terms hash otherwise. `getSwap` returns the hash, stage, `paidOut` and the revealed
-secret; `Opened` still emits the terms. Every call that acts on a swap takes `terms` after the
-id, and every relayer request on a swap carries them as a `terms` object: `/v1/reverse/ready`,
-`/refund` (and its nested payout), `/refund-payout` and `/rescue`. The relayer
-reads the escrow against them before sending and rejects a mismatch. `/v1/reverse/fund` is
-unchanged: `openReverse` takes the same `ReverseOpen` and stores the hash. Read an escrow by
-comparing `getSwap(id).termsHash` with the hash of the terms the quote and the user's share
-give; a mismatch means it is not the quoted escrow. This changes the ABI: ship the contract,
-maker, relayer, native library and wallet together for a new deployment.
-
-## Windows (2026-10-20)
-
-The contract has no locks. At every moment at most one side may reveal, by the clock and the
-stage alone: on a reverse escrow, the maker's claim from ready until `t1`, the user's refund while
-it isn't ready and from `t1`. `ready` is taken only before `t0`, and `openReverse` refuses a `t0`
-under `MIN_WINDOW()` from when it lands, or a `t1` under it from `t0`; the client checks a quote
-leaves both from its funding deadline. `getSwap` returns four words (hash, stage, `paidOut`,
-secret), and `/v1/reverse/lock-refund` is gone. Read `MIN_WINDOW()` and `LATE_WINDOW()` to tell
-the contract apart: the lock contract has `LOCK_DURATION()` instead, and its record decodes
-silently under the windows ABI, so a client that skips the check would refund there without the
-lock it needs. The relayer's `GET /v1/terms` and the maker's `GET /v1/info` name the contract
-too, `contractKind: "windows"` with `minWindow` and `lateWindow` in seconds, and a forward accept
-answers `lateWindow`: a wallet refuses a service that names another kind or other windows. A
-swap on the lock contract ends under its rules: a deployment switches contracts
-only once none is live there. This changes the ABI: ship the contract, maker, relayer, native
-library and wallet together.
+`zecswap_client::reverse::ReverseUser` is the reference flow. The Android library exposes
+`ReverseAtomicSwap` for opening, ready and refund authorizations, and the receive sweep, while
+reusing `AtomicSwap.accept`, `payoutNote`, and `depositAccount`.

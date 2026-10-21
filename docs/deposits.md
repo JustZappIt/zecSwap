@@ -69,6 +69,9 @@ them; never take them from the relayer. The deployments are recorded in
   "relayer": "0x…",
   "chainId": 11155111,
   "contract": "0x…",
+  "contractKind": "windows",
+  "minWindow": 1800,
+  "lateWindow": 3600,
   "fee": "20000",
   "deposits": {
     "contract": "0x…",
@@ -160,7 +163,8 @@ again after any answer that says to.
 | --- | --- | --- | --- |
 | `200` | | `{"transactions": ["0x…"]}`: sent, not yet mined. The same request posted again, before or after it mines, answers with the same hash and sends nothing new while it can still land. | Watch the transaction. Once it mines, believe it only if the pinned contract's `DepositShielded` in it names this address and this request's note. If it hasn't mined within a minute, post the same bytes again: the relayer names it again while it can still land, and sends the deposit anew once it can't, as when Flashbots dropped it (`zecswap-client`'s `REPOST`). |
 | `400` | `rejected` | Refused: nothing was sent, and nothing will be. | If the fee or validity is the problem, fetch the terms and sign again; otherwise drop it. |
-| `400`, `415`, `422` | `invalidRequest` | Not JSON, not sent as JSON, or not this request. Nothing was sent. | As `rejected`. |
+| `400`, `415`, `422` | `invalidRequest` | Not JSON (`400`), not sent as `application/json` (`415`), or not this request (`422`): a field missing, mistyped, or not one of these. Nothing was sent. | As `rejected`. |
+| `413` | none, from the gateway | The body is over 16 KiB. Nothing was sent. | As `rejected`. |
 | `409` | `conflict` | The authorization is used, or another deposit of this address is on its way: `{"code": "conflict", "error": "…", "transactions": ["0x…"]}` names the relayer's own that do it, empty when the relayer doesn't know one. | Follow the transaction named, believing it once the pinned contract's `DepositShielded` in it names this address; with none, read the chain. |
 | `503` | `unavailable` | Not now, nothing sent, with `Retry-After` in seconds: the gateway is busy (5), gas can't be priced (60), the network's gas price is above `maxGasPriceWei` (300), the relayer is low on ETH (120), as many deposits are on their way as it sends at once (30), its private RPC refused the deposit (30), a deposit of this address reverted within the hour (the seconds left of it), or an earlier deposit of this address has no known outcome (15). | With `Retry-After` of 30 seconds or less, post the same bytes again, for up to 90 seconds in all (`zecswap-client`'s `BUSY_WAIT`, `BUSY_PATIENCE`); longer, show the deposit as waiting and post again with backoff. |
 | `500` | `internal` | The relayer could not read the chain or record the deposit. Nothing is known. | Post the same bytes again later. |

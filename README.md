@@ -3,18 +3,22 @@
 Non-custodial swaps of shielded ZEC for USDC on Ethereum, both ways, with the USDC held
 privately in Railgun. The ZEC goes to an Ironwood address whose spend key is split between the
 maker (`e`) and the user (`z`); an Ethereum contract pays out against whichever half is
-revealed, verifying it on Pallas. Nothing touches a transparent address, no Ethereum account of the user's appears
-on-chain, and nothing is custodied: every failure ends in a refund.
+revealed, verifying it on Pallas. Nothing touches a transparent address, no Ethereum account of
+the user's appears on-chain, and nothing is custodied: every failure ends in a refund.
 
 Running in beta on Ethereum mainnet:
 [`0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D`](https://etherscan.io/address/0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D#code),
-source verified on Etherscan.
+source verified on Etherscan. The Sepolia testnet runs its successor, the windows contract, at
+[`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d).
 
 ## How a swap works
 
-The normal path of a ZEC to USDC swap, start to finish.
-[The full explainer](https://claude.ai/artifact/RY2zKsM5x7Yc1nyBn23gRg) adds the deadlines, the
-locks, what happens when something goes wrong, and the USDC to ZEC direction.
+The normal path of a ZEC to USDC swap, start to finish, on the mainnet contract.
+[The full explainer](https://claude.ai/artifact/RY2zKsM5x7Yc1nyBn23gRg) adds the deadlines, what
+happens when something goes wrong, and the USDC to ZEC direction. Both show its claim lock, step
+8 below. The windows contract has none: at every moment at most one side may reveal its half, by
+the deadlines and the swap's stage alone, and you claim as soon as the swap is ready, or from `t0`
+if the maker never readies it, until `t1`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/swap-flow-dark.png">
@@ -37,7 +41,7 @@ locks, what happens when something goes wrong, and the USDC to ZEC direction.
 | `crates/zecswap-jni` | The Android wallet's bindings, built as `libzecswap.so` |
 | `crates/zecswap-cli` | Test wallet and user CLI for testnets |
 | `crates/zecswap-e2e` | Live end-to-end suite on Ethereum Sepolia and the Zcash testnet |
-| `contracts` | `ZecSwap.sol` (two-phase lock-then-reveal state machine), `ShieldVault.sol` (per-swap Railgun payout vaults) and `Pallas.sol` (Foundry) |
+| `contracts` | `ZecSwap.sol` (the windows contract), `ShieldVault.sol` (per-swap Railgun payout vaults), `Deposits.sol` (deposit addresses' USDC into Railgun) and `Pallas.sol` (Foundry) |
 
 The reverse Railgun-USDC-to-ZEC service, authorization flow, and Android integration boundary
 are described in [the reverse flow guide](docs/reverse-flow.md).
@@ -45,20 +49,21 @@ are described in [the reverse flow guide](docs/reverse-flow.md).
 ## Tests
 
 ```sh
-cargo test --workspace                     # crypto and policy edge cases, plus local Ironwood spends with real proofs
+cargo test --workspace                     # crypto, policy and the audit's spec cases, plus local Ironwood spends with real proofs
 (cd contracts && forge test)               # contract unit, fuzz and invariant tests
 cargo build --release -p zecswap-core --example evm_vectors
 (cd contracts && FOUNDRY_PROFILE=ffi forge test)   # Pallas.sol fuzzed against the Rust implementation
-scripts/e2e-testnet.sh --railgun [scenario ...]   # live testnets, about 25 minutes
+scripts/e2e-testnet.sh --railgun [--fork] [scenario ...]   # live testnets, about 30 minutes
 ```
 
 The live suite deploys fresh contracts, runs an attentive and a silent maker in-process and
 plays its scenarios concurrently, checking both chains at the end of each. Four pay into
-Railgun (`railgun-happy`, `railgun-resume`, `railgun-no-deposit`, `railgun-send`) and six pay an
-ordinary account: `happy` and five failures (`no-deposit`, `underpaid`, `silent-maker`,
-`never-claimed`, `abandoned-claim`). It restarts the attentive maker partway through. It needs an Ethereum Sepolia key
-with test ETH and a `zecswap-cli` wallet holding testnet ZEC; see the script for the variables.
-Without `--railgun` it runs the contract's older account payouts on Base Sepolia instead.
+Railgun (`railgun-happy`, `railgun-resume`, `railgun-no-deposit`, `railgun-send`), `deposit`
+shields a deposit address's USDC, and six pay an ordinary account: `happy` and five failures
+(`no-deposit`, `underpaid`, `silent-maker`, `never-claimed`, `late-claim`). It restarts the
+attentive maker partway through. It needs a `zecswap-cli` wallet holding testnet ZEC, and an
+Ethereum Sepolia key with test ETH unless `--fork` runs it on a local fork; see the script for the
+variables. Without `--railgun` it runs the contract's account payouts on Base Sepolia instead.
 
 ```sh
 cargo run -p zecswap-cli -- --data-dir .testnet/user init     # prints the address to fund
@@ -72,5 +77,7 @@ cp crates/zecswap-maker/maker.example.toml maker.toml         # then fill in the
 MAKER_PRIVATE_KEY=... MAKER_ROOT_SECRET=... cargo run -p zecswap-maker -- --config maker.toml serve
 ```
 
-Deploy the contract with `contracts/script/Deploy.s.sol`; [the deployment guide](docs/deployment.md)
-covers the hosted maker, relayer and token issuer.
+Deploy the contract with `contracts/script/Deploy.s.sol`; on Sepolia, whose repricing
+`forge script` misjudges, use `deploy/testnet/deploy-windows.sh`, and on mainnet
+`scripts/deploy-contract.sh`.
+[The deployment guide](docs/deployment.md) covers the hosted maker, relayer and token issuer.

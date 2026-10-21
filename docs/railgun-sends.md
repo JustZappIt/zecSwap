@@ -22,6 +22,9 @@ relayer does not; don't fall back to a phone-funded transaction.
   "relayer": "0x…",
   "chainId": 11155111,
   "contract": "0x…",
+  "contractKind": "windows",
+  "minWindow": 1800,
+  "lateWindow": 3600,
   "fee": "20000",
   "railgunSends": {
     "railgunAddress": "0zk1…",
@@ -99,10 +102,10 @@ releases them. Post the same bytes again after any answer that says to.
 | `200` | | `{"transactions": ["0x…"]}`: submitted, not yet mined. Posting the same bytes again, before or after it mines, answers with the same hash and sends nothing new. | Watch the transaction, then settle from the chain. |
 | `400` | `rejected` | Refused: nothing from this proof was sent, and nothing will be. | Drop the send and free its notes. |
 | `400`, `415`, `422` | `invalidRequest` | The body is not JSON (`400`), not sent as `application/json` (`415`), or not this request (`422`): a field missing, mistyped, or not one of the four. Nothing was sent. | As `rejected`. |
-| `413` | none, from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
+| `413` | `invalidRequest`, or none from the gateway | The body is over 132 KiB. Nothing was sent. | As `rejected`. |
 | `404`, `405` | `notFound`, `methodNotAllowed` | This relayer has no such route. Nothing was sent. | As `rejected`. |
 | `409` | `alreadySpent` | A note it spends is spent on chain, or a transaction the relayer already sent spends it, pending or mined: this proof or another of the same notes. `{"code": "alreadySpent", "error": "…", "transactions": ["0x…"]}` names the relayer's own transactions that spend them; it is empty when the notes went in one the relayer didn't send or no longer remembers. | Settle from the chain; don't free the notes. |
-| `503` | `unavailable` | An earlier send of these notes has no known outcome yet, one reverted less than an hour ago (`Retry-After` says how many seconds are left), the relayer can't price gas right now, or the gateway is busy. | Post the same bytes again later. |
+| `503` | `unavailable` | Not now, nothing sent, with `Retry-After` in seconds: an earlier send of these notes has no known outcome yet (15), one reverted less than an hour ago (the seconds left of that hour), the relayer can't price gas right now (60), or the gateway is busy (5). | Post the same bytes again after `Retry-After`. |
 | `500` | `internal` | The relayer could not read the chain or record the send. Nothing is known. | Post the same bytes again later. |
 
 A transport failure, a timeout or any other answer: post the same bytes again later. The relayer
@@ -226,10 +229,9 @@ is read; and the current `fee` and gas caps. A relayer that sends no Railgun tra
 `404`. zapp-dashboard's `/bridge/profit` charts what each send made and the fee that would cover
 today's gas.
 
-A one-note private send burned 1,069,971 gas and a withdrawal 1,120,796 on a fork of Sepolia
-(2026-10-08). With ETH at $2,481 that was about $0.32 at that day's 0.12 gwei on Ethereum, and
-$2.65 at 1 gwei: a fixed fee can't follow gas, which is why the relayer prices sends by it. `fee`
-is the floor, for when gas is cheap; the dashboard shows what each send made.
+A send's gas cost follows the gas price, which a fixed fee can't: at 1.07M gas a one-note send
+cost about $0.32 at 0.12 gwei and $2.65 at 1 gwei with ETH at $2,481 (2026-10-08). That is why
+the relayer prices sends by gas, with `fee` the floor for when gas is cheap.
 
 To move to Ethereum, point `evm_rpc`, `contract` (a deployment whose `RAILGUN()` is Railgun's
 proxy there, `0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9`) and `token` at mainnet and set the
