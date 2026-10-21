@@ -874,6 +874,14 @@ relayer never readies an escrow after a refund it sent. A second 2 tUSD swap thr
 (block 11,959,115), sent once 12 blocks stood above the ready, and paid out 1.9 tUSD into the
 wallet's Railgun balance (`0xeb876c2c…`).
 
+At 03:22:00 UTC, again with no live swap, both moved to a build of `a28ab10` in
+`/opt/zecswap/releases/20261021-wire-fields-a28ab10` (`previous-current` in
+`/var/backups/zecswap/20261021-wire-fields-a28ab10`). The relayer's terms and the maker's info now
+name the contract, `contractKind: "windows"`, `minWindow: 1800` and `lateWindow: 3600`, as the
+port spec's wire changes ask, through the gateway as on the droplet, and a forward accept
+answers `lateWindow`. A 1 tUSD swap through the gateway (`0xd85e3cd3`) then ran on it, paying
+0.9 tUSD into the wallet's Railgun balance (`0xaa8cedea…`).
+
 App builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and
 the maker's info and the relayer's terms name the new contract. Mainnet stays on the lock contract
 and its release.
