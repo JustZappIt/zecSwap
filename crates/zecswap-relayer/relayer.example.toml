@@ -10,9 +10,6 @@
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  optional, both or neither, with [railgun_sends]: a
 #                         message for each private send and unshield once it mines, and with
 #                         [gas_alerts] when the relayer's own account runs low on ETH
-#
-# On Ethereum mainnet, send through a private RPC such as Flashbots Protect: a claim is safe in
-# the public mempool while its lock is held, but it invites griefing.
 
 # "testnet" or "mainnet": the relayer refuses to start on a chain, Railgun or token (USDC on
 # mainnet) of another network.
@@ -27,15 +24,32 @@ listen = "127.0.0.1:8788"
 fee = 100000
 # With `providers`, every fee follows gas: the larger of its floor and the gas it pays for at
 # the gas price and ETH price when it is quoted, with `fee_margin_bps` on top. A quoted swap fee
-# is honored for an hour, a send's rate for ten minutes. A payout's fee pays for the claim lock,
-# the claim and the payout (on a refund, its lock, the refund and its payout): 1.65M gas on
-# Sepolia, where new state is repriced.
+# is honored for an hour, a send's rate for ten minutes. A payout's fee pays for the claim and the
+# payout (on a refund, the refund and its payout); with the lock contract's claim lock, 1.65M gas
+# on Sepolia, where new state is repriced.
 fee_gas = 1800000
 providers = ["coinmarketcap", "alchemy"]
 fee_margin_bps = 1000
+# Seconds a claim's or reverse refund's lock must still have, when the request arrives and again
+# when its turn to broadcast comes; one that ran under it meanwhile is refused, nothing sent.
 claim_margin = 300
 # Each derived account keeps ETH for this many of its largest transactions at the gas price now.
 top_up_transactions = 8
+
+# Required on mainnet: claims and reverse refunds reveal a share in their calldata, and one that
+# landed after its lock lapsed would revert with the share public, the other side's turn next. So
+# they go through Flashbots Protect, never the public mempool: it lands a transaction only if it
+# succeeds, and drops one it couldn't land within `blockRange` blocks. They go one at a time, each
+# waited for until it mines or its range and 5 blocks more pass, and a restarted relayer sends
+# none for as long. Only the broadcasts go there; reads, nonces and simulations stay on evm_rpc.
+# The relayer refuses /fast, which shows TEE searchers whole transactions, failed ones too; any
+# hint but `hash` alone, as the default hints share logs and `Claimed` logs the share; and every
+# parameter but hint, blockRange, builder, refund, originId and auctionTimeout, such as canRevert
+# or useMempool. BuilderNet, Flashbots' own builder, always gets the transaction; each `builder`
+# named, in Flashbots' builder registry's spelling, gets it too, and lands it sooner. Testnet
+# goes without: Flashbots' Sepolia relay has landed nothing since block 11,856,337.
+# [reveals]
+# private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
 
 # Initial Railgun-to-escrow gas sponsorship. Disabled when absent.
 # Its derived funding account pays this gas, topped up from RELAYER_PRIVATE_KEY's: fund that one.

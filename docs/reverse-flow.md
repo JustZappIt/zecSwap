@@ -24,7 +24,8 @@ a funding notification nor a reported ZEC transaction is proof that the other si
 5. The app scans the joint account and waits until the full quoted `depositZat` is spendable.
    The second authorization signs `Ready` and submits it to `POST /v1/reverse/ready` on the
    independent relayer. Do not offer this action based only on maker progress.
-6. The maker takes a claim lock and reveals its share, crediting USDC to its inventory.
+6. Once the ready is in a finalized block, the maker claims before `t1`, revealing its share
+   and crediting USDC to its inventory.
    The app reads and verifies that share, combines it with its own, and sweeps ZEC home, to
    a never-used address: the maker holds the joint viewing key.
    `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
@@ -47,19 +48,24 @@ Suggested app steps are “Sending private USDC”, “Confirming escrow”, “
 “Confirm ZEC received”, and “Moving ZEC to your wallet”. Show a refund action when funding
 or readiness cannot finish. A submitted transaction is not a completed swap.
 
-Before ready, the user can cancel. After ready, refund becomes available at `refundAfter`,
-subject to the existing alternating claim/refund locks. Ready expires at `readyDeadline`.
-Unlike the forward route, an unready reverse escrow **never becomes claimable just because
-time passed**. An offline phone therefore cannot lose its USDC to a timeout claim. Funds can
-remain locked until the phone resumes; the maker cannot sign a cancellation for the user.
+Before ready, the user can refund at any time. Once ready, the escrow is the maker's to claim
+until `t1` (`refundAfter`), and the user's to refund from `t1` on, for good. The contract takes a
+ready only before `t0` (`readyDeadline`). Unlike the forward route, an unready reverse escrow
+**never becomes claimable just because time passed**. An offline phone therefore cannot lose its
+USDC to a timeout claim. Funds can stay in escrow until the phone resumes; the maker cannot sign
+a cancellation for the user.
 
-The relayer exposes `/v1/reverse/lock-refund`, `/refund`, `/refund-payout`, and `/rescue`.
-The app must observe a refund lock with the reveal margin remaining before sending its secret.
+The relayer exposes `/v1/reverse/refund`, `/refund-payout`, and `/rescue`. The app sends its
+share only in a refund whose window, read with the newest block, leaves the reveal margin. It
+saves the deadline of every ready it signs before handing the signature out, and refunds an
+unready escrow only once the chain is past that deadline or `t0`: a ready landing first would
+revert the refund with the share public, the maker's to claim with. It saves that it asked for a
+refund before sending one, and never signs a ready after it. The relayer likewise holds a refund
+back, `503`, while a ready it sent may still land.
 Refund settlement reveals the user's share without making token calls; the maker can recover
 its ZEC. A separate payout shields USDC only to the committed refund note, less the signed fee.
 Failed shielding can be retried, and returned notes use the existing per-swap vault rescue.
-Ready and lock submissions currently use sponsored relayer gas; refund payout uses its configured
-fee. Initial funding can also use the opt-in sponsorship below, which the funding transaction
+Ready submissions currently use sponsored relayer gas; refund payout uses its configured fee. Initial funding can also use the opt-in sponsorship below, which the funding transaction
 itself pays for with a relayer fee in the escrow token.
 
 ## Sponsored initial funding
@@ -204,19 +210,38 @@ matching Kotlin wrapper. Android reverse receives retain the reviewed sweep fee;
 and the maker use a fixed 320,000-zatoshi ceiling.
 
 Android rereads the matching confirmed escrow and current clock immediately before a reverse
-refund reveal. This closes preparation delays, but timely inclusion after sending the secret
-still depends on the relayer, chain availability, and the lock window.
+refund reveal. This closes preparation delays. The relayer reads the refund's window again once
+its turn to broadcast comes and refuses it, `400` with nothing sent, if less than its margin is
+left; on mainnet it sends the refund through Flashbots Protect, which lands it only if it
+succeeds, so one that would land reverted is dropped, its share never public
+([deployment.md](deployment.md#switching-to-mainnet)). A user's refund has no end, an unready
+escrow's from funding and a ready one's from `t1`: only a ready landing first can revert it, and
+neither the app nor the relayer refunds while a ready it sent may still land.
 
 ## Terms hash (2026-10-06)
 
 The contract keeps only `keccak256(abi.encode(terms))` of each swap's `Terms` (maker, token,
 amount, makerKey, userKey, user, t0, t1, payoutNote) and reverts `WrongTerms` on any call whose
-terms hash otherwise. `getSwap` returns the hash, stage, `paidOut`, both locks and the revealed
+terms hash otherwise. `getSwap` returns the hash, stage, `paidOut` and the revealed
 secret; `Opened` still emits the terms. Every call that acts on a swap takes `terms` after the
 id, and every relayer request on a swap carries them as a `terms` object: `/v1/reverse/ready`,
-`/lock-refund`, `/refund` (and its nested payout), `/refund-payout` and `/rescue`. The relayer
+`/refund` (and its nested payout), `/refund-payout` and `/rescue`. The relayer
 reads the escrow against them before sending and rejects a mismatch. `/v1/reverse/fund` is
 unchanged: `openReverse` takes the same `ReverseOpen` and stores the hash. Read an escrow by
 comparing `getSwap(id).termsHash` with the hash of the terms the quote and the user's share
 give; a mismatch means it is not the quoted escrow. This changes the ABI: ship the contract,
 maker, relayer, native library and wallet together for a new deployment.
+
+## Windows (2026-10-20)
+
+The contract has no locks. At every moment at most one side may reveal, by the clock and the
+stage alone: on a reverse escrow, the maker's claim from ready until `t1`, the user's refund while
+it isn't ready and from `t1`. `ready` is taken only before `t0`, and `openReverse` refuses a `t0`
+under `MIN_WINDOW()` from when it lands, or a `t1` under it from `t0`; the client checks a quote
+leaves both from its funding deadline. `getSwap` returns four words (hash, stage, `paidOut`,
+secret), and `/v1/reverse/lock-refund` is gone. Read `MIN_WINDOW()` and `LATE_WINDOW()` to tell
+the contract apart: the lock contract has `LOCK_DURATION()` instead, and its record decodes
+silently under the windows ABI, so a client that skips the check would refund there without the
+lock it needs. A swap on the lock contract ends under its rules: a deployment switches contracts
+only once none is live there. This changes the ABI: ship the contract, maker, relayer, native
+library and wallet together.

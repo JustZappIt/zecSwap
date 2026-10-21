@@ -4,9 +4,12 @@ use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
-use zecswap_api::relayer::{self, Claim, LockClaim, Sent};
+use zecswap_api::relayer::{self, Claim, Sent};
 use zecswap_api::{Acceptance, Network, Quote};
-use zecswap_chain::evm::{OnChainSwap, Settlement, Stage, swap_id};
+use zecswap_chain::evm::judge::{self, Go, READY_DEPTH, Refusal};
+use zecswap_chain::evm::{
+    BlockId, OnChainSwap, Reveal, Settlement, Stage, Window, swap_id, wall_now,
+};
 use zecswap_core::{
     Domain, JointAccount, Payout, SpendKey, SwapContext, Terms, UserSwapKeys, derive_user_keys,
 };
@@ -19,12 +22,11 @@ use crate::api::{MakerApi, RelayerApi, refused};
 pub const MIN_TIME_TO_T0: u64 = 25 * 60;
 /// Until `t0` an unresponsive maker holds the deposit hostage.
 pub const MAX_TIME_TO_T0: u64 = 2 * 60 * 60;
-/// Never reveal under a claim lock with less than this left: the claim must land before it
-/// lapses, or the maker gets the next turn knowing both halves.
+/// Never reveal with less than this left in the claim's window: a claim landing after `t1`
+/// reverts, its share public, with the swap the maker's to refund.
 pub const CLAIM_MARGIN: u64 = 5 * 60;
-/// How long a relayer has to land a signed claim lock. It must stay under the contract's lock
-/// duration, which makes a signature good for one lock only.
-const LOCK_SIGNATURE_TTL: u64 = 2 * 60;
+/// How long a claim waits for its ready to be deep enough.
+const DEPTH_WAIT: Duration = Duration::from_secs(10 * 60);
 const CATCH_UP: Duration = Duration::from_secs(60);
 /// How long a relayer request that may have been sent is watched for on the chain before it is
 /// posted again.
@@ -52,8 +54,7 @@ pub struct UserSwap {
 
 /// How a user is paid, and who sends its transactions.
 pub enum Route {
-    /// To the account the settlement connection sends as, which takes the claim lock, claims
-    /// and withdraws itself.
+    /// To the account the settlement connection sends as, which claims and withdraws itself.
     Account,
     /// Into the user's Railgun wallet, the one its Railgun seed opens. Each swap's own key
     /// signs, the relayer sends, and the user needs no account on the chain.
@@ -92,11 +93,12 @@ impl User {
         seed: &[u8],
         railgun_seed: &[u8],
         network: Network,
-        settlement: Settlement,
+        mut settlement: Settlement,
         maker: MakerApi,
         token: Address,
         route: Route,
     ) -> Self {
+        settlement.reveal_with_margin(CLAIM_MARGIN);
         Self {
             seed: Zeroizing::new(seed.to_vec()),
             railgun: RailgunKeys::from_seed(railgun_seed, RAILGUN_WALLET),
@@ -189,18 +191,18 @@ impl User {
     /// Checks the swap as the contract records it and derives the deposit account from the
     /// on-chain shares. Nothing may be deposited unless this succeeds.
     pub async fn verify(&self, swap: &UserSwap) -> Result<JointAccount> {
+        // Swaps on the lock contract deployed before follow its rules, not ours.
+        self.settlement
+            .windows()
+            .await
+            .context("the swap's contract is not the windows contract")?;
         // Read against the terms we expect, so the chain vouches for every one of them: the
         // quoted maker, token, amount and share, our share and payout, and the deadlines.
         let chain = self.caught_up(swap, |_| true).await?;
         let keys = self.keys(swap.index)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
         let now = self.settlement.now().await?;
-        let min = self.min_time_to_t0;
-        ensure!(
-            (now + min..=now + MAX_TIME_TO_T0).contains(&chain.t0),
-            "t0 is {}s away, outside {min}..={MAX_TIME_TO_T0}s",
-            chain.t0.saturating_sub(now)
-        );
+        check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1)?;
         Ok(JointAccount::derive(
             &chain.maker_share,
             &chain.user_share,
@@ -234,41 +236,8 @@ impl User {
         })
     }
 
-    /// Takes the claim lock, directly or through the relayer.
-    pub async fn lock_claim(&self, swap: &UserSwap) -> Result<()> {
-        let terms = self.terms(swap)?;
-        match &self.route {
-            Route::Account => {
-                self.settlement.lock_claim(swap.swap_id, &terms).await?;
-            }
-            Route::Railgun { relayer, .. } => {
-                let now = self.settlement.now().await?;
-                let deadline = now + LOCK_SIGNATURE_TTL;
-                let digest = self.domain(swap).lock_claim(&swap.swap_id.0, deadline);
-                let request = LockClaim {
-                    swap_id: swap.swap_id,
-                    terms: (&terms).into(),
-                    deadline,
-                    signature: self.keys(swap.index)?.auth.sign(&digest).into(),
-                };
-                let locked = |chain: &OnChainSwap| {
-                    chain.stage == Stage::Claimed || chain.claim_lock_until > now
-                };
-                let ticket = swap.ticket.as_deref();
-                self.relayed(
-                    swap,
-                    || relayer.lock_claim(&request, ticket),
-                    locked,
-                    deadline,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Reveals the user share under a claim lock with time to spare, taking the lock if
-    /// needed, then pays the user. Safe to call again after an interruption at any point.
+    /// Reveals the user share in the claim's window with time to spare, then pays the user. Safe
+    /// to call again after an interruption at any point.
     pub async fn claim(&self, swap: &UserSwap) -> Result<Paid> {
         match &self.route {
             Route::Account => self.claim_to_account(swap).await,
@@ -302,7 +271,7 @@ impl User {
             // Revealed before an interruption: withdraw whatever is still credited.
             Stage::Claimed => self.settlement.balance_of(chain.user, chain.token).await?,
             Stage::Open | Stage::Ready => {
-                self.hold_claim_lock(swap, &chain).await?;
+                self.claim_window(swap).await?;
                 let keys = self.keys(swap.index)?;
                 self.settlement
                     .claim(swap.swap_id, &self.terms(swap)?, &keys.share)
@@ -375,17 +344,19 @@ impl User {
                     self.settlement.railgun_accepts(chain.token).await?,
                     "Railgun is not taking the payout now; the share stays secret"
                 );
-                self.hold_claim_lock(swap, &chain).await?;
+                let window = self.claim_window(swap).await?;
                 let claim = Claim {
                     swap_id: swap.swap_id,
                     terms: swap_terms,
                     secret: keys.share.to_be_bytes().into(),
                     payout: payout.clone(),
                 };
-                // Revealed again only under the lock with the margin left, as it was at first.
-                let lock = self.state(swap).await?.claim_lock_until;
+                // Posted again only while the window keeps the margin, as it did at first.
                 let claimed = |chain: &OnChainSwap| chain.stage == Stage::Claimed;
-                let until = lock.saturating_sub(CLAIM_MARGIN);
+                let until = match window {
+                    Window::Until(end) => end.saturating_sub(CLAIM_MARGIN),
+                    _ => u64::MAX,
+                };
                 let sent = self
                     .relayed(swap, || relayer.claim(&claim, ticket), claimed, until)
                     .await?;
@@ -469,19 +440,51 @@ impl User {
         })
     }
 
-    async fn hold_claim_lock(&self, swap: &UserSwap, chain: &OnChainSwap) -> Result<()> {
-        let now = self.settlement.now().await?;
-        if chain.claim_lock_until > now + CLAIM_MARGIN {
-            return Ok(());
+    /// The claim's window, once it is open with `CLAIM_MARGIN` to spare and, before `t0`, the
+    /// swap's ready has `READY_DEPTH` blocks above it, which it waits for: judged on the swap and
+    /// the newest block read as of one block, by the later of its time and the wall clock.
+    async fn claim_window(&self, swap: &UserSwap) -> Result<Window> {
+        let terms = self.terms(swap)?;
+        let windows = self.settlement.windows().await?;
+        let give_up = Instant::now() + DEPTH_WAIT;
+        loop {
+            let (chain, head) = self.settlement.read(swap.swap_id, &terms).await?;
+            let chain = chain.context("the swap is not on-chain")?;
+            let deadlines = (chain.t0, chain.t1);
+            let window =
+                windows.window(Reveal::Claim, false, chain.stage, deadlines, head.timestamp);
+            match judge::forward_claim(
+                windows,
+                chain.stage,
+                deadlines,
+                &head,
+                wall_now(),
+                CLAIM_MARGIN,
+            ) {
+                Ok(Go::Now) => return Ok(window),
+                Ok(Go::OnceReadyAt(block)) => {
+                    let then = self
+                        .settlement
+                        .swap_at(swap.swap_id, &terms, BlockId::number(block))
+                        .await?;
+                    if then.is_some_and(|then| then.stage == Stage::Ready) {
+                        return Ok(window);
+                    }
+                }
+                Err(Refusal::MakersUntil(late)) => bail!(
+                    "from t1 the swap is its maker's to refund, which gives the deposit back; it can be claimed again from {late}"
+                ),
+                Err(Refusal::TooSoon) => {
+                    bail!("the claim's window ends too soon to claim in; the share stays secret")
+                }
+                Err(_) => bail!("the swap can be claimed once ready, or from t0"),
+            }
+            ensure!(
+                Instant::now() < give_up,
+                "the swap's ready never got {READY_DEPTH} blocks deep"
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        ensure!(
-            chain.claim_lock_until <= now,
-            "the claim lock lapses too soon to reveal under; claim once the next turn is ours"
-        );
-        self.lock_claim(swap).await?;
-        self.caught_up(swap, |chain| chain.claim_lock_until > now)
-            .await?;
-        Ok(())
     }
 
     /// Reads the swap once our RPC node shows what `seen` expects: it can lag the node a
@@ -534,4 +537,42 @@ impl User {
 
 fn last(sent: &Sent) -> Option<B256> {
     sent.transactions.last().copied()
+}
+
+/// That `t0` is `min` to `MAX_TIME_TO_T0` from `now`, and that `t1` leaves time to claim from
+/// `t0` with `CLAIM_MARGIN` to spare, should the maker never ready the swap.
+fn check_deadlines(now: u64, min: u64, t0: u64, t1: u64) -> Result<()> {
+    ensure!(
+        (now + min..=now + MAX_TIME_TO_T0).contains(&t0),
+        "t0 is {}s away, outside {min}..={MAX_TIME_TO_T0}s",
+        t0.saturating_sub(now)
+    );
+    ensure!(
+        t1 >= t0 + 2 * CLAIM_MARGIN,
+        "t1 follows t0 by {}s, too soon to claim in should the maker never ready the swap",
+        t1.saturating_sub(t0)
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_swap_leaves_its_user_time_to_claim_from_t0_without_a_ready() {
+        let (now, min) = (1_000_000, 1_800);
+        let t0 = now + 2_700;
+        assert!(check_deadlines(now, min, t0, t0 + 3_600).is_ok());
+        assert!(check_deadlines(now, min, t0, t0 + 2 * CLAIM_MARGIN).is_ok());
+        let short = check_deadlines(now, min, t0, t0 + 2 * CLAIM_MARGIN - 1).unwrap_err();
+        assert!(
+            short.to_string().contains("too soon to claim in"),
+            "{short}"
+        );
+        assert!(check_deadlines(now, min, now + min - 1, now + 2 * min).is_err());
+        assert!(
+            check_deadlines(now, min, now + MAX_TIME_TO_T0 + 1, now + 2 * MAX_TIME_TO_T0).is_err()
+        );
+    }
 }

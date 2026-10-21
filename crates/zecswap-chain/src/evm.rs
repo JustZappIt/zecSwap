@@ -4,15 +4,18 @@ mod canonical;
 pub mod deposits;
 mod events;
 pub mod funding;
+pub mod judge;
 mod meter;
 pub mod railgun;
 pub use events::{SwapEvent, SwapEventKind};
 pub use meter::{RpcMeter, RpcReport, RpcUsage, endpoint, log_usage};
+use railgun::Signed;
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alloy::contract::{CallBuilder, CallDecoder};
-use alloy::eips::BlockNumberOrTag;
+use alloy::eips::{BlockNumberOrTag, Encodable2718};
 use alloy::network::{Ethereum, EthereumWallet, TransactionBuilder};
 use alloy::primitives::keccak256;
 use alloy::providers::bindings::IMulticall3;
@@ -24,6 +27,7 @@ use alloy::rpc::client::ClientBuilder;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
+use alloy::transports::RpcError;
 use tokio::sync::{Mutex, MutexGuard, Notify, OnceCell};
 use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
@@ -43,6 +47,19 @@ const SEND_RETRY_DELAY: Duration = Duration::from_secs(3);
 const BATCH: usize = 100;
 /// The blocks Flashbots Protect tries a transaction for, unless its URL's `blockRange` says.
 const PROTECT_BLOCKS: u64 = 25;
+/// Past those, the blocks after which one it never landed is taken as dropped: a margin for
+/// missed slots and a node a block or two behind.
+const PROTECT_MARGIN_BLOCKS: u64 = 5;
+/// The gas a claim or refund sent privately may burn, set rather than estimated: an estimate would
+/// show the node the share before any builder sees it. Mainnet's claims burn 237k.
+const REVEAL_GAS: u64 = 400_000;
+/// Blocks a public send waits for before it goes again at the fees then.
+const REPRICE_BLOCKS: u64 = 3;
+/// Reads in a row that must show a public send's nonce taken before it counts as dropped.
+const NONCE_TAKEN_READS: u32 = 3;
+/// How long a public send is priced again before its account's turn is let go, its outcome
+/// unknown: one priced at the base fee then lands within two blocks, unless its account runs dry.
+const LAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 sol! {
     struct ReverseOpenWords {
@@ -81,42 +98,35 @@ sol! {
     interface IZecSwap {
         event Opened(bytes32 indexed id, address indexed maker, address indexed user, address token, uint256 amount, uint256[2] makerKey, uint256[2] userKey, uint64 t0, uint64 t1, bytes32 payoutNote);
         event MarkedReady(bytes32 indexed id);
-        event ClaimLocked(bytes32 indexed id, uint64 until);
         event Claimed(bytes32 indexed id, uint256 userSecret);
         event PaidOut(bytes32 indexed id, address relayer, uint256 fee);
         event Rescued(bytes32 indexed id, address relayer, uint256 fee);
-        event RefundLocked(bytes32 indexed id, uint64 until);
         event Refunded(bytes32 indexed id, uint256 makerSecret);
         struct Swap {
             bytes32 termsHash;
             uint8 stage;
             bool paidOut;
-            uint64 claimLockUntil;
-            uint64 refundLockUntil;
             uint256 secret;
         }
 
         function openReverse(ReverseOpenWords terms, bytes signature) external returns (bytes32);
         function reverseFunding(bytes32 id) external view returns (bytes32 refundNote, uint64 blockNumber);
         function readyWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
-        function lockRefundWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
         function refundPayout(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
         function deposit(address token, uint256 amount) external;
         function withdraw(address token, uint256 amount, address to) external;
         function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1, bytes32 payoutNote) external returns (bytes32 id);
         function ready(bytes32 id, TermsWords terms) external;
-        function lockClaim(bytes32 id, TermsWords terms) external;
-        function lockClaimWithSig(bytes32 id, TermsWords terms, uint64 deadline, bytes signature) external;
         function claim(bytes32 id, TermsWords terms, uint256 userSecret) external;
         function payout(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, bytes signature) external;
         function rescue(bytes32 id, TermsWords terms, bytes32 npk, ShieldCiphertextWords ciphertext, uint128 fee, uint64 nonce, uint64 deadline, bytes signature) external;
         function rescueNonces(bytes32 id) external view returns (uint64);
-        function lockRefund(bytes32 id, TermsWords terms) external;
         function refund(bytes32 id, TermsWords terms, uint256 makerSecret) external;
         function getSwap(bytes32 id) external view returns (Swap memory);
         function vaultOf(bytes32 id) external view returns (address);
         function balanceOf(address maker, address token) external view returns (uint256);
-        function LOCK_DURATION() external view returns (uint256);
+        function MIN_WINDOW() external view returns (uint256);
+        function LATE_WINDOW() external view returns (uint256);
         function RAILGUN() external view returns (address);
     }
 
@@ -271,8 +281,6 @@ pub struct OnChainSwap {
     pub amount: u128,
     pub t0: u64,
     pub t1: u64,
-    pub claim_lock_until: u64,
-    pub refund_lock_until: u64,
     pub maker_share: PublicShare,
     pub user_share: PublicShare,
     /// The share settlement revealed, big-endian; zero until then.
@@ -298,18 +306,101 @@ impl OnChainSwap {
 pub struct SwapState {
     pub stage: Stage,
     pub terms_hash: B256,
-    pub claim_lock_until: u64,
-    pub refund_lock_until: u64,
     /// The share settlement revealed, big-endian; zero until then.
     pub secret: [u8; 32],
     pub paid_out: bool,
 }
 
-/// A block's number and time: the time is the clock the contract's deadlines run on.
+/// A block's number, time and hash: the time is the clock the contract's windows run on, and the
+/// hash pins reads to that very block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Head {
     pub number: u64,
     pub timestamp: u64,
+    pub hash: B256,
+}
+
+/// The contract's two window lengths, fixed at deployment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Windows {
+    /// The least time an open leaves before `t0`, and from `t0` to `t1`.
+    pub min: u64,
+    /// How long from `t1` only the maker may refund a forward swap; after it, its user may claim.
+    pub late: u64,
+}
+
+/// Which share a call reveals: a claim's (the user's forward, the maker's reverse) or a refund's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    Claim,
+    Refund,
+}
+
+impl Reveal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Reveal::Claim => "claim",
+            Reveal::Refund => "refund",
+        }
+    }
+}
+
+/// Whether the contract takes a reveal now, and until when.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// It would revert, its share public.
+    Shut,
+    /// Until this time, exclusive.
+    Until(u64),
+    /// From now on, for good.
+    Lasting,
+}
+
+impl Window {
+    /// Whether a reveal sent now lands in time, given the later of the chain's time and the wall
+    /// clock as `now`: either can only make a reveal go earlier.
+    pub fn leaves(self, now: u64, margin: u64) -> bool {
+        match self {
+            Window::Shut => false,
+            Window::Until(end) => now.saturating_add(margin) < end,
+            Window::Lasting => true,
+        }
+    }
+}
+
+impl Windows {
+    /// The window, at chain time `now`, of `reveal` on a swap at `stage` with deadlines `t0` and
+    /// `t1`, a reverse escrow if `reverse`: as the contract's `_claimable` and `_refundable` judge.
+    /// At most one of a swap's two reveals is ever open.
+    pub fn window(
+        &self,
+        reveal: Reveal,
+        reverse: bool,
+        stage: Stage,
+        (t0, t1): (u64, u64),
+        now: u64,
+    ) -> Window {
+        if !matches!(stage, Stage::Open | Stage::Ready) {
+            return Window::Shut;
+        }
+        let late = t1.saturating_add(self.late);
+        let open = |yes: bool, window: Window| if yes { window } else { Window::Shut };
+        match (reveal, reverse) {
+            (Reveal::Claim, false) if now >= t1 => open(now >= late, Window::Lasting),
+            (Reveal::Claim, false) => open(stage == Stage::Ready || now >= t0, Window::Until(t1)),
+            (Reveal::Claim, true) => open(now < t1 && stage == Stage::Ready, Window::Until(t1)),
+            (Reveal::Refund, false) if now >= t1 => open(now < late, Window::Until(late)),
+            (Reveal::Refund, false) => open(stage == Stage::Open && now < t0, Window::Until(t0)),
+            (Reveal::Refund, true) => open(stage == Stage::Open || now >= t1, Window::Lasting),
+        }
+    }
+}
+
+/// The wall clock, in Unix seconds.
+pub fn wall_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// A note Railgun recorded shielding, as its `Shield` event reports it.
@@ -386,14 +477,21 @@ pub struct Settlement {
     account: Option<Address>,
     /// The account's key, for transactions recorded before they are broadcast.
     wallet: Option<EthereumWallet>,
-    /// Where the account's deposits are broadcast instead of the public mempool.
+    /// Where the account's contract calls and deposits are broadcast instead of the public
+    /// mempool.
     private: Option<Private>,
+    /// Seconds a claim's or refund's window must still have when its turn to broadcast comes.
+    reveal_margin: u64,
     sending: Line,
     meter: RpcMeter,
     /// The contract's Railgun proxy, which it fixes at deployment.
     railgun: OnceCell<Address>,
     /// Whether Multicall3 is deployed, so reads of many swaps or accounts take one call.
     multicall: OnceCell<bool>,
+    /// The contract's window lengths, which it fixes at deployment.
+    windows: OnceCell<Windows>,
+    /// What this account's reveals and cancel locks may pay per gas over its other sends' fee cap.
+    reveal_headroom: u128,
 }
 
 /// A revert-protecting private RPC: it lands a transaction only if it succeeds, never shows it to
@@ -401,6 +499,26 @@ pub struct Settlement {
 struct Private {
     provider: DynProvider,
     blocks: u64,
+    /// The least nonce the next contract call sent through it may take: past the last one that
+    /// mined, which a node a block behind may not count yet.
+    least_nonce: AtomicU64,
+}
+
+impl Private {
+    /// The blocks after the one a transaction went out in from which, unmined, it is dropped.
+    fn window(&self) -> u64 {
+        self.blocks + PROTECT_MARGIN_BLOCKS
+    }
+}
+
+/// A share a call reveals on a swap, whose window must still have `margin` seconds left when the
+/// call is broadcast.
+#[derive(Clone, Debug)]
+struct Check {
+    id: B256,
+    terms: Terms,
+    reveal: Reveal,
+    margin: u64,
 }
 
 /// The account's sends, one at a time. A turn that ends, whether or not its transaction went
@@ -481,34 +599,43 @@ impl Settlement {
             account,
             wallet,
             private: None,
+            reveal_margin: 0,
             sending: Line::default(),
             meter: meter.clone(),
             railgun: OnceCell::new(),
             multicall: OnceCell::new(),
+            windows: OnceCell::new(),
+            reveal_headroom: 0,
         }
     }
 
-    /// Broadcasts this account's deposits through `rpc_url` alone, never the public mempool:
-    /// Flashbots Protect's, which drops a transaction it couldn't land within its URL's
-    /// `blockRange` blocks, or 25.
+    /// Broadcasts this account's contract calls and deposits through `rpc_url` alone, never the
+    /// public mempool: Flashbots Protect's, which drops a transaction it couldn't land within its
+    /// URL's `blockRange` blocks, or 25. Only the broadcasts go there: every read stays on this
+    /// connection's node.
     pub fn broadcast_privately(&mut self, rpc_url: &str) -> Result<(), Error> {
-        // Never echo the URL: a private RPC's can carry a key.
-        let unreadable = || Error::Config("the private RPC's URL is unreadable".into());
-        let url = reqwest::Url::parse(rpc_url).map_err(|_| unreadable())?;
-        let blocks = match url.query_pairs().find(|(name, _)| name == "blockRange") {
-            Some((_, blocks)) => blocks.parse().map_err(|_| unreadable())?,
-            None => PROTECT_BLOCKS,
-        };
+        // Read first: what it finds wrong never echoes the URL.
+        let blocks = protect_blocks(&private_url(rpc_url)?)?;
         self.private = Some(Private {
             provider: signing_provider(rpc_url, None, &RpcMeter::default())?,
             blocks,
+            least_nonce: AtomicU64::new(0),
         });
         Ok(())
     }
 
-    /// With a private RPC, the blocks it tries a transaction for.
-    pub fn private_blocks(&self) -> Option<u64> {
-        self.private.as_ref().map(|private| private.blocks)
+    /// With a private RPC, the blocks after the one a transaction went out in from which,
+    /// unmined, it is taken as dropped: those the private RPC tries it for, and a margin.
+    pub fn private_window(&self) -> Option<u64> {
+        self.private.as_ref().map(Private::window)
+    }
+
+    /// Broadcasts this account's claims and refunds only while their window has `seconds` left
+    /// when their turn to broadcast comes: one that waited for it may have run the window down,
+    /// and a reveal landing after its window closes reverts, its share public, with the other
+    /// side's window open. With no margin, the window must merely be open.
+    pub fn reveal_with_margin(&mut self, seconds: u64) {
+        self.reveal_margin = seconds;
     }
 
     /// That the private RPC, if any, serves the chain this connection reads.
@@ -571,6 +698,7 @@ impl Settlement {
         Ok(Head {
             number: block.header.number,
             timestamp: block.header.timestamp,
+            hash: block.header.hash,
         })
     }
 
@@ -593,14 +721,88 @@ impl Settlement {
         Ok(block.header.timestamp)
     }
 
-    pub async fn lock_duration(&self) -> Result<u64, Error> {
-        let duration = self
+    /// The contract's window lengths, read once: an error for a contract without them, such as
+    /// the lock contract deployed before, whose swaps follow other rules and whose swap records
+    /// would read wrong here.
+    pub async fn windows(&self) -> Result<Windows, Error> {
+        self.windows
+            .get_or_try_init(|| async {
+                let missing = |e| {
+                    Error::Contract(format!(
+                        "{} has no MIN_WINDOW or LATE_WINDOW, as only the windows contract has: {e}",
+                        self.contract()
+                    ))
+                };
+                let (min, late) = tokio::try_join!(
+                    async { self.contract.MIN_WINDOW().call().await.map_err(missing) },
+                    async { self.contract.LATE_WINDOW().call().await.map_err(missing) },
+                )?;
+                Ok::<_, Error>(Windows {
+                    min: u64::try_from(min).map_err(Error::contract)?,
+                    late: u64::try_from(late).map_err(Error::contract)?,
+                })
+            })
+            .await
+            .copied()
+    }
+
+    /// The swap and the newest block, the one as of the other: a decision on a reveal never takes
+    /// one block's time with another's state, as two reads from a load-balanced RPC can.
+    pub async fn read(
+        &self,
+        id: B256,
+        terms: &Terms,
+    ) -> Result<(Option<OnChainSwap>, Head), Error> {
+        let head = self.head().await?;
+        Ok((
+            self.swap_at(id, terms, BlockId::hash(head.hash)).await?,
+            head,
+        ))
+    }
+
+    /// The swap as of block `at`, read against the terms it should have opened with.
+    pub async fn swap_at(
+        &self,
+        id: B256,
+        terms: &Terms,
+        at: BlockId,
+    ) -> Result<Option<OnChainSwap>, Error> {
+        let swap = self
             .contract
-            .LOCK_DURATION()
+            .getSwap(id)
+            .block(at)
             .call()
             .await
             .map_err(Error::contract)?;
-        u64::try_from(duration).map_err(Error::contract)
+        on_chain(id, decode_state(swap)?, terms)
+    }
+
+    /// The window `reveal` on the swap has now, with the newest block it was judged at: the swap,
+    /// whether it is a reverse escrow and the block's time all read as of that block.
+    pub async fn reveal_window(
+        &self,
+        id: B256,
+        terms: &Terms,
+        reveal: Reveal,
+    ) -> Result<(Window, Head), Error> {
+        let windows = self.windows().await?;
+        let head = self.head().await?;
+        let at = BlockId::hash(head.hash);
+        let (swap, funding) = tokio::try_join!(self.swap_at(id, terms, at), async {
+            let funding = self.contract.reverseFunding(id).block(at).call().await;
+            funding.map_err(Error::contract)
+        })?;
+        let window = swap.map_or(Window::Shut, |swap| {
+            let reverse = !funding.refundNote.is_zero();
+            windows.window(
+                reveal,
+                reverse,
+                swap.stage,
+                (swap.t0, swap.t1),
+                head.timestamp,
+            )
+        });
+        Ok((window, head))
     }
 
     /// The swap, read against the terms it should have opened with: none if it never opened,
@@ -989,23 +1191,6 @@ impl Settlement {
         Ok(self.submit(call).await?.transaction_hash)
     }
 
-    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund_with_sig", chain = "evm"))]
-    pub async fn lock_refund_with_sig(
-        &self,
-        id: B256,
-        terms: &Terms,
-        deadline: u64,
-        signature: &[u8; 65],
-    ) -> Result<B256, Error> {
-        let call = self.contract.lockRefundWithSig(
-            id,
-            terms_words(terms),
-            deadline,
-            signature.to_vec().into(),
-        );
-        Ok(self.submit(call).await?.transaction_hash)
-    }
-
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund_payout", chain = "evm"))]
     pub async fn refund_payout(
         &self,
@@ -1029,30 +1214,6 @@ impl Settlement {
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "ready", chain = "evm"))]
     pub async fn ready(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
         let call = self.contract.ready(id, terms_words(terms));
-        Ok(self.submit(call).await?.transaction_hash)
-    }
-
-    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_claim", chain = "evm"))]
-    pub async fn lock_claim(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
-        let call = self.contract.lockClaim(id, terms_words(terms));
-        Ok(self.submit(call).await?.transaction_hash)
-    }
-
-    /// Takes the claim lock for the swap's `user`, which signed for it.
-    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_claim_with_sig", chain = "evm"))]
-    pub async fn lock_claim_with_sig(
-        &self,
-        id: B256,
-        terms: &Terms,
-        deadline: u64,
-        signature: &[u8; 65],
-    ) -> Result<B256, Error> {
-        let call = self.contract.lockClaimWithSig(
-            id,
-            terms_words(terms),
-            deadline,
-            signature.to_vec().into(),
-        );
         Ok(self.submit(call).await?.transaction_hash)
     }
 
@@ -1119,13 +1280,10 @@ impl Settlement {
     ) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(user_secret.to_be_bytes());
         let call = self.contract.claim(id, terms_words(terms), secret);
-        Ok(self.submit(call).await?.transaction_hash)
-    }
-
-    #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "lock_refund", chain = "evm"))]
-    pub async fn lock_refund(&self, id: B256, terms: &Terms) -> Result<B256, Error> {
-        let call = self.contract.lockRefund(id, terms_words(terms));
-        Ok(self.submit(call).await?.transaction_hash)
+        Ok(self
+            .reveal(call, id, terms, Reveal::Claim)
+            .await?
+            .transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund", chain = "evm"))]
@@ -1137,7 +1295,10 @@ impl Settlement {
     ) -> Result<B256, Error> {
         let secret = U256::from_be_bytes(maker_secret.to_be_bytes());
         let call = self.contract.refund(id, terms_words(terms), secret);
-        Ok(self.submit(call).await?.transaction_hash)
+        Ok(self
+            .reveal(call, id, terms, Reveal::Refund)
+            .await?
+            .transaction_hash)
     }
 
     /// Approves and adds `amount` of `token` to this account's inventory.
@@ -1181,6 +1342,16 @@ impl Settlement {
     /// the base fee twice over and the tip.
     pub async fn max_fee_per_gas(&self) -> Result<u128, Error> {
         Ok(fees(&self.provider).await?.max_fee_per_gas)
+    }
+
+    /// Lets this account's reveals, the claims and refunds that carry a share, pay `wei` more per
+    /// gas than its other sends may.
+    pub fn set_reveal_headroom(&mut self, wei: u128) {
+        self.reveal_headroom = wei;
+    }
+
+    pub fn reveal_headroom(&self) -> u128 {
+        self.reveal_headroom
     }
 
     pub async fn eth_balance(&self, owner: Address) -> Result<U256, Error> {
@@ -1232,7 +1403,7 @@ impl Settlement {
             .with_from(account)
             .with_to(to)
             .with_value(wei);
-        let pending = send_at_fees(&self.provider, tx).await?;
+        let pending = send_at_fees(&self.provider, tx, 0).await?;
         Ok(confirmed(pending).await?.transaction_hash)
     }
 
@@ -1240,22 +1411,72 @@ impl Settlement {
         &self,
         call: CallBuilder<P, D>,
     ) -> Result<TransactionReceipt, Error> {
+        self.submit_held(call, None, 0).await
+    }
+
+    /// Sends `call`, which reveals a share on swap `id` in `reveal`'s window, its fee cap this
+    /// account's reveal headroom higher: only while the window has the account's reveal margin
+    /// left, judged before its turn and again in it.
+    async fn reveal<P: Provider, D: CallDecoder>(
+        &self,
+        call: CallBuilder<P, D>,
+        id: B256,
+        terms: &Terms,
+        reveal: Reveal,
+    ) -> Result<TransactionReceipt, Error> {
+        let check = Box::new(Check {
+            id,
+            terms: terms.clone(),
+            reveal,
+            margin: self.reveal_margin,
+        });
+        self.submit_held(call, Some(check), self.reveal_headroom)
+            .await
+    }
+
+    /// Sends `call` in the account's turn, its fee cap `headroom` per gas higher, where `check`'s
+    /// window, if any, is read again before it is signed.
+    async fn submit_held<P: Provider, D: CallDecoder>(
+        &self,
+        call: CallBuilder<P, D>,
+        check: Option<Box<Check>>,
+        headroom: u128,
+    ) -> Result<TransactionReceipt, Error> {
         let Some(account) = self.account else {
             return Err(Error::Config("a read-only connection cannot send".into()));
         };
         let call = call.from(account);
         let mut attempts = 1;
         loop {
-            // Simulated before its turn, so a call that would fail never holds the line up.
-            let failed = match call.estimate_gas().await {
-                Ok(_) => {
+            // Judged before its turn, so a call that would fail never holds the line up: a reveal
+            // by its window first, and sent privately by that alone, as a simulation would show
+            // the node its share; any other call by a simulation.
+            let simulated = async {
+                call.estimate_gas()
+                    .await
+                    .map(|_| ())
+                    .map_err(Error::contract)
+            };
+            let judged = match &check {
+                Some(check) => match self.check_window(check).await {
+                    Ok(()) if self.private.is_none() => simulated.await,
+                    judged => judged,
+                },
+                None => simulated.await,
+            };
+            let failed = match judged {
+                Ok(()) => {
                     let _sending = self.sending.turn().await;
-                    match send_at_fees(&self.provider, call.as_ref().clone()).await {
-                        Ok(pending) => return confirmed(pending).await,
+                    // Boxed: every send's future holds an attempt's, and requests nest several.
+                    let attempt = self.attempt(call.as_ref().clone(), check.as_deref(), headroom);
+                    match Box::pin(attempt).await {
+                        Ok(ended) => return ended,
+                        Err(late @ Error::Late(_)) => return Err(late),
                         Err(e) => e,
                     }
                 }
-                Err(e) => Error::contract(e),
+                Err(late @ Error::Late(_)) => return Err(late),
+                Err(e) => e,
             };
             // Usually an estimate made on a node that hasn't seen the transaction this one
             // depends on. If an earlier attempt did reach the network, the repeat is
@@ -1268,6 +1489,328 @@ impl Settlement {
             attempts += 1;
             tokio::time::sleep(SEND_RETRY_DELAY).await;
         }
+    }
+
+    /// One attempt at `tx`, in the account's turn: how it ended once broadcast, or why it never
+    /// was.
+    async fn attempt(
+        &self,
+        tx: TransactionRequest,
+        check: Option<&Check>,
+        headroom: u128,
+    ) -> Result<Result<TransactionReceipt, Error>, Error> {
+        if let Some(check) = check {
+            self.check_window(check).await?;
+        }
+        Ok(match &self.private {
+            None => self.land_publicly(tx, headroom).await,
+            Some(private) => {
+                let gas = check.map(|_| REVEAL_GAS);
+                let (signed, until) = self.send_privately(private, tx, headroom, gas).await?;
+                self.landed_privately(private, &signed, until).await
+            }
+        })
+    }
+
+    /// That `check`'s window is open and has its margin left, read in one block: a reveal that
+    /// waited for its turn may have run its window down.
+    async fn check_window(&self, check: &Check) -> Result<(), Error> {
+        let (window, head) = self
+            .reveal_window(check.id, &check.terms, check.reveal)
+            .await?;
+        if !window.leaves(head.timestamp.max(wall_now()), check.margin) {
+            warn!(swap_id = %check.id, reveal = check.reveal.name(), outcome = "late", "the reveal's window is shut or ends too soon to send it; nothing was sent");
+            return Err(Error::Late(check.reveal.name()));
+        }
+        Ok(())
+    }
+
+    /// Signs `tx` at the account's next nonce and the fees now, broadcasts it, and holds the
+    /// account's turn until it mines: unmined for `REPRICE_BLOCKS` blocks, it goes again at the
+    /// same nonce at the fees then, at least an eighth over its last, as nodes ask of a
+    /// replacement. A send priced once can sit unmined for most of an hour in a surge, and a
+    /// cancel or refund must land inside its window. Every hash sent for the nonce is watched, as
+    /// any may be the one that mines.
+    async fn land_publicly(
+        &self,
+        tx: TransactionRequest,
+        headroom: u128,
+    ) -> Result<TransactionReceipt, Error> {
+        let account = self
+            .account
+            .ok_or_else(|| Error::Config("a read-only connection cannot send".into()))?;
+        let gas = self
+            .provider
+            .estimate_gas(tx.clone())
+            .await
+            .map_err(Error::contract)?;
+        let tx = tx.with_chain_id(self.chain_id().await?).with_gas_limit(gas);
+        let now = fees(&self.provider).await?;
+        let (mut cap, mut tip) = (now.max_fee_per_gas + headroom, now.max_priority_fee_per_gas);
+        let priced = |cap, tip| {
+            tx.clone()
+                .with_max_fee_per_gas(cap)
+                .with_max_priority_fee_per_gas(tip)
+        };
+        let first = self.sign_next(priced(cap, tip), 0).await?;
+        let nonce = first.nonce;
+        let mut sent = vec![first.hash];
+        match self.provider.send_raw_transaction(&first.raw).await {
+            Ok(_) => {}
+            // One it answers with an error, it passed on to no one.
+            Err(RpcError::ErrorResp(e)) => return Err(Error::Contract(e.to_string())),
+            Err(_) => {
+                warn!(transaction_hash = %first.hash, outcome = "unknown", "the node's answer was lost; the transaction may still land");
+            }
+        }
+        info!(transaction_hash = %first.hash, outcome = "submitted", "transaction submitted; awaiting receipt");
+        let started = Instant::now();
+        let mut priced_at = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(Error::contract)?;
+        let mut taken = 0;
+        loop {
+            tokio::time::sleep(self.provider.client().poll_interval()).await;
+            // The nonce before the receipts: whichever of these took it shows its receipt then.
+            let mined = self
+                .provider
+                .get_transaction_count(account)
+                .latest()
+                .await
+                .unwrap_or_default();
+            for hash in &sent {
+                if let Ok(Some(receipt)) = self.provider.get_transaction_receipt(*hash).await {
+                    let transaction_hash = receipt.transaction_hash;
+                    if receipt.status() {
+                        info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
+                        return Ok(receipt);
+                    }
+                    warn!(%transaction_hash, block_number = receipt.block_number, outcome = "reverted", "transaction reverted on chain");
+                    return Err(Error::Reverted(transaction_hash));
+                }
+            }
+            let last = *sent.last().expect("one was sent");
+            // Another of the account's transactions took the nonce: none of these can land. Seen
+            // on reads in a row, as a load-balanced RPC may answer receipts a block behind.
+            if mined > nonce {
+                taken += 1;
+                if taken == NONCE_TAKEN_READS {
+                    warn!(transaction_hash = %last, outcome = "dropped", "another transaction took the nonce");
+                    return Err(Error::Dropped(last));
+                }
+                continue;
+            }
+            taken = 0;
+            if started.elapsed() >= LAND_TIMEOUT {
+                warn!(transaction_hash = %last, outcome = "unknown", "receipt unavailable; submission may still mine");
+                return Err(Error::Unconfirmed(last));
+            }
+            let Ok(head) = self.provider.get_block_number().await else {
+                continue;
+            };
+            if head < priced_at + REPRICE_BLOCKS {
+                continue;
+            }
+            let Ok(now) = fees(&self.provider).await else {
+                continue;
+            };
+            cap = (now.max_fee_per_gas + headroom).max(bumped(cap));
+            tip = now.max_priority_fee_per_gas.max(bumped(tip));
+            let again = self.sign_at(priced(cap, tip), nonce).await?;
+            match self.provider.send_raw_transaction(&again.raw).await {
+                Ok(_) => {
+                    info!(transaction_hash = %again.hash, replaces = %last, max_fee_per_gas = cap, outcome = "repriced", "transaction unmined; sent again at the fees now")
+                }
+                Err(e) => {
+                    warn!(transaction_hash = %again.hash, outcome = "refused", "the node refused the repriced transaction: {e}")
+                }
+            }
+            sent.push(again.hash);
+            priced_at = head;
+        }
+    }
+
+    /// Signs `tx` at the fees every send pays now, its fee cap `headroom` per gas higher, and
+    /// broadcasts it through the private RPC alone: what went out, and the block from which,
+    /// unmined, it can no longer land. An error if nothing went out. Never surfaces the nodes'
+    /// errors, which can carry the transaction.
+    async fn send_privately(
+        &self,
+        private: &Private,
+        tx: TransactionRequest,
+        headroom: u128,
+        gas: Option<u64>,
+    ) -> Result<(Signed, u64), Error> {
+        let unavailable = |what: &str| Error::Contract(format!("{what} is unavailable"));
+        let fees = fees(&self.provider).await?;
+        let sent_at = self
+            .provider
+            .get_block_number()
+            .await
+            .map_err(|_| unavailable("the latest block"))?;
+        let gas = match gas {
+            Some(gas) => gas,
+            None => self
+                .provider
+                .estimate_gas(tx.clone())
+                .await
+                .map_err(|_| unavailable("the simulation"))?,
+        };
+        let tx = tx
+            .with_chain_id(self.chain_id().await?)
+            .with_gas_limit(gas)
+            .with_max_fee_per_gas(fees.max_fee_per_gas + headroom)
+            .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
+        let least_nonce = private.least_nonce.load(Ordering::Relaxed);
+        let signed = self.sign_next(tx, least_nonce).await?;
+        let transaction_hash = signed.hash;
+        match private.provider.send_raw_transaction(&signed.raw).await {
+            Ok(_) => {
+                info!(%transaction_hash, outcome = "submitted", "transaction sent privately; awaiting its block");
+            }
+            // One it answers with an error, it passed on to no one.
+            Err(RpcError::ErrorResp(_)) => {
+                return Err(Error::Contract(
+                    "the private RPC refused the transaction".into(),
+                ));
+            }
+            Err(_) => {
+                warn!(%transaction_hash, outcome = "unknown", "the private RPC's answer was lost; the transaction may still land");
+            }
+        }
+        Ok((signed, sent_at + private.window()))
+    }
+
+    /// Waits, in the account's turn and reading this connection's node alone, until `signed`
+    /// mines or block `until` comes without it: until then it may still land, its nonce with it.
+    async fn landed_privately(
+        &self,
+        private: &Private,
+        signed: &Signed,
+        until: u64,
+    ) -> Result<TransactionReceipt, Error> {
+        let transaction_hash = signed.hash;
+        loop {
+            // The head before the receipt, so the receipt read sees at least that block.
+            let past = matches!(self.provider.get_block_number().await, Ok(head) if head >= until);
+            if let Ok(Some(receipt)) = self
+                .provider
+                .get_transaction_receipt(transaction_hash)
+                .await
+            {
+                private
+                    .least_nonce
+                    .fetch_max(signed.nonce + 1, Ordering::Relaxed);
+                if receipt.status() {
+                    info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
+                    return Ok(receipt);
+                }
+                warn!(%transaction_hash, block_number = receipt.block_number, outcome = "reverted", "transaction reverted on chain");
+                return Err(Error::Reverted(transaction_hash));
+            }
+            if past {
+                warn!(%transaction_hash, outcome = "dropped", "the private RPC dropped the transaction unmined");
+                return Err(Error::Dropped(transaction_hash));
+            }
+            tokio::time::sleep(self.provider.client().poll_interval()).await;
+        }
+    }
+
+    /// Signs `tx` as this account at its next nonce, or `least_nonce` if more, in a turn its
+    /// caller holds.
+    async fn sign_next(&self, tx: TransactionRequest, least_nonce: u64) -> Result<Signed, Error> {
+        let Some(account) = self.account else {
+            return Err(Error::Config("a read-only connection cannot send".into()));
+        };
+        let nonce = self
+            .provider
+            .get_transaction_count(account)
+            .pending()
+            .await
+            .map_err(|_| Error::Contract("the account's nonce is unavailable".into()))?
+            .max(least_nonce);
+        self.sign_at(tx, nonce).await
+    }
+
+    /// Signs `tx` as this account at `nonce`.
+    async fn sign_at(&self, mut tx: TransactionRequest, nonce: u64) -> Result<Signed, Error> {
+        let Some(wallet) = &self.wallet else {
+            return Err(Error::Config("a read-only connection cannot send".into()));
+        };
+        tx.set_nonce(nonce);
+        let envelope = tx
+            .build(wallet)
+            .await
+            .map_err(|_| Error::Contract("cannot sign the transaction".into()))?;
+        Ok(Signed {
+            hash: *envelope.tx_hash(),
+            nonce,
+            raw: envelope.encoded_2718().into(),
+        })
+    }
+}
+
+/// That Flashbots Protect at `rpc_url` keeps a transaction to its builders until it lands, and
+/// never lands one that reverts, as a share revealed in calldata needs: its default endpoint, not
+/// `/fast`, which shows TEE searchers whole transactions, failed ones too; the hash alone shared
+/// (`hint=hash`), as its default hints share logs as well; and no other parameter but those that
+/// say how long and through which builders it tries, and whom its refunds pay (`blockRange`,
+/// `builder`, `refund`, `originId`, `auctionTimeout`): never `canRevert`, `useMempool` or
+/// `allowTee`. Protect reads parameter names in any case. Never echoes the URL, which can carry
+/// a key.
+pub fn check_keeps_secrets(rpc_url: &str) -> Result<(), Error> {
+    let refuse = |why: &str| Err(Error::Config(format!("the private RPC {why}")));
+    let url = private_url(rpc_url)?;
+    protect_blocks(&url)?;
+    if url.path() != "/" {
+        return refuse(
+            "must be Flashbots Protect's default endpoint, with no path: /fast shows TEE searchers whole transactions, failed ones too",
+        );
+    }
+    let mut hints = Vec::new();
+    for (name, value) in url.query_pairs() {
+        match name.to_ascii_lowercase().as_str() {
+            "hint" => hints.push(value),
+            "blockrange" | "builder" | "refund" | "originid" | "auctiontimeout" => {}
+            _ => {
+                return refuse(
+                    "URL sets a parameter other than hint, blockRange, builder, refund, originId and auctionTimeout",
+                );
+            }
+        }
+    }
+    if hints.is_empty() || hints.iter().any(|hint| hint != "hash") {
+        return refuse(
+            "must share a transaction's hash alone, hint=hash: its default hints share logs too",
+        );
+    }
+    Ok(())
+}
+
+/// A private RPC's URL, which no error echoes: it can carry a key.
+fn private_url(rpc_url: &str) -> Result<reqwest::Url, Error> {
+    reqwest::Url::parse(rpc_url)
+        .map_err(|_| Error::Config("the private RPC's URL is unreadable".into()))
+}
+
+/// The blocks Flashbots Protect at `url` tries a transaction for: its `blockRange`, or 25.
+/// Protect reads parameter names in any case, so which of two it would take is anyone's guess.
+fn protect_blocks(url: &reqwest::Url) -> Result<u64, Error> {
+    let mut ranges = url
+        .query_pairs()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("blockRange"));
+    match (ranges.next(), ranges.next()) {
+        (None, _) => Ok(PROTECT_BLOCKS),
+        (Some((_, blocks)), None) => blocks
+            .parse()
+            .ok()
+            .filter(|blocks| *blocks > 0)
+            .ok_or_else(|| Error::Config("the private RPC's blockRange is not positive".into())),
+        (Some(_), Some(_)) => Err(Error::Config(
+            "the private RPC's URL sets blockRange more than once".into(),
+        )),
     }
 }
 
@@ -1283,20 +1826,22 @@ pub async fn deploy(
         &RpcMeter::default(),
     )?;
     let tx = TransactionRequest::default().with_deploy_code(init_code);
-    confirmed(send_at_fees(&provider, tx).await?)
+    confirmed(send_at_fees(&provider, tx, 0).await?)
         .await?
         .contract_address
         .ok_or_else(|| Error::Contract("deployment created no contract".into()))
 }
 
-/// Sends `tx` from a signing provider, at the fees every send pays now.
+/// Sends `tx` from a signing provider, at the fees every send pays now, its fee cap `headroom`
+/// per gas higher.
 async fn send_at_fees(
     provider: &DynProvider,
     tx: TransactionRequest,
+    headroom: u128,
 ) -> Result<PendingTransactionBuilder<Ethereum>, Error> {
     let fees = fees(provider).await?;
     let tx = tx
-        .with_max_fee_per_gas(fees.max_fee_per_gas)
+        .with_max_fee_per_gas(fees.max_fee_per_gas + headroom)
         .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
     provider.send_transaction(tx).await.map_err(Error::contract)
 }
@@ -1323,6 +1868,11 @@ async fn fees(provider: &DynProvider) -> Result<Eip1559Estimation, Error> {
 /// The least a send tips. Ethereum's nodes suggest no tip at all when blocks are quiet, and on
 /// 2026-10-12 a mainnet claim sent so, its share already public, waited 6m41s to be mined.
 const MIN_TIP_WEI: u128 = 20_000_000;
+
+/// A replacement's fee: an eighth over `fee`, past the tenth nodes ask of one.
+fn bumped(fee: u128) -> u128 {
+    fee + fee / 8 + 1
+}
 
 fn eip1559(base_fee: u128, suggested_tip: u128) -> Eip1559Estimation {
     let tip = suggested_tip.max(MIN_TIP_WEI);
@@ -1435,8 +1985,6 @@ fn decode_state(swap: IZecSwap::Swap) -> Result<Option<SwapState>, Error> {
     Ok(Some(SwapState {
         stage,
         terms_hash: swap.termsHash,
-        claim_lock_until: swap.claimLockUntil,
-        refund_lock_until: swap.refundLockUntil,
         secret: swap.secret.to_be_bytes(),
         paid_out: swap.paidOut,
     }))
@@ -1463,8 +2011,6 @@ pub fn on_chain(
         amount: terms.amount,
         t0: terms.t0,
         t1: terms.t1,
-        claim_lock_until: state.claim_lock_until,
-        refund_lock_until: state.refund_lock_until,
         maker_share: terms.maker_share,
         user_share: terms.user_share,
         secret: state.secret,
@@ -1551,7 +2097,7 @@ mod tests {
             .with_from(account)
             .with_to(to)
             .with_value(U256::from(1));
-        let _ = send_at_fees(&settlement.provider, tx).await.unwrap();
+        let _ = send_at_fees(&settlement.provider, tx, 0).await.unwrap();
         assert_eq!(
             settlement.send_eth_above(to, U256::ZERO).await.unwrap(),
             None
@@ -1592,6 +2138,7 @@ mod tests {
             .await
             .unwrap();
         let mut code = creation(&artifacts, "ZecSwap");
+        code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
         code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
         code.extend_from_slice(Address::repeat_byte(0x42).into_word().as_slice());
         let contract = deploy(&url, key.clone(), code).await.unwrap();

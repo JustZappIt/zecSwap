@@ -20,8 +20,7 @@ const GAS_PRICE_MAX_AGE: u64 = 60;
 /// What a swap fee pays the relayer back for.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SwapFee {
-    /// Kept from a payout: the claim lock, the claim and the payout, or on a refund its lock,
-    /// the refund and its payout.
+    /// Kept from a payout: the claim and the payout, or on a refund the refund and its payout.
     Payout,
     /// Paid by a reverse swap's funding: the funding and its ready.
     Funding,

@@ -22,7 +22,9 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use zcash_address::ZcashAddress;
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest};
-use zecswap_chain::evm::{Address, B256, OnChainSwap, Settlement, Stage, endpoint, swap_id};
+use zecswap_chain::evm::{
+    Address, B256, OnChainSwap, Settlement, Stage, Windows, endpoint, swap_id,
+};
 use zecswap_chain::zcash::{
     AccountUuid, Funds, Lightwalletd, Prover, TxId, UnifiedSpendingKey, Wallet, connect_lazy,
 };
@@ -45,9 +47,13 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
         Some(Error::Lightwalletd(_) | Error::Connection(_)) => "lightwalletd",
         Some(Error::Rejected { .. }) => "transaction_rejected",
         Some(Error::Database(_) | Error::Wallet(_)) => "zcash_wallet",
-        Some(Error::Contract(_) | Error::Reverted(_) | Error::Unconfirmed(_)) => {
-            "evm_rpc_or_contract"
-        }
+        Some(
+            Error::Contract(_)
+            | Error::Reverted(_)
+            | Error::Unconfirmed(_)
+            | Error::Dropped(_)
+            | Error::Late(_),
+        ) => "evm_rpc_or_contract",
         Some(Error::Swap(_) | Error::WrongTerms(_)) => "swap_validation",
         Some(Error::Journal(_)) => "database",
         None if error.downcast_ref::<rusqlite::Error>().is_some() => "database",
@@ -58,7 +64,8 @@ fn observer_failure(error: &anyhow::Error) -> &'static str {
 pub struct Maker {
     config: Config,
     account: Address,
-    lock_duration: u64,
+    /// The contract's window lengths, which every decision on a swap is judged by.
+    windows: Windows,
     root: Zeroizing<[u8; 32]>,
     ticket_key: Zeroizing<[u8; 32]>,
     chain_id: u64,
@@ -199,23 +206,35 @@ impl Maker {
         let sweep_to = config.sweep_to.parse().context("parsing sweep_to")?;
         let account = secrets.evm_key.address();
         info!(endpoint = %endpoint(&config.evm_rpc), "settlement RPC");
-        let settlement = Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
+        let mut settlement =
+            Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
+        settlement.set_reveal_headroom(network.reveal_headroom_wei());
+        settlement.reveal_with_margin(config.timing.reveal_margin);
+        if let Some(reveals) = &config.reveals {
+            zecswap_chain::evm::check_keeps_secrets(&reveals.private_rpc)
+                .context("[reveals] private_rpc")?;
+            settlement.broadcast_privately(&reveals.private_rpc)?;
+        }
         let chain_id = settlement
             .chain_id()
             .await
             .context("reaching the settlement chain")?;
+        settlement.check_private_rpc().await?;
         let railgun = settlement.railgun().await?;
         network
             .check(chain_id, railgun, config.token)
             .with_context(|| format!("the maker's config names {network}"))?;
-        let lock_duration = settlement.lock_duration().await?;
-        config.timing.check(lock_duration)?;
+        let windows = settlement
+            .windows()
+            .await
+            .context("the maker's contract must be the windows contract")?;
+        config.timing.check(windows)?;
         let mut zcash = Zcash {
             wallet: Some(Zcash::open_wallet(&config)?),
             client: connect_lazy(config.lightwalletd())?,
         };
         let inventory = if let Some(reverse) = &config.reverse {
-            reverse.check()?;
+            reverse.check(windows)?;
             settlement
                 .reverse_funding(B256::ZERO)
                 .await
@@ -261,7 +280,7 @@ impl Maker {
             zcash: Mutex::new(zcash),
             prover: Prover::default(),
             account,
-            lock_duration,
+            windows,
             health: Health::new(Duration::from_secs(config.timing.tick)),
             zcash_health: Health::new(Duration::from_secs(config.timing.tick)),
             wallet_snapshots: std::sync::Mutex::new(HashMap::new()),
@@ -533,6 +552,7 @@ impl Maker {
             sweep: None,
             settled: false,
             refund_started: false,
+            ready_sent: false,
             token_request,
             token_return: None,
         };
@@ -870,8 +890,7 @@ impl Maker {
             }
             return Ok(());
         };
-        if (chain.refund_lock_until != 0 || chain.stage == Stage::Refunded) && !swap.refund_started
-        {
+        if chain.stage == Stage::Refunded && !swap.refund_started {
             self.store.start_refund(&swap.id)?;
         }
         let (funds, sweep_confirmed, synced) = self.wallet_observation(swap);
@@ -904,6 +923,7 @@ impl Maker {
         };
         let observation = Observation {
             now,
+            wall: unix_now(),
             opened_at: swap.opened_at,
             expected_zat: swap.quote.deposit_zat,
             chain,
@@ -911,8 +931,9 @@ impl Maker {
             synced,
             chain_confirmed,
             cancelling: swap.refund_started,
+            readied: swap.ready_sent,
             sweep_confirmed,
-            lock_duration: self.lock_duration,
+            windows: self.windows,
         };
         // Paid in full, if not yet confirmed: the accept's token goes back. An underpaid swap
         // is cancelled like one never paid into.
@@ -926,16 +947,13 @@ impl Maker {
         match action {
             Action::Wait => {}
             Action::MarkReady => {
+                // Recorded first: a restart that forgot it could cancel behind the ready.
+                self.store.mark_ready_sent(&swap.id)?;
                 self.journal(
                     swap.id,
                     "ready",
                     self.settlement.ready(swap.id, terms).await,
                 )?;
-            }
-            Action::LockRefund => {
-                self.store.start_refund(&swap.id)?;
-                let sent = self.settlement.lock_refund(swap.id, terms).await;
-                self.journal(swap.id, "lock_refund", sent)?;
             }
             Action::Refund => {
                 self.store.start_refund(&swap.id)?;

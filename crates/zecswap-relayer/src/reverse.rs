@@ -1,6 +1,7 @@
 use zecswap_api::relayer::{Payout, Sent};
 use zecswap_api::reverse::{Authorization, Refund};
-use zecswap_chain::evm::{B256, OnChainSwap, Stage};
+use zecswap_chain::evm::judge::{self, Refusal};
+use zecswap_chain::evm::{B256, Head, OnChainSwap, Stage};
 use zecswap_core::{SecretShare, Terms, signer};
 use zecswap_railgun::ShieldNote;
 
@@ -50,7 +51,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "ready_reverse"), err(level = "warn"))]
     pub async fn ready_reverse(&self, request: Authorization) -> Result<Sent> {
-        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
+        let (swap, terms, _, head) = self.reverse_swap(request.swap_id, &request.terms).await?;
         self.check_reverse_signature(
             &swap,
             &self.domain.ready(&request.swap_id, request.deadline),
@@ -62,65 +63,33 @@ impl Relayer {
                 transactions: vec![],
             });
         }
+        match judge::reverse_ready(swap.stage, swap.t0, &head, 0) {
+            Ok(()) => {}
+            Err(Refusal::TooSoon) => {
+                return Err(RelayerError::Rejected(
+                    "an escrow is readied only before t0".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(RelayerError::Rejected(format!(
+                    "the escrow is {:?}",
+                    swap.stage
+                )));
+            }
+        }
+        // A refund reveals the user's share, and a ready landing before it would revert it with
+        // the share public: none follows a refund sent for the escrow, nor one the claims account
+        // may still land from before a restart.
+        self.steps.after_earlier(&self.lanes.claims).await?;
+        if self.steps.sent(request.swap_id, Step::Refund) {
+            return Err(RelayerError::Rejected(
+                "a refund was sent for this escrow, which is never readied after one".into(),
+            ));
+        }
         let (id, locks) = (request.swap_id, &self.lanes.locks);
         let ready = locks.ready_with_sig(id, &terms, request.deadline, &request.signature.0);
         let sent = self.send_once(id, Step::Ready, locks, ready).await;
         let tx = self.unless_landed(id, &terms, sent, readied).await?;
-        Ok(Sent {
-            transactions: tx.into_iter().collect(),
-        })
-    }
-
-    #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "lock_reverse_refund"), err(level = "warn"))]
-    pub async fn lock_reverse_refund(&self, request: Authorization) -> Result<Sent> {
-        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
-        self.check_reverse_signature(
-            &swap,
-            &self.domain.lock_refund(&request.swap_id, request.deadline),
-            &request.signature.0,
-        )?;
-        let now = self.settlement.now().await?;
-        if swap.stage == Stage::Refunded
-            || swap.refund_lock_until > now.saturating_add(self.config.claim_margin)
-        {
-            return Ok(Sent {
-                transactions: vec![],
-            });
-        }
-        match swap.stage {
-            Stage::Claimed => {
-                return Err(RelayerError::Rejected(
-                    "the maker claimed the escrow".into(),
-                ));
-            }
-            Stage::Ready if now < swap.t1 => {
-                return Err(RelayerError::Rejected(
-                    "a ready swap can be refunded from t1".into(),
-                ));
-            }
-            _ => {}
-        }
-        self.check_lock(
-            request.deadline,
-            swap.refund_lock_until,
-            swap.claim_lock_until,
-            now,
-        )?;
-        let sent = self
-            .lanes
-            .locks
-            .lock_refund_with_sig(
-                request.swap_id,
-                &terms,
-                request.deadline,
-                &request.signature.0,
-            )
-            .await;
-        let tx = self
-            .unless_landed(request.swap_id, &terms, sent, |swap| {
-                swap.stage == Stage::Refunded || swap.refund_lock_until > now
-            })
-            .await?;
         Ok(Sent {
             transactions: tx.into_iter().collect(),
         })
@@ -133,19 +102,33 @@ impl Relayer {
                 "refund and payout name different swaps or terms".into(),
             ));
         }
-        let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
+        let (swap, terms, commitment, head) =
+            self.reverse_swap(request.swap_id, &request.terms).await?;
         let note = self
             .check_reverse_payout(&swap, commitment, &request.payout)
             .await?;
         if swap.stage == Stage::Refunded {
             return self.reverse_refund_payout(request.payout).await;
         }
-        let now = self.settlement.now().await?;
-        if !matches!(swap.stage, Stage::Open | Stage::Ready)
-            || swap.refund_lock_until <= now.saturating_add(self.config.claim_margin)
+        let deadlines = (swap.t0, swap.t1);
+        if judge::reverse_refund(self.windows, swap.stage, deadlines, &head, None, false).is_err() {
+            return Err(RelayerError::Rejected(match swap.stage {
+                Stage::Ready => "a ready escrow is its maker's to claim until t1; its user may refund it from t1".into(),
+                stage => format!("the escrow is {stage:?}"),
+            }));
+        }
+        // A ready sent for the escrow and still unmined would land first, and revert the refund
+        // with the user's share public: the maker's to claim with, the ZEC the maker's to sweep.
+        let readies = &self.lanes.locks;
+        self.steps.after_earlier(readies).await?;
+        if self
+            .steps
+            .may_land(readies, request.swap_id, Step::Ready)
+            .await?
         {
-            return Err(RelayerError::Rejected(
-                "no refund lock with enough time left".into(),
+            return Err(RelayerError::Busy(
+                "a ready sent for this escrow may still land",
+                30,
             ));
         }
         let secret = SecretShare::from_be_bytes(&request.secret.0)
@@ -186,7 +169,8 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "reverse_refund_payout"), err(level = "warn"))]
     pub async fn reverse_refund_payout(&self, request: Payout) -> Result<Sent> {
-        let (swap, terms, commitment) = self.reverse_swap(request.swap_id, &request.terms).await?;
+        let (swap, terms, commitment, _) =
+            self.reverse_swap(request.swap_id, &request.terms).await?;
         if swap.stage != Stage::Refunded {
             return Err(RelayerError::Rejected("swap has not refunded".into()));
         }
@@ -229,7 +213,7 @@ impl Relayer {
 
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "rescue_reverse"), err(level = "warn"))]
     pub async fn rescue_reverse(&self, request: zecswap_api::relayer::Rescue) -> Result<Sent> {
-        let (swap, terms, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
+        let (swap, terms, _, _) = self.reverse_swap(request.swap_id, &request.terms).await?;
         if !swap.paid_out {
             return Err(RelayerError::Rejected("refund has not paid out".into()));
         }
@@ -308,20 +292,21 @@ impl Relayer {
         Ok(())
     }
 
+    /// The escrow, its terms, the note its refund pays and the newest block it is read as of.
     async fn reverse_swap(
         &self,
         id: B256,
         terms: &zecswap_api::Terms,
-    ) -> Result<(OnChainSwap, Terms, B256)> {
+    ) -> Result<(OnChainSwap, Terms, B256, Head)> {
         let terms = Terms::from(terms);
         // The escrow's ZEC side, its terms' user, is the maker.
         self.admit(terms.token, terms.user)?;
-        let swap = self.swap(id, &terms).await?;
+        let (swap, head) = self.swap(id, &terms).await?;
         let funding = self
             .settlement
             .reverse_funding(id)
             .await?
             .ok_or_else(|| RelayerError::Rejected("not a reverse swap".into()))?;
-        Ok((swap, terms, funding.refund_note))
+        Ok((swap, terms, funding.refund_note, head))
     }
 }

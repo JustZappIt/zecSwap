@@ -304,8 +304,6 @@ mod tests {
             amount: 1,
             t0: 100,
             t1: 200,
-            claim_lock_until: 0,
-            refund_lock_until: 0,
             maker_share: share(),
             user_share: share(),
             secret: [0; 32],

@@ -11,14 +11,12 @@ use serde::Serialize;
 use zecswap_api::server::MonitorToken;
 
 /// Every operation, by the name its requests are logged under.
-const OPERATIONS: [&str; 13] = [
-    "lock_claim",
+const OPERATIONS: [&str; 11] = [
     "claim",
     "payout",
     "rescue",
     "fund_reverse",
     "ready_reverse",
-    "lock_reverse_refund",
     "refund_reverse",
     "reverse_refund_payout",
     "rescue_reverse",

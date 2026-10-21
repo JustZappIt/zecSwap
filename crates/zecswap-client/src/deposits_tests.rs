@@ -48,6 +48,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
     let token = deployed(creation("TestToken")).await.unwrap();
     let mut code = creation("ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deployed(code).await.unwrap();
     let mut code = creation("Deposits");
@@ -79,6 +80,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,

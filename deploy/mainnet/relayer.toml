@@ -15,9 +15,23 @@ providers = ["coinmarketcap", "alchemy"]
 fee_margin_bps = 1000
 claim_margin = 300
 # ETH each sending account keeps, in its largest transactions at the fee cap: 0.0044 ETH in all
-# at 0.12 gwei, filled only from what the relayer's own account holds beyond as many payouts,
+# at 0.12 gwei, and 0.01 ETH more on the claims lane, whose claims and refunds may pay 5 gwei
+# over the cap. Filled only from what the relayer's own account holds beyond as many payouts,
 # and handed back above twice that once gas falls. `drain-lanes` takes it all back.
 top_up_transactions = 2
+
+# Claims and reverse refunds reveal a share in their calldata: they go through Flashbots Protect,
+# never the public mempool, which lands one only if it succeeds and drops one it couldn't land
+# within 10 blocks; the relayer sends them one at a time, and after a restart none for 15 blocks.
+# The default endpoint, never /fast (it shows TEE searchers whole transactions, failed ones too),
+# sharing the hash alone (the default hints share logs, and `Claimed` logs the share). Flashbots'
+# own builder, BuilderNet, always gets it, and built 14% of blocks in the day to 2026-10-19
+# (relayscan.io); naming Titan, Quasar and Eureka, as Flashbots' builder registry has them,
+# brings that to about 95%, each seeing the whole transaction as it must to include it. Confirm
+# the names on the first mainnet claim: Protect's status page for the transaction shows where it
+# went. Names no builder answers to leave it to BuilderNet alone: slower, still private.
+[reveals]
+private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
 
 [reverse_funding]
 max_gas_limit = 4000000
@@ -31,7 +45,7 @@ max_gas_limit = 3000000
 max_gas_price_wei = 20000000000
 journal = "/var/lib/zecswap-mainnet-relayer/railgun-sends.sqlite"
 
-# Funded with 0.006 ETH, of which the sending accounts keep 0.0044; a swap burns 0.00015.
+# Needs 0.02 ETH or more, of which the sending accounts keep 0.0144; a swap burns 0.00015.
 [gas_alerts]
 low_wei = 1000000000000000
 recovery_wei = 2000000000000000

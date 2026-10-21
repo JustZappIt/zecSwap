@@ -44,6 +44,11 @@ enum Command {
     Status,
     /// Pays `zatoshis` to `address`.
     Send { address: String, zatoshis: u64 },
+    /// Pays each `address=zatoshis` in one transaction, so a single note funds them all.
+    SendMany {
+        #[arg(required = true)]
+        payments: Vec<String>,
+    },
     /// Runs the user side of a swap against a maker, resuming an unfinished one. It pays the
     /// account whose key is in `USER_PRIVATE_KEY`, or with `--relayer`, this seed's Railgun
     /// wallet.
@@ -133,13 +138,16 @@ impl Session {
 
     /// Stores a payment from the wallet's account, which `init` creates at ZIP 32 index 0.
     pub(crate) fn pay(&mut self, to: &ZcashAddress, zatoshis: u64) -> Result<TxId> {
+        self.pay_all(&[(to.clone(), zatoshis)])
+    }
+
+    pub(crate) fn pay_all(&mut self, payments: &[(ZcashAddress, u64)]) -> Result<TxId> {
         let network = self.wallet.network();
         let usk =
             UnifiedSpendingKey::from_seed(&network, &self.store.seed()?, zip32::AccountId::ZERO)
                 .map_err(|e| anyhow::anyhow!("deriving the spending key: {e:?}"))?;
         let account = self.account()?;
-        let payments = [(to.clone(), zatoshis)];
-        Ok(self.wallet.pay(&self.prover, account, &usk, &payments)?)
+        Ok(self.wallet.pay(&self.prover, account, &usk, payments)?)
     }
 
     pub(crate) async fn broadcast(&mut self, txid: TxId) -> Result<()> {
@@ -190,6 +198,7 @@ async fn main() -> Result<()> {
         Command::Init => init(&mut ctx).await,
         Command::Status => status(&mut ctx).await,
         Command::Send { address, zatoshis } => send(&mut ctx, &address, zatoshis).await,
+        Command::SendMany { payments } => send_many(&mut ctx, &payments).await,
         Command::Swap {
             maker,
             rpc,
@@ -260,6 +269,24 @@ async fn send(ctx: &mut Session, address: &str, zatoshis: u64) -> Result<()> {
     let to: ZcashAddress = address.parse().context("parsing the recipient")?;
     ctx.sync().await?;
     let txid = ctx.pay(&to, zatoshis)?;
+    ctx.broadcast(txid).await?;
+    println!("sent: {txid}");
+    Ok(())
+}
+
+async fn send_many(ctx: &mut Session, payments: &[String]) -> Result<()> {
+    let payments = payments
+        .iter()
+        .map(|payment| {
+            let (address, zatoshis) = payment
+                .split_once('=')
+                .with_context(|| format!("{payment} is not address=zatoshis"))?;
+            let to: ZcashAddress = address.parse().context("parsing a recipient")?;
+            Ok((to, zatoshis.parse().context("parsing zatoshis")?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ctx.sync().await?;
+    let txid = ctx.pay_all(&payments)?;
     ctx.broadcast(txid).await?;
     println!("sent: {txid}");
     Ok(())

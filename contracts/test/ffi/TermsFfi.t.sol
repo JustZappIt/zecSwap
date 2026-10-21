@@ -13,7 +13,7 @@ contract TermsFfiTest is SpendAuthVectors {
     function setUp() public override {
         vm.skip(keccak256(bytes(vm.envOr("FOUNDRY_PROFILE", string("")))) != keccak256("ffi"));
         super.setUp();
-        swaps = new ZecSwap(2 hours, IRailgun(address(0)));
+        swaps = new ZecSwap(1 hours, 24 hours, IRailgun(address(0)));
     }
 
     function testFuzz_rustHashesTermsAsTheContractDoes(

@@ -53,20 +53,24 @@ max_units = 20
 # Charge each swap the maker's own gas and Zcash fee, on top of the spread, at the chain's gas
 # price and the market prices of its quote: a ZEC to USDC swap deposits that much more ZEC, a
 # USDC to ZEC swap is paid that much less. Needs [pricing.market]. Measured on Sepolia, where new
-# state is repriced: an open and a ready burn 412k gas, a claim lock and a claim 362k, and a
-# sweep or a reverse deposit pays 10,000 zatoshis.
+# state is repriced: an open and a ready burn 412k gas, a reverse claim with the lock it took
+# under the lock contract 362k, and a sweep or a reverse deposit pays 10,000 zatoshis.
 # [pricing.costs]
 # forward_gas = 450000
 # reverse_gas = 400000
 # zcash_fee_zat = 15000
 # margin_bps = 2000
 
+# For a contract with one-hour windows: an open must land an hour before t0, and t1 follow t0 by
+# an hour. From t0 the user may claim an unready swap, so one not paid in full is cancelled at
+# t0 - t0_margin, and no cancel, nor any reveal, is sent with under reveal_margin left in its
+# window: past it, it could land late, reverted, the maker's share public.
 [timing]
 quote_ttl = 120
-t0_after = 2700
-t1_after = 6300
+t0_after = 5400
+t1_after = 9000
 cancel_after = 900
-t0_margin = 300
+t0_margin = 3600
 reveal_margin = 600
 tick = 15
 # Quote and accept require both a recent EVM pass and a successful Zcash sync.

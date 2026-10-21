@@ -20,7 +20,9 @@ const MISSING_FOR: Duration = Duration::from_secs(5 * 60);
 const REMEMBERED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const UNMINED: &str =
     "the transaction is sent and not mined yet; post the same request again later";
-const EARLIER: &str = "transactions sent before the relayer restarted are not mined yet; post the same request again later";
+pub(crate) const DROPPED: &str =
+    "the private RPC dropped the transaction unmined; post the same request again";
+const EARLIER: &str = "transactions sent before the relayer restarted may still land; post the same request again later";
 
 /// Each swap's requests, and each deposit address's, one at a time in the order they came.
 #[derive(Clone, Default)]
@@ -80,10 +82,18 @@ pub(crate) enum Step {
 #[derive(Default)]
 pub(crate) struct Steps {
     sent: Mutex<HashMap<(B256, Step), Record>>,
-    /// Each sending account's nonce when the relayer started, where transactions it had sent
-    /// were not mined yet: a step among them would be sent again, so the account sends none
-    /// until they are.
-    earlier: Mutex<HashMap<Address, u64>>,
+    /// Each sending account whose transactions from before the relayer started may still land:
+    /// a step among them would be sent again, so the account sends none until they can't.
+    earlier: Mutex<HashMap<Address, Earlier>>,
+}
+
+#[derive(Clone, Copy)]
+enum Earlier {
+    /// The account's nonce at the start, where transactions it had sent were not mined yet.
+    Nonce(u64),
+    /// For one that sends through a private RPC, which no node shows a transaction of until it
+    /// mines: the block from which one sent before the start can no longer land.
+    Block(u64),
 }
 
 #[derive(Clone, Copy)]
@@ -94,15 +104,21 @@ struct Record {
 }
 
 impl Steps {
-    /// Notes which of `senders` have transactions from before this start not mined yet.
+    /// Notes which of `senders` may have transactions from before this start still to land.
     pub(crate) async fn note_earlier(&self, senders: &[&Settlement]) -> anyhow::Result<()> {
         for sender in senders {
             let Some(account) = sender.account() else {
                 continue;
             };
-            let (mined, sent) = sender.nonces().await?;
-            if sent > mined {
-                self.earlier.lock().unwrap().insert(account, sent);
+            let earlier = match sender.private_window() {
+                Some(window) => Some(Earlier::Block(sender.head().await?.number + window)),
+                None => {
+                    let (mined, sent) = sender.nonces().await?;
+                    (sent > mined).then_some(Earlier::Nonce(sent))
+                }
+            };
+            if let Some(earlier) = earlier {
+                self.earlier.lock().unwrap().insert(account, earlier);
             }
         }
         Ok(())
@@ -112,7 +128,12 @@ impl Steps {
         self.sent.lock().unwrap().get(&(swap_id, step)).copied()
     }
 
-    fn record(&self, swap_id: B256, step: Step, tx: B256, landed: bool) {
+    /// Whether the relayer sent a transaction for the swap's `step`, whatever became of it.
+    pub(crate) fn sent(&self, swap_id: B256, step: Step) -> bool {
+        self.get(swap_id, step).is_some()
+    }
+
+    pub(crate) fn record(&self, swap_id: B256, step: Step, tx: B256, landed: bool) {
         let mut sent = self.sent.lock().unwrap();
         sent.retain(|_, record| record.at.elapsed() < REMEMBERED_FOR);
         sent.insert(
@@ -129,17 +150,40 @@ impl Steps {
         self.sent.lock().unwrap().remove(&(swap_id, step));
     }
 
-    /// Refuses for now while `sender` has transactions from before this start not mined.
-    async fn after_earlier(&self, sender: &Settlement) -> Result<()> {
+    /// Whether the transaction `sender` sent for the swap's `step`, if any, may still land.
+    pub(crate) async fn may_land(
+        &self,
+        sender: &Settlement,
+        swap_id: B256,
+        step: Step,
+    ) -> Result<bool> {
+        let Some(sent) = self.get(swap_id, step).filter(|sent| !sent.landed) else {
+            return Ok(false);
+        };
+        Ok(match sender.transaction_status(sent.tx).await? {
+            Status::Mined { .. } => false,
+            Status::Pending => true,
+            Status::Unknown => sent.at.elapsed() < MISSING_FOR,
+        })
+    }
+
+    /// Refuses for now while `sender` has transactions from before this start that may land.
+    pub(crate) async fn after_earlier(&self, sender: &Settlement) -> Result<()> {
         let Some(account) = sender.account() else {
             return Ok(());
         };
-        let Some(until) = self.earlier.lock().unwrap().get(&account).copied() else {
+        let Some(earlier) = self.earlier.lock().unwrap().get(&account).copied() else {
             return Ok(());
         };
-        let (mined, sent) = sender.nonces().await?;
-        // All mined, or those left dropped.
-        if mined >= until || sent <= mined {
+        let settled = match earlier {
+            Earlier::Nonce(until) => {
+                let (mined, sent) = sender.nonces().await?;
+                // All mined, or those left dropped.
+                mined >= until || sent <= mined
+            }
+            Earlier::Block(until) => sender.head().await?.number >= until,
+        };
+        if settled {
             self.earlier.lock().unwrap().remove(&account);
             return Ok(());
         }
@@ -195,42 +239,48 @@ impl Relayer {
     }
 
     /// Sends a swap's one-time `step` from `sender`: the transaction, or none where one sent for
-    /// it before landed. While one sent before may still land, nothing is sent.
-    pub(crate) async fn send_once(
+    /// it before landed. While one sent before may still land, nothing is sent. A send through a
+    /// private RPC, which no node shows until it mines, ends only once it mined or can no longer
+    /// land, waiting for it in its account's turn: none is left that may still land.
+    pub(crate) fn send_once(
         &self,
         swap_id: B256,
         step: Step,
         sender: &Settlement,
         send: impl Future<Output = std::result::Result<B256, zecswap_chain::Error>>,
-    ) -> Result<Option<B256>> {
-        if let Some(sent) = self.steps.get(swap_id, step) {
-            if sent.landed {
-                return Ok(None);
-            }
-            match sender.transaction_status(sent.tx).await? {
-                Status::Mined { succeeded: true } => {
-                    self.steps.record(swap_id, step, sent.tx, true);
+    ) -> impl Future<Output = Result<Option<B256>>> {
+        // Boxed at once: a send's future is large, and a request's would hold it twice over.
+        let send = Box::pin(send);
+        async move {
+            if let Some(sent) = self.steps.get(swap_id, step) {
+                if sent.landed {
                     return Ok(None);
                 }
-                Status::Mined { succeeded: false } => {}
-                Status::Unknown if sent.at.elapsed() >= MISSING_FOR => {}
-                Status::Pending | Status::Unknown => {
-                    return Err(RelayerError::Unsettled(UNMINED));
+                match sender.transaction_status(sent.tx).await? {
+                    Status::Mined { succeeded: true } => {
+                        self.steps.record(swap_id, step, sent.tx, true);
+                        return Ok(None);
+                    }
+                    Status::Mined { succeeded: false } => {}
+                    Status::Unknown if sent.at.elapsed() >= MISSING_FOR => {}
+                    Status::Pending | Status::Unknown => {
+                        return Err(RelayerError::Unsettled(UNMINED));
+                    }
                 }
+                self.steps.forget(swap_id, step);
             }
-            self.steps.forget(swap_id, step);
-        }
-        self.steps.after_earlier(sender).await?;
-        match send.await {
-            Ok(tx) => {
-                self.steps.record(swap_id, step, tx, true);
-                Ok(Some(tx))
+            self.steps.after_earlier(sender).await?;
+            match send.await {
+                Ok(tx) => {
+                    self.steps.record(swap_id, step, tx, true);
+                    Ok(Some(tx))
+                }
+                Err(zecswap_chain::Error::Unconfirmed(tx)) => {
+                    self.steps.record(swap_id, step, tx, false);
+                    Err(RelayerError::Unsettled(UNMINED))
+                }
+                Err(e) => Err(e.into()),
             }
-            Err(zecswap_chain::Error::Unconfirmed(tx)) => {
-                self.steps.record(swap_id, step, tx, false);
-                Err(RelayerError::Unsettled(UNMINED))
-            }
-            Err(e) => Err(e.into()),
         }
     }
 

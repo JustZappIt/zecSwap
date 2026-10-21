@@ -43,9 +43,7 @@ const ETH_WAIT: u64 = 120;
 const PENDING_WAIT: u64 = 30;
 /// Railgun notes hold at most uint120.
 const MAX_VALUE: u128 = (1 << 120) - 1;
-/// Past the private RPC's blocks, those after which a deposit it never landed is taken as dropped:
-/// a margin for missed slots.
-const PRIVATE_MARGIN_BLOCKS: u64 = 5;
+/// Seconds a slot takes, in which the private RPC's window passes.
 const SLOT: u64 = 12;
 /// The newest deposits read for one sent privately that may still land, or the last mined.
 const NEWEST: usize = 8;
@@ -529,7 +527,7 @@ impl Relayer {
         }
 
         let _sending = deposits.sending.lock().await;
-        let least_nonce = if lane.private_blocks().is_some() {
+        let least_nonce = if lane.private_window().is_some() {
             self.private_nonce(deposits)
                 .await?
                 .ok_or(RelayerError::Busy(
@@ -593,8 +591,8 @@ impl Relayer {
             .call()
             .and_then(|(_, _, data)| Call::decode(&data))
             .is_none_or(|call| call.expires_at() <= now().saturating_add(EXPIRING));
-        match self.lanes.deposits.private_blocks() {
-            Some(blocks) => self.private_fate(entry, expired, blocks).await,
+        match self.lanes.deposits.private_window() {
+            Some(window) => self.private_fate(entry, expired, window).await,
             None => self.fate(&entry.signed, entry.sent_at, expired).await,
         }
     }
@@ -602,9 +600,8 @@ impl Relayer {
     /// What became of a deposit sent through the private RPC: the public node knows of it only
     /// once it mines, and the private RPC never sends again one it dropped, so it is never
     /// broadcast again.
-    async fn private_fate(&self, entry: &Entry, expired: bool, blocks: u64) -> Result<Fate> {
-        let dropped =
-            now().saturating_sub(entry.sent_at) >= (blocks + PRIVATE_MARGIN_BLOCKS) * SLOT;
+    async fn private_fate(&self, entry: &Entry, expired: bool, window: u64) -> Result<Fate> {
+        let dropped = now().saturating_sub(entry.sent_at) >= window * SLOT;
         let lane = &self.lanes.deposits;
         Ok(match lane.transaction_status(entry.signed.hash).await? {
             Status::Mined { succeeded: true } => Fate::Landed,
@@ -637,7 +634,7 @@ impl Relayer {
         let private = self
             .deposits
             .as_ref()
-            .filter(|_| lane.private_blocks().is_some());
+            .filter(|_| lane.private_window().is_some());
         let Some(deposits) = private else {
             return Ok(lane.send_eth_above(self.account, keep).await?);
         };

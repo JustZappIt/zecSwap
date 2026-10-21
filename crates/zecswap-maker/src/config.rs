@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use zecswap_api::Network;
-use zecswap_chain::evm::{Address, PrivateKeySigner};
+use zecswap_chain::evm::{Address, PrivateKeySigner, Windows};
 use zeroize::Zeroizing;
 
 use crate::policy::Timing;
@@ -45,6 +45,10 @@ pub struct Config {
     /// Telegram messages when the maker's own account runs low on ETH and once it is topped up.
     #[serde(default)]
     pub gas_alerts: Option<zecswap_alerts::GasAlerts>,
+    /// Cancels, refunds and reverse claims, and every other contract call of the maker's, sent
+    /// through a revert-protecting private RPC instead of the public mempool.
+    #[serde(default)]
+    pub reveals: Option<RevealsConfig>,
     /// The most swaps, of both directions, waiting on their users to pay in at once: past it,
     /// accepts are refused, so spam can tie up only so much inventory and gas. No limit if absent.
     #[serde(default)]
@@ -53,6 +57,16 @@ pub struct Config {
     /// the issuer gives it tokens, without the maker learning which device asked.
     #[serde(default)]
     pub tokens: Option<zecswap_tokens::server::Config>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevealsConfig {
+    /// Flashbots Protect's RPC: its default endpoint, sharing the hash alone (`hint=hash`). A
+    /// cancel or refund that would land after its window closed is dropped, never mined, and one
+    /// dropped is sent again while its window lasts. Each holds the maker's account until it mines
+    /// or `blockRange` + 5 blocks pass, so the maker's sends go one at a time.
+    pub private_rpc: String,
 }
 
 fn default_evm_confirmations() -> NonZeroU32 {
@@ -71,7 +85,8 @@ pub struct ReverseConfig {
 }
 
 impl ReverseConfig {
-    pub fn check(&self) -> Result<()> {
+    /// Rejects settings the contract, with `windows`, would refuse escrows under.
+    pub fn check(&self, windows: Windows) -> Result<()> {
         anyhow::ensure!(
             self.refund_after <= 24 * 60 * 60 && self.fee_reserve_zat > 0,
             "reverse swaps require a fee reserve and must finish within 24 hours"
@@ -89,6 +104,14 @@ impl ReverseConfig {
         anyhow::ensure!(
             self.ready_after < self.refund_after,
             "reverse refund deadline must follow ready"
+        );
+        // An escrow may be funded up to its funding deadline, and `openReverse` refuses a `t0`
+        // under the minimum window from when it lands.
+        anyhow::ensure!(
+            self.ready_after - self.funding_window >= windows.min
+                && self.refund_after - self.ready_after >= windows.min,
+            "reverse t0 must follow the funding deadline, and t1 follow t0, by the contract's {}s minimum window",
+            windows.min
         );
         Ok(())
     }

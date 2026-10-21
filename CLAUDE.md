@@ -61,6 +61,16 @@ vectors, a testnet maker. The original design and threat model are in
   Spendable by 06:54 UTC. The minimum was lowered to 1 USDC for it and stays there for now (the
   owner's call); `deploy/mainnet/relayer-deposits.toml` stages 5. The test wallet's seed is in
   `.testnet/deposit-test-wallet`; `balance.cjs` reads mainnet with `RAILGUN_NETWORK=mainnet`.
+- **Windows contract (2026-10-20, PR #17, `feature/windows`)**: the lock contract's successor and
+  its port (Recent fixes, first entry). All eleven live scenarios passed on a fork of Sepolia
+  (`.testnet/e2e-windows-fork.log`, and `-rerun.log` for the two fixed after it). Live on the
+  hosted testnet since 2026-10-21 00:01 UTC (`docs/deployment.md`, October 20 windows contract):
+  the contract `0x459b…980d` (30-minute minimum window, 1-hour late window), deployed by
+  `deploy/testnet/deploy-windows.sh`, and `switch-windows.sh` moved the maker, its inventory and
+  the relayer onto it; since 01:11 UTC they run a build of `e7c5467`, which judges reveals as the
+  spec's 97 cases decide. zapp-dashboard reads both contracts since its `866df80` and pins this one
+  since `6b510a3`, both deployed, not pushed. Android and Veylor speak locks until ported; mainnet
+  stays on the lock contract.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**
   (milestones M1–M6). First the JNI library and a testnet spike of the SDK refund sweep; the
   in-app Railgun wallet (M5: Railgun's TypeScript SDK in a hidden WebView, proofs by `mopro`;
@@ -80,16 +90,16 @@ vectors, a testnet maker. The original design and threat model are in
 | `crates/zecswap-api` | The quote and relayer APIs' wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open → verify on-chain → deposit → claim, or refund key), paid to an account or into Railgun; the Android driver should mirror it. `Depositor` plays a wallet's USDC deposits |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure decision function |
-| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`), and with `[deposits]` deposit addresses' USDC into Railgun (`deposits.rs`, `docs/deposits.md`); never run by a maker |
+| `crates/zecswap-relayer` | Sends the transactions of users with no account on the chain, on their signatures, for one token and maker, its claims and reverse refunds through Flashbots Protect with `[reveals]` (required on mainnet), with `[railgun_sends]` wallets' private Railgun sends and withdrawals as their broadcaster (`docs/railgun-sends.md`), and with `[deposits]` deposit addresses' USDC into Railgun (`deposits.rs`, `docs/deposits.md`); never run by a maker |
 | `crates/zecswap-alerts` | Telegram alerts for the maker and the relayer: the bot's client, the durable queue messages wait in, in each service's own SQLite, and the gas alerts of the account each sends from (`gas`) |
 | `crates/zecswap-prices` | USD prices of ZEC, USDC and ETH: `Feed`, the latest from providers in order (the maker's quotes, the relayer's gas-priced fees), and `History`, Alchemy's five-minute candles for costs recorded after the fact |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), good on their UTC day: client blinding, issuer signing, and (`server`) the gate the maker's accepts spend them through, with the maker's key for handing them back |
 | `crates/zecswap-issuer` | Signs each device a day's tokens (one per accept), blind, counted by the install's Android Keystore key, attested up to Google's root (`android.rs`, `x509.rs`; `docs/tokens.md`) |
 | `crates/zecswap-cli` | Testnet wallet + user CLI (`init`, `status`, `send`, `swap`, `swap --relayer` for Railgun, `deposit`) |
 | `crates/zecswap-e2e` | Live suite: `src/env.rs` (setup, in-process makers, relayer and token issuer), `src/scenarios.rs` |
-| `contracts` | Foundry: `src/ZecSwap.sol`, `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
+| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract deployed before, for the migration tests), `src/ShieldVault.sol` (per-swap Railgun payout vaults), `src/Deposits.sol` (deposit addresses' USDC shielded on EIP-3009 authorizations, a vault per address), `src/Pallas.sol`, `src/Token.sol`, tests incl. `test/fork`, `script/Deploy.s.sol`, Rust-generated vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD, with EIP-3009 |
 | `scripts/e2e-testnet.sh` | Runs the live suite |
-| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18 |
+| `deploy/testnet` | The deposits contracts on Sepolia (`deploy-deposits.sh`) and the droplet's switch to their tUSD (`switch-token.sh`), both run on 2026-10-18; the windows contract on Sepolia (`deploy-windows.sh`) and the droplet's switch to it (`switch-windows.sh`) |
 
 ## Commands
 
@@ -132,6 +142,78 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
 
 ## Recent fixes worth knowing (all tested)
 
+- Windows (2026-10-20, branch `feature/windows`; the third audit, its port spec and model are in
+  `docs/local/windows/audit3/`): the contract has no locks. At every moment at most one side may
+  reveal, by the clock and the stage. Forward: the user claims once ready, or from `t0` unready,
+  until `t1`; the maker cancels an unready swap until `t0`, refunds from `t1` for `LATE_WINDOW`,
+  and then the user may claim for good. Reverse: the maker claims from ready until `t1`; the user
+  refunds while unready, and from `t1` for good. `ready` only before `t0`; `open` and `openReverse`
+  refuse a `t0` under `MIN_WINDOW` from when they land, or a `t1` under it from `t0` (the maker
+  checks its `[timing]` and `[reverse]` against them at start, the client a reverse quote).
+  `getSwap` returns four words; `/v1/lock-claim` and `/v1/reverse/lock-refund` are gone. Off-chain
+  (audit 3, each tested): a reveal is judged on one read, the swap at the newest block's hash
+  (`Settlement::read`, `reveal_window`), start edges by that block's time and end edges by the
+  later of it and the wall clock, with its margin left (`Window::leaves`); every service and
+  client reads `MIN_WINDOW()`/`LATE_WINDOW()` (`Settlement::windows`) and refuses the lock
+  contract, whose six-word record alloy decodes silently under the four-word ABI; a privately
+  sent reveal is never simulated (fixed `REVEAL_GAS`), so its share reaches no RPC before it
+  mines; a public send unmined three blocks on goes again at its nonce at the fees then
+  (`land_publicly`). The maker records a ready before sending it (`ready_sent`) and never cancels
+  behind one, decides a cancel at `t0 - t0_margin` with `reveal_margin` under that, claims a
+  reverse escrow only on a final ready (a finalized block holds it, or `FINAL_DEPTH`, 64, blocks
+  are above it), and with `[reveals] private_rpc` (optional; staged commented out on mainnet)
+  sends its cancels and refunds through Protect. The relayer and the client claim before `t0`
+  only on a ready with `READY_DEPTH` (12) blocks above it (the relayer answers `503` meanwhile);
+  the relayer holds a reverse refund while its own ready may land and never readies after a
+  refund it sent; the client saves each ready signature's deadline before handing it out and
+  never readies after asking for a refund. These decisions are pure functions in
+  `evm/judge.rs` (claims, reverse refunds and readies) and the maker's `policy::decide`, and the
+  third audit's 97 spec cases (`crates/zecswap-chain/tests/windows-spec-vectors.json`) replay
+  against them (`tests/windows_spec.rs`, `policy::tests`): a Kotlin port must pass them too. Builds from here refuse the lock
+  contract: mainnet-beta's services stay on their release until mainnet moves to a windows
+  contract, and wallets keep the lock path for swaps still open there (`zecswap-core` keeps its
+  lock digests, which `zecswap-jni` uses). The client also refuses a swap whose `t1` follows `t0`
+  by under twice its claim margin (10 minutes): should the maker never ready it, the user claims
+  from `t0` with the margin to spare.
+- Reveals keep fee headroom (2026-10-19, after an outside report confirmed on a mainnet fork): a
+  claim or refund carries its share, and one the base fee outruns is mined after its lock lapses,
+  reverting with the share public while the other side moves next (the maker refunds, then
+  sweeps the ZEC with the leaked `z`). Every send capped its fee at the next base fee twice over
+  and the tip, a fraction of a gwei at mainnet's base fees: in the year to 2026-10-19 surges
+  would have stranded such a send over 25 minutes 235 times. On mainnet a reveal's cap is now
+  5 gwei higher (`Network::reveal_headroom_wei`; twice in that year), on the maker's account and
+  the relayer's claims lane (`Settlement::set_reveal_headroom`), whose float holds its
+  transactions' gas at that cap: 0.01 ETH more at two transactions. The maker's cancel lock gets
+  it too: from `t0` a user may lock and claim a swap whose cancel hasn't landed, deposit or not,
+  so the staged mainnet maker now cancels a swap not paid in full 30 minutes before `t0` (was 5:
+  a user can keep a deposit pending to hold the cancel back until then). A send still pays only
+  the base fee and its tip; testnets keep no headroom. The maker's mainnet low-gas alert moved to
+  0.0015 ETH, what a reveal holds. The contract-side fix is the owner's open decision.
+- Reveals go through Flashbots Protect (2026-10-19): a security report, confirmed on a mainnet
+  fork, showed a claim broadcast in time but mined after its lock lapsed reverts with the share
+  public (mempool, then the reverted transaction), and the maker, whose turn comes next, refunds
+  and sweeps the user's ZEC too; a reverse refund is the mirror. The relayer's claims and reverse
+  refunds (its claims account) now go through `[reveals] private_rpc`, required on mainnet and
+  optional elsewhere (Flashbots' Sepolia relay includes nothing); `deploy/mainnet/relayer.toml`
+  stages `https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10`
+  (BuilderNet alone built 14% of blocks: confirm the builder names on the first mainnet claim on
+  Protect's status page; names nobody serves fall back to BuilderNet, slower but private). Loading
+  refuses any path (`/fast` shows TEE searchers whole transactions, failed ones too), any hint but
+  `hash` alone (the default ones share logs, and `Claimed` logs the share), and any parameter but
+  hint, blockRange (once, positive), builder, refund, originId and auctionTimeout
+  (`evm::check_keeps_secrets`), never echoing the URL. Only `eth_sendRawTransaction` and the
+  startup `eth_chainId` go to Protect. `Settlement::submit` on an account with a private RPC signs
+  at its pending nonce (past its last private send that mined), broadcasts there, and holds the
+  account's turn, reading the node, until the reveal mines or `blockRange` + 5 blocks pass from the
+  block it was signed in (`Error::Dropped`: `503`, post again): one at a time, and none is ever
+  left that may still land, so `send_once` needs no private case. A restarted relayer sends
+  nothing from such an account, ETH take-backs included, for that window from its start
+  (`Steps::note_earlier`). Every reveal, public or private, reads its lock again in its turn and
+  is refused unsent with under `claim_margin` left (`Settlement::reveal_with_margin`, set on the
+  claims lane by `Lanes::of`): `Error::Late`, `400 rejected`, final for that lock, as a `503`
+  would only be posted again under a lock that runs down. Deposits share the window
+  (`private_window`) and the signer (`sign_next`). Reveals, public or private, keep their
+  account's reveal headroom (above).
 - Every relayer `503` says when to come back (2026-10-18, `feature/deposits`): an earlier send's
   unknown outcome 15 s, unpriced gas 60 s, a monitor export 30 s, beside the cooldown's and the
   deposits' own waits. `zecswap-client` waits out any of 30 s or less and posts the same request
@@ -419,6 +501,12 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   cache advances on failed sends. `evm::signing_provider` shows the safe stack.
 - Async closures (`AsyncFnMut`) held in a future break `Send` for spawned tasks (rustc's
   "implementation of `Send` is not general enough"); poll with plain predicates instead.
+- `terms_tests` runs within 256-384 KiB of the 2 MiB test-thread stack in debug builds (it passes
+  with `RUST_MIN_STACK=1835008`, not 1703936): its body's frame holds a slot for every relayer
+  future it awaits, and Poseidon's setup (`Keys::from_seed`) recurses deep. Larger relayer or
+  `Settlement` send futures overflow it (the binary aborts and leaves its anvils holding any pipe
+  it wrote to): `submit_held` boxes each attempt and `send_once` its send, so keep send state in
+  there.
 - The agent shell is zsh: `grep` is a wrapper function (use `command grep`), `$vars` don't
   word-split, and unquoted globs in flags fail (`--include='*.rs'`).
 

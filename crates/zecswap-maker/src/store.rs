@@ -47,6 +47,7 @@ const SCHEMA: &str = "
         sweep_txid BLOB,
         settled INTEGER NOT NULL DEFAULT 0,
         refund_started INTEGER NOT NULL DEFAULT 0,
+        ready_sent INTEGER NOT NULL DEFAULT 0,
         settled_at INTEGER,
         archived INTEGER NOT NULL DEFAULT 0,
         token_request BLOB,
@@ -71,7 +72,7 @@ const LIVE_QUOTE: &str = "quote_id = ?1 AND accepted = 0 AND expires_at > ?2
 const SWAP_COLUMNS: &str = "
     s.id, s.user_share, s.viewing_keys, s.zcash_account, s.opened_at, s.t1, s.sweep_txid, s.settled,
     q.quote_id, q.nonce, q.payout, q.payout_note, q.amount, q.deposit_zat, s.refund_started, s.t0,
-    s.token, s.token_request, s.token_return
+    s.token, s.token_request, s.token_return, s.ready_sent
 ";
 
 #[derive(Clone, Debug)]
@@ -105,6 +106,9 @@ pub struct Swap {
     pub settled: bool,
     /// Persisted before cancellation sends; a reorg must not make a revealed share safe again.
     pub refund_started: bool,
+    /// Persisted before `ready` is sent: from our account it mines before any cancel sent after
+    /// it, which would then revert with the maker's share public, so none ever follows it.
+    pub ready_sent: bool,
     /// The accept's request for its token back, where accepts take tokens.
     pub token_request: Option<Vec<u8>>,
     /// Its blind signature (base64url), once the user has paid in.
@@ -126,10 +130,12 @@ impl Store {
             "{} was made by an older maker; a new deployment needs a new store",
             path.display()
         );
-        if !columns.iter().any(|column| column == "refund_started") {
-            conn.execute_batch(
-                "ALTER TABLE swaps ADD COLUMN refund_started INTEGER NOT NULL DEFAULT 0",
-            )?;
+        for column in ["refund_started", "ready_sent"] {
+            if !columns.iter().any(|known| known == column) {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE swaps ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                ))?;
+            }
         }
         conn.execute_batch(reverse::SCHEMA)?;
         conn.execute_batch(zecswap_alerts::SCHEMA)?;
@@ -353,6 +359,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn mark_ready_sent(&self, id: &B256) -> Result<()> {
+        self.conn().execute(
+            "UPDATE swaps SET ready_sent = 1 WHERE id = ?1",
+            params![id.as_slice()],
+        )?;
+        Ok(())
+    }
+
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.0
             .lock()
@@ -386,6 +400,7 @@ fn swap_from_row(row: &Row<'_>) -> rusqlite::Result<Swap> {
         sweep: row.get::<_, Option<[u8; 32]>>(6)?.map(TxId::from_bytes),
         settled: row.get(7)?,
         refund_started: row.get(14)?,
+        ready_sent: row.get(19)?,
         token_request: row.get(17)?,
         token_return: row.get(18)?,
         quote: quote_at(row, 8)?,
@@ -464,6 +479,7 @@ mod tests {
                 sweep: None,
                 settled: false,
                 refund_started: false,
+                ready_sent: false,
                 token_request: None,
                 token_return: None,
             };

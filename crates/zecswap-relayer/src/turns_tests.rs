@@ -40,21 +40,32 @@ async fn a_swaps_requests_take_turns() {
     };
     let (busy, other) = (B256::repeat_byte(6), B256::repeat_byte(7));
     // Another maker's: refused before anything is read from the chain.
-    let lock = serde_json::to_value(LockClaim {
+    let terms = zecswap_api::Terms {
+        maker: Address::repeat_byte(9),
+        token: Address::repeat_byte(3),
+        amount: 1,
+        maker_key: share(0),
+        user_key: share(1),
+        user: Address::repeat_byte(5),
+        t0: 1,
+        t1: 2,
+        payout_note: B256::repeat_byte(8),
+    };
+    let claim = serde_json::to_value(Claim {
         swap_id: busy,
-        terms: zecswap_api::Terms {
-            maker: Address::repeat_byte(9),
-            token: Address::repeat_byte(3),
-            amount: 1,
-            maker_key: share(0),
-            user_key: share(1),
-            user: Address::repeat_byte(5),
-            t0: 1,
-            t1: 2,
-            payout_note: B256::repeat_byte(8),
+        terms: terms.clone(),
+        secret: B256::repeat_byte(2),
+        payout: Payout {
+            swap_id: busy,
+            terms,
+            note: zecswap_api::relayer::Note {
+                npk: B256::repeat_byte(3),
+                encrypted_bundle: [B256::repeat_byte(4); 3],
+                shield_key: B256::repeat_byte(5),
+            },
+            fee: 1,
+            signature: alloy_primitives::FixedBytes::<65>::repeat_byte(1),
         },
-        deadline: 1,
-        signature: alloy_primitives::FixedBytes::<65>::repeat_byte(1),
     })
     .unwrap();
 
@@ -63,14 +74,11 @@ async fn a_swaps_requests_take_turns() {
     let (status, body) = post(&app, "/v1/reverse/fund", funding(other)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid V2 Relay Adapt calldata");
-    let waiting = [
-        ("/v1/reverse/fund", funding(busy)),
-        ("/v1/lock-claim", lock),
-    ]
-    .map(|(path, body)| {
-        let app = app.clone();
-        tokio::spawn(async move { post(&app, path, body).await })
-    });
+    let waiting =
+        [("/v1/reverse/fund", funding(busy)), ("/v1/claim", claim)].map(|(path, body)| {
+            let app = app.clone();
+            tokio::spawn(async move { post(&app, path, body).await })
+        });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
         waiting.iter().all(|request| !request.is_finished()),
@@ -85,7 +93,7 @@ async fn a_swaps_requests_take_turns() {
     assert_eq!(
         (
             &operations["fund_reverse"]["refused"],
-            &operations["lock_claim"]["refused"]
+            &operations["claim"]["refused"]
         ),
         (&2.into(), &1.into())
     );

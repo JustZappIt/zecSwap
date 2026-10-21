@@ -6,7 +6,7 @@
 //! both contracts take the same `Transaction`.
 
 use alloy::consensus::{Transaction as _, TxEnvelope};
-use alloy::eips::{BlockId, Decodable2718, Encodable2718};
+use alloy::eips::{BlockId, Decodable2718};
 use alloy::network::TransactionBuilder;
 use alloy::primitives::aliases::U120;
 use alloy::primitives::{Bytes, keccak256};
@@ -363,7 +363,7 @@ impl Settlement {
             transact.railgun == policy.railgun,
             "the relayer's Railgun deployment changed; post again",
         )?;
-        let (Some(account), Some(wallet)) = (self.account, &self.wallet) else {
+        let Some(account) = self.account else {
             return Err(Error::Config("a read-only connection cannot send".into()).into());
         };
         let gas_price = self
@@ -423,23 +423,8 @@ impl Settlement {
             .min(policy.max_gas_limit);
         require(afford(gas_limit), "the relayer is low on ETH")?;
         let _sending = self.sending.turn().await;
-        let nonce = self
-            .provider
-            .get_transaction_count(account)
-            .pending()
-            .await
-            .map_err(|_| Error::Contract("the relayer's nonce is unavailable".into()))?;
         tx.set_gas_limit(gas_limit);
-        tx.set_nonce(nonce);
-        let envelope = tx
-            .build(wallet)
-            .await
-            .map_err(|_| Error::Contract("cannot sign the transaction".into()))?;
-        let signed = Signed {
-            hash: *envelope.tx_hash(),
-            nonce,
-            raw: envelope.encoded_2718().into(),
-        };
+        let signed = self.sign_next(tx, 0).await?;
         record(&signed)?;
         match self.provider.send_raw_transaction(&signed.raw).await {
             Ok(_) => {

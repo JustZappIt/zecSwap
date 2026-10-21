@@ -126,19 +126,9 @@ pub struct ReverseFundingTerms {
     pub fee: u128,
 }
 
-/// `POST /v1/lock-claim`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LockClaim {
-    pub swap_id: B256,
-    pub terms: crate::Terms,
-    pub deadline: u64,
-    pub signature: FixedBytes<65>,
-}
-
-/// `POST /v1/claim`: reveals the user share under the held claim lock, then pays out. The
-/// payout comes first so that the relayer is sure of its fee before it reveals anything. It
-/// names the same swap and terms as the claim.
+/// `POST /v1/claim`: reveals the user share in the claim's window, then pays out. The payout is
+/// checked first so that the relayer is sure of its fee before it reveals anything. It names the
+/// same swap and terms as the claim.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Claim {

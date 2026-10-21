@@ -15,10 +15,14 @@ Both services are on the same host for this testnet deployment, under separate U
 and signing keys. This does not provide independent operators: the production relayer must
 remain independent of the maker, as the protocol requires.
 
-Both hosted services use the Sepolia contract
+Both hosted services use the Sepolia windows contract
+[`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d),
+on which at every moment at most one side may reveal its share
+([October 20](#october-20-windows-contract)); [sepolia-windows.json](../deployments/sepolia-windows.json)
+records it. Before it, from October 7, they used
 [`0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c`](https://sepolia.etherscan.io/address/0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c),
 which stores only a hash of each swap's terms ([October 7](#october-7-terms-hash-contract)).
-[sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records the transaction,
+[sepolia-terms-hash.json](../deployments/retired/sepolia-terms-hash.json) records the transaction,
 block, test token, Railgun proxy, lock duration and the services' release. Since 19:02 UTC that
 day the maker takes Privacy Pass tokens ([October 7 tokens](#october-7-tokens)): Android builds
 that pin this contract and both token keys can swap; earlier builds cannot. Since 04:45 UTC on
@@ -42,7 +46,9 @@ read, as on mainnet since 23:00 ([October 17 sweeps](#october-17-sweeps-without-
 Since 23:42 UTC on October 18 both swap a new test token, which the relayer also takes at wallets'
 deposit addresses and shields into their Railgun balances
 ([October 18 deposits](#october-18-deposits-and-a-new-test-token)). Since 02:27 UTC on October 19 a
-swap can be up to 200 tUSD, up from 20 ([October 19](#october-19-a-larger-swap-cap)).
+swap can be up to 200 tUSD, up from 20 ([October 19](#october-19-a-larger-swap-cap)). Since 00:01
+UTC on October 21 both run on the windows contract, and app builds that speak locks can no longer
+swap ([October 20](#october-20-windows-contract)).
 
 Cloudflare Workers cannot run these binaries directly. Cloudflare Containers currently have
 [ephemeral disks](https://developers.cloudflare.com/containers/faq/): placing the maker's
@@ -183,7 +189,7 @@ point `/opt/zecswap/current` back at the previous release, and restart only the 
 
 At 04:15 UTC `0xD75Efc6a157CC0A95f66962DA86DDf35d9F2617c` was deployed on Ethereum Sepolia from
 `59b7d21` (#8), with Railgun's Sepolia proxy and a 600-second lock, paying in the existing test
-token; [sepolia-terms-hash.json](../deployments/sepolia-terms-hash.json) records it. A smoke test
+token; [sepolia-terms-hash.json](../deployments/retired/sepolia-terms-hash.json) records it. A smoke test
 deposited, opened, lock-refunded and refunded a swap on it.
 
 Sepolia now prices new state far higher than it did on October 2: the deployment used 30.2M gas
@@ -819,6 +825,69 @@ reload nginx, point `/opt/zecswap-mainnet/current` at the release `previous-curr
 restart the relayer. Deposits then stop; their journal stays in
 `/var/lib/zecswap-mainnet-relayer/deposits.sqlite`.
 
+## October 20 windows contract
+
+The windows contract has no locks: at every moment at most one side may reveal its share, by the
+clock and the swap's stage alone ([reverse-flow.md](reverse-flow.md#windows-2026-10-20)). From
+`0de4c06` (#17), `deploy/testnet/deploy-windows.sh` deployed it on Sepolia from `0x09ed…c3e5` at
+23:58 UTC, with a 30-minute minimum window and a 1-hour late window, paying into Railgun's Sepolia
+proxy:
+
+| | Address | Block |
+| --- | --- | --- |
+| ZecSwap (windows) | [`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d) | 11,958,709 |
+
+It used 27,474,590 gas, and read back both windows and the proxy, and no `LOCK_DURATION()`.
+[sepolia-windows.json](../deployments/sepolia-windows.json) records it and the switch; the
+terms-hash contract's manifest moved to `deployments/retired/`.
+
+At 00:00 UTC on October 21 `deploy/testnet/switch-windows.sh` checked the maker's timing against
+the windows, found no live swap, stopped the maker and the relayer, and moved the maker's
+inventory: it withdrew the 2,188.628126 tUSD from the terms-hash contract (`0x8409b628…`, block
+11,958,722) and added them to the windows contract in `0x105813d6…` and `0x68b8e6b6…` (blocks
+11,958,723 and 11,958,724). Both configs name the new contract, and the maker started on a fresh
+store, keeping its keys, root secret, wallets and spent tokens. Both run a build of `0de4c06` in
+`/opt/zecswap/releases/20261020-windows-0de4c06`, now `/opt/zecswap/current`; the issuer is the
+previous release's, byte for byte. Both started at 00:01:13. The maker's timing stays as it was: t0
+45 minutes after its open, t1 an hour after t0, an unpaid swap cancelled 5 minutes before t0, and
+no reveal sent with under 2 minutes left in its window.
+
+After the restart the maker's health answered 204, and its info and the relayer's terms named the
+new contract, all the same through the public gateway. zapp-dashboard reads both contracts'
+records and both kinds of maker policy since `866df80`, and pins the new contract since `6b510a3`
+(`BRIDGE_TESTNET_CONTRACT` too); both are deployed, not yet pushed.
+
+Then `zecswap-cli swap --relayer` swapped 2 tUSD through the gateway (`0x6f522efa`): accepted at
+00:05:43, readied by the maker at 00:08:36 once the 179,155-zatoshi deposit had its two
+confirmations, claimed through the relayer at 00:11:00, twelve blocks after the ready as a claim
+before `t0` waits, and paid out at 00:11:12, 1.9 tUSD into the wallet's Railgun balance
+(`0x136de610…`, block 11,958,774). The maker then swept the deposit (`ba68939c…`).
+
+At 01:11:58 UTC on October 21, with no live swap, the maker and the relayer moved to a build of
+`e7c5467` in `/opt/zecswap/releases/20261021-windows-e7c5467` (`previous-current` in
+`/var/backups/zecswap/20261021-windows-e7c5467`), the issuer the previous release's, byte for
+byte. Every reveal is judged there as the third audit's port spec decides its 97 cases: a claim
+before `t0` waits for 12 blocks above its ready, where the first build took 11; a reverse claim
+takes a ready 64 blocks deep as final when the finalized block doesn't hold it yet; and the
+relayer never readies an escrow after a refund it sent. A second 2 tUSD swap through the gateway
+(`0x002ed897`) then ran on it: readied at 01:17:36 (block 11,959,102), claimed at 01:20:24
+(block 11,959,115), sent once 12 blocks stood above the ready, and paid out 1.9 tUSD into the
+wallet's Railgun balance (`0xeb876c2c…`).
+
+App builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and
+the maker's info and the relayer's terms name the new contract. Mainnet stays on the lock contract
+and its release.
+
+Rollback files are in `/var/backups/zecswap/20261020-windows-0de4c06` (root-only):
+`maker-config.toml`, `relayer-config.toml`, `previous-current`, and the retired store as
+`retired-maker.sqlite` with its backup `maker.sqlite`. Rolling back moves the inventory back on
+chain:
+1. Stop both services.
+2. Run `withdraw-inventory all` under the current maker config.
+3. Restore both configs and the retired store as `/var/lib/zecswap-maker/maker.sqlite`.
+4. Point `/opt/zecswap/current` at the release `previous-current` names.
+5. Run `add-inventory 2188628126` under the restored config, and start both.
+
 ## Deployment sequence
 
 1. Deploy the updated contract on the chosen EVM testnet with the correct `RAILGUN` proxy (on
@@ -876,6 +945,40 @@ fixes, and each service refuses to start on anything of another network:
   `[reverse_funding] relay_adapt`; another one is refused.
 - The issuer on mainnet refuses `insecure-test`, whatever `allow_insecure` says.
 - `add-inventory --mint` is refused on mainnet, and the CLI's `--network` picks its lightwalletd.
+- The relayer on mainnet refuses to start without `[reveals] private_rpc`, below.
+
+Claims and reverse refunds reveal a share in their calldata. One that landed after its window
+shut would revert with the share public, and the other side, whose window opens next, could take
+both halves of the swap. So on mainnet the relayer sends them through Flashbots Protect, never the
+public mempool: `[reveals] private_rpc`, staged in `deploy/mainnet/relayer.toml` as
+`https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10`.
+Protect lands a transaction only if it succeeds and drops one it couldn't land within its
+`blockRange`. No node shows one until it mines, so the relayer sends them one at a time from its
+claims account, holding the account's turn until each mines or 5 blocks past its range (15 here)
+go by without it, and answers a dropped one `503`, to post again; a restarted relayer sends none
+for those 15 blocks, since one it sent before may still land. Only the broadcasts go to Protect,
+which limits reads to a few hundred an IP every five minutes: reads, nonces, simulations and
+receipts stay on `evm_rpc`. The relayer refuses Protect's `/fast`, which shows TEE searchers whole
+transactions (failed ones too, five minutes on); any `hint` but `hash` alone, since the default
+hints share logs and `Claimed` logs the share; and any parameter but `hint`, `blockRange`,
+`builder`, `refund`, `originId` and `auctionTimeout`, such as `canRevert` or `useMempool`.
+Flashbots' own builder, BuilderNet, always gets the transaction, but it built 14.3% of blocks in
+the day to October 19 (relayscan.io): alone it would land a claim in about 7 blocks and miss a
+10-block range one time in five. Naming Titan (51.6%), Quasar (21.4%) and Eureka (7.5%), as
+Flashbots' builder registry spells them (`builder-registrations.json` in github.com/flashbots/dowg),
+covers about 95%; each sees the whole transaction, as it must to include it, and nothing more is
+shared. Confirm the names on the first mainnet claim: Protect's status page for the transaction
+shows where it went. Names no builder answers to leave it to BuilderNet alone: slower, still
+private. Testnet keeps the public mempool, since Flashbots' Sepolia relay has included nothing
+since block 11,856,337. Wherever a reveal goes, it is broadcast only while its window still has
+`claim_margin` left once its turn comes, read with the newest block and judged by the later of its
+time and the wall clock; one whose window ran under it while it waited is refused with `400`,
+nothing sent, as on arrival. A reveal sent privately is never simulated, as a simulation would show
+the RPC its share: it carries a fixed gas limit instead. A send through the public mempool, a
+testnet reveal among them, goes again at the same nonce at the fees then when three blocks pass
+without it. The maker's own reveals, its cancels and
+refunds, go through Protect too once its config has `[reveals] private_rpc`, which
+`deploy/mainnet/maker.toml` stages commented out: the owner's call.
 
 Swaps use the Ironwood pool, which NU6.3 brought (mainnet height 3,428,143; zec.rocks served
 mainnet on NU6.3's branch `0x37A5165B` on October 12), so a maker on the pinned crates runs on
@@ -884,7 +987,7 @@ to be chosen on October 20), the maker and the app must move to crates that sche
 or their Zcash transactions are refused, as testnet's were on October 4.
 
 A mainnet deployment also needs its own: a contract deployed with `RAILGUN` set to the mainnet
-proxy, and the `LOCK_DURATION` chosen for it (`scripts/deploy-contract.sh`); the maker's and
+proxy, and the `MIN_WINDOW` and `LATE_WINDOW` chosen for it (`scripts/deploy-contract.sh`); the maker's and
 relayer's `contract`, `token`, `maker` and RPC URLs ([deploy/mainnet/](../deploy/mainnet/)
 holds the beta's configs); mainnet ETH and USDC; secrets of its own
 (`scripts/mainnet-secrets.sh`, whose BIP-39 phrases restore the maker's ZEC inventory in any
@@ -951,7 +1054,7 @@ instead, so a flood of one kind never refuses another:
 
 | Requests | Allowance |
 | --- | --- |
-| A swap's relayer requests (fundings, locks, claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
+| A swap's relayer requests (fundings, readies, claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
 | The same requests without one | 2 a second shared; up to 20 more wait their turn |
 | Quotes | 2 a second, bursts of 30 |
 | Accepts | 10 at a time; 2 a second, bursts of 20 |
@@ -1080,7 +1183,7 @@ maker sent no ZEC in time), with a line on why unless it completed. It links the
 refund or payout that settled the swap on Etherscan, or the dashboard if the maker has not
 indexed one yet. When Railgun sends a payout back and a rescue shields it again, the rescue
 sends one more message and is its link. Nothing else about a swap sends a message: deposits,
-confirmations, locks and the maker's sweeps are on the dashboard. Messages never carry the
+confirmations, readies and the maker's sweeps are on the dashboard. Messages never carry the
 contract, the maker's address or block numbers, and the notification worker never asks a
 price feed.
 
@@ -1203,7 +1306,7 @@ the quote's own ZEC, USDC and ETH prices:
 ```toml
 [pricing.costs]
 forward_gas = 450000      # ZEC to USDC: the maker's open and ready (412k on Sepolia)
-reverse_gas = 400000      # USDC to ZEC: its claim lock and claim (362k on Sepolia)
+reverse_gas = 400000      # USDC to ZEC: its claim (with the lock contract's claim lock, 362k on Sepolia)
 zcash_fee_zat = 15000     # the forward sweep, or the reverse deposit (10,000 so far)
 margin_bps = 2000         # for gas prices that rise before the sends land
 ```
@@ -1224,8 +1327,8 @@ flat gwei, so it ran to a thousand times what quotes charged, and a ZEC to USDC 
 charged $0.001 of gas paid $0.95 to open its escrow.
 
 The relayer's fees follow gas the same way. With `providers` at the top of its config, a
-payout's fee is the larger of `fee` and `fee_gas` (the claim lock, the claim and the payout:
-1.65M on Sepolia) at the gas price and ETH price when it is quoted, `fee_margin_bps` on top;
+payout's fee is the larger of `fee` and `fee_gas` (the claim and the payout; with the lock
+contract's claim lock, 1.65M on Sepolia) at the gas price and ETH price when it is quoted, `fee_margin_bps` on top;
 `[reverse_funding]` has its own `fee` and `fee_gas` (the funding and its ready: 2.06M). The terms
 quote both, with `feeExpiresAt`: the relayer takes any fee at or above the lowest it quoted in
 the hour before, so the fee a wallet shows when a swap starts is the fee its claim pays. Where it
@@ -1319,7 +1422,9 @@ fully scanned height. Lightwalletd response bodies have a 30-second idle deadlin
 Keep both maker and wallet databases when upgrading or restarting. Settlement retains
 accounts, birthdays, viewing keys, transaction history and sweep IDs; completed swaps
 are revisited for reorg recovery. The maker database automatically adds persisted
-cancellation intent, preventing a rolled-back refund lock from making a swap ready again.
+cancellation intent and a mark that it sent a swap's ready, each recorded before the send: a swap
+the maker began to cancel is never made ready, and one it made ready never cancelled, whatever a
+restart or a reorganisation shows.
 Retained history grows over time and is not automatically pruned. Accounts already deleted
 by an older maker are not reconstructed by this upgrade.
 

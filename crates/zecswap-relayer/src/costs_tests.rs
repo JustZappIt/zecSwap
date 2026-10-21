@@ -99,6 +99,7 @@ fn relayer(
             providers: vec![],
             fee_margin_bps: 0,
             claim_margin: 30,
+            reveals: None,
             top_up_transactions: 8,
             reverse_funding: None,
             railgun_sends: None,
@@ -112,7 +113,10 @@ fn relayer(
         },
         settlement: Settlement::connect(url, contract, key.clone()).unwrap(),
         lanes: crate::lanes::Lanes::connect(url, contract, key).unwrap(),
-        lock_duration: 600,
+        windows: zecswap_chain::evm::Windows {
+            min: 600,
+            late: 1_200,
+        },
         turns: Default::default(),
         steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
@@ -212,6 +216,7 @@ async fn each_mined_send_is_costed_from_its_receipt_and_its_own_bytes() {
     let mut code =
         alloy_primitives::hex::decode(artifact["bytecode"]["object"].as_str().unwrap()).unwrap();
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&RAILGUN.into_word().0);
     let contract = deploy(&url, key.clone(), code).await.unwrap();
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());

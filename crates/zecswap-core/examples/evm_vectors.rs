@@ -14,12 +14,15 @@
 //!   evm_vectors deposit-rescue <chainId> <deposits> <from> <note> <relayer> <fee> <nonce>
 //!                         <deadline>
 //!                         `DepositsDomain::rescue` (forge ffi)
+//!   evm_vectors digest <kind> <chainId> <contract> <fields...>
+//!                         `Domain`'s digest of `ready`, `payout`, `refund-payout`, `rescue` or
+//!                         `open-reverse` (forge ffi)
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use zecswap_core::{
-    DepositsDomain, PublicShare, ReceiveAuthorization, RescueAuthorization, SecretShare, Terms,
-    TokenDomain,
+    DepositsDomain, Domain, PublicShare, ReceiveAuthorization, RescueAuthorization, ReverseOpen,
+    SecretShare, Terms, TokenDomain,
 };
 
 const Q_MINUS_ONE: &str = "40000000000000000000000000000000224698fc0994a8dd8c46eb2100000000";
@@ -28,6 +31,70 @@ const Q_MINUS_TWO: &str = "40000000000000000000000000000000224698fc0994a8dd8c46e
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [mode, kind, chain_id, contract, rest @ ..] if mode == "digest" => {
+            let domain = Domain {
+                chain_id: chain_id.parse().expect("a decimal chain id"),
+                contract: fixed(contract),
+            };
+            let digest = match (kind.as_str(), rest) {
+                ("ready", [id, deadline]) => {
+                    domain.ready(&fixed(id), deadline.parse().expect("a decimal deadline"))
+                }
+                ("payout", [id, relayer, fee]) => domain.payout(
+                    &fixed(id),
+                    &fixed(relayer),
+                    fee.parse().expect("a decimal fee"),
+                ),
+                ("refund-payout", [id, relayer, fee]) => domain.refund_payout(
+                    &fixed(id),
+                    &fixed(relayer),
+                    fee.parse().expect("a decimal fee"),
+                ),
+                ("rescue", [id, note, relayer, fee, nonce, deadline]) => domain.rescue(
+                    &fixed(id),
+                    &fixed(note),
+                    &fixed(relayer),
+                    fee.parse().expect("a decimal fee"),
+                    RescueAuthorization {
+                        nonce: nonce.parse().expect("a decimal nonce"),
+                        deadline: deadline.parse().expect("a decimal deadline"),
+                    },
+                ),
+                (
+                    "open-reverse",
+                    [
+                        maker,
+                        user,
+                        token,
+                        amount,
+                        maker_key,
+                        user_key,
+                        t0,
+                        t1,
+                        refund_note,
+                        deadline,
+                    ],
+                ) => {
+                    let key = |text: &str| {
+                        PublicShare::from_affine_bytes(&fixed(text)).expect("a key on the curve")
+                    };
+                    domain.open_reverse(&ReverseOpen {
+                        maker: fixed(maker),
+                        user: fixed(user),
+                        token: fixed(token),
+                        amount: amount.parse().expect("a decimal amount"),
+                        maker_share: key(maker_key),
+                        user_share: key(user_key),
+                        t0: t0.parse().expect("a decimal t0"),
+                        t1: t1.parse().expect("a decimal t1"),
+                        refund_note: fixed(refund_note),
+                        deadline: deadline.parse().expect("a decimal deadline"),
+                    })
+                }
+                _ => panic!("unknown digest"),
+            };
+            println!("0x{}", hex(&digest));
+        }
         [mode, k] if mode == "mul" => {
             let point = share(k.trim_start_matches("0x")).public().to_affine_bytes();
             println!("0x{}", hex(&point));

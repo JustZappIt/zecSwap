@@ -270,6 +270,7 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         .unwrap();
     let mut code = creation(&artifacts, "ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
     code.extend_from_slice(railgun.into_word().as_slice());
     let contract = deploy(&url, key.clone(), code).await.unwrap();
     let mut code = creation(&artifacts, "MockRelayAdapt");

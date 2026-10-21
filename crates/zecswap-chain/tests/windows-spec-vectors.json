@@ -1,0 +1,4088 @@
+[
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009399,
+   "head_number": 1000,
+   "wall_now": 1792009399,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "before t0 with the margin",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009999,
+   "head_number": 1000,
+   "wall_now": 1792009999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the cancel margin before t0: a cancel now may land after it and leak e",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009280,
+   "head_number": 1000,
+   "wall_now": 1792009399,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "before t0 with the margin",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013599,
+   "head_number": 1000,
+   "wall_now": 1792013599,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "no block at or past t1 yet: a claim may still land before it",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013599,
+   "head_number": 1000,
+   "wall_now": 1792013599,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "no block at or past t1 yet: a claim may still land before it",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792098199,
+   "head_number": 1000,
+   "wall_now": 1792098199,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "from t1, with the margin before the late window ends",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013540,
+   "head_number": 1000,
+   "wall_now": 1792013599,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "no block at or past t1 yet: a claim may still land before it",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009999,
+   "head_number": 1000,
+   "wall_now": 1792009999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "not ready and before t0",
+   "edge": null,
+   "start": 1792010000
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013299,
+   "head_number": 1000,
+   "wall_now": 1792013299,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792009400,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 987,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792099999,
+   "head_number": 1000,
+   "wall_now": 1792099999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "from t1 the maker refunds; wait for its refund or for t1 + LATE",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792099999,
+   "head_number": 1000,
+   "wall_now": 1792099999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "from t1 the maker refunds; wait for its refund or for t1 + LATE",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "relayer_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013299,
+   "head_number": 1000,
+   "wall_now": 1792013299,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013000,
+   "head_number": 1000,
+   "wall_now": 1792013299,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013299,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009399,
+   "head_number": 1000,
+   "wall_now": 1792009399,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "deposit confirmed, before t0 with room to land",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792009879,
+   "head_number": 1000,
+   "wall_now": 1792009879,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "deposit confirmed, before t0",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013299,
+   "head_number": 1000,
+   "wall_now": 1792013299,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 850,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 899,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 935,
+   "finalized_number": -1,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013599,
+   "head_number": 1000,
+   "wall_now": 1792013599,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "ready: the maker claims until t1",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792006999,
+   "head_number": 1000,
+   "wall_now": 1792006999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792007000
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a ready signature of ours is still live: refund once the chain is past its deadline or t0",
+   "edge": null,
+   "start": 1792007001
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792009999,
+   "head_number": 1000,
+   "wall_now": 1792009999,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792010600
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a ready signature of ours is still live: refund once the chain is past its deadline or t0",
+   "edge": null,
+   "start": 1792010000
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009400,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the cancel margin before t0: a cancel now may land after it and leak e",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792010000,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "t0 has passed: the swap is the user's to claim",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009280,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the cancel margin before t0: a cancel now may land after it and leak e",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013600,
+   "head_number": 1000,
+   "wall_now": 1792013600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "from t1, with the margin before the late window ends",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013600,
+   "head_number": 1000,
+   "wall_now": 1792013600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "from t1, with the margin before the late window ends",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792098200,
+   "head_number": 1000,
+   "wall_now": 1792098200,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "the late window is nearly over: a refund now may land in the user's window and leak e",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013540,
+   "head_number": 1000,
+   "wall_now": 1792013600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "no block at or past t1 yet: a claim may still land before it",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792010000,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013300,
+   "head_number": 1000,
+   "wall_now": 1792013300,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792009400,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 988,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792100000,
+   "head_number": 1000,
+   "wall_now": 1792100000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "the late window is over: the claim is ours for good",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792100000,
+   "head_number": 1000,
+   "wall_now": 1792100000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "the late window is over: the claim is ours for good",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "relayer_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013300,
+   "head_number": 1000,
+   "wall_now": 1792013300,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013000,
+   "head_number": 1000,
+   "wall_now": 1792013300,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013300,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009400,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "too late for a ready to land before t0; the user claims from t0 anyway",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792009880,
+   "head_number": 1000,
+   "wall_now": 1792009880,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "too little time before t0 for the signature to land",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013300,
+   "head_number": 1000,
+   "wall_now": 1792013300,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 850,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 900,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 936,
+   "finalized_number": -1,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013600,
+   "head_number": 1000,
+   "wall_now": 1792013600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready and t1 reached: the refund never expires",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792007000,
+   "head_number": 1000,
+   "wall_now": 1792007000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792007000
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a ready signature of ours is still live: refund once the chain is past its deadline or t0",
+   "edge": null,
+   "start": 1792007001
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792010000,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792010600
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "open and no ready of ours can land",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009401,
+   "head_number": 1000,
+   "wall_now": 1792009401,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the cancel margin before t0: a cancel now may land after it and leak e",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792010001,
+   "head_number": 1000,
+   "wall_now": 1792010001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "t0 has passed: the swap is the user's to claim",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009280,
+   "head_number": 1000,
+   "wall_now": 1792009401,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the cancel margin before t0: a cancel now may land after it and leak e",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013601,
+   "head_number": 1000,
+   "wall_now": 1792013601,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "from t1, with the margin before the late window ends",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013601,
+   "head_number": 1000,
+   "wall_now": 1792013601,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "from t1, with the margin before the late window ends",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792098201,
+   "head_number": 1000,
+   "wall_now": 1792098201,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "the late window is nearly over: a refund now may land in the user's window and leak e",
+   "edge": 1792100000,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013540,
+   "head_number": 1000,
+   "wall_now": 1792013601,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "no block at or past t1 yet: a claim may still land before it",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792010001,
+   "head_number": 1000,
+   "wall_now": 1792010001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "in the claim window with the margin",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792013301,
+   "head_number": 1000,
+   "wall_now": 1792013301,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792009400,
+   "head_number": 1000,
+   "wall_now": 1792009400,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 989,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "the ready is 11 deep; before t0 it must be 12: a reorg could drop it under the claim",
+   "edge": null,
+   "start": 1792010000
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792100001,
+   "head_number": 1000,
+   "wall_now": 1792100001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "the late window is over: the claim is ours for good",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792100001,
+   "head_number": 1000,
+   "wall_now": 1792100001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "the late window is over: the claim is ours for good",
+   "edge": null,
+   "start": 1792100000
+  }
+ },
+ {
+  "reveal": "relayer_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013301,
+   "head_number": 1000,
+   "wall_now": 1792013301,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013000,
+   "head_number": 1000,
+   "wall_now": 1792013301,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792013301,
+   "head_number": 1000,
+   "wall_now": 1792010000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1: a claim now may land after it and leak z",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792009401,
+   "head_number": 1000,
+   "wall_now": 1792009401,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "too late for a ready to land before t0; the user claims from t0 anyway",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792009881,
+   "head_number": 1000,
+   "wall_now": 1792009881,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "too little time before t0 for the signature to land",
+   "edge": 1792010000,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013301,
+   "head_number": 1000,
+   "wall_now": 1792013301,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 850,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "under the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 901,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready is final, with the margin before t1",
+   "edge": 1792013600,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792010600,
+   "head_number": 1000,
+   "wall_now": 1792010600,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": 937,
+   "finalized_number": -1,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "the ready is not final: a reorg could drop it and its signature cannot be re-sent",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "ready",
+   "head_ts": 1792013601,
+   "head_number": 1000,
+   "wall_now": 1792013601,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "ready and t1 reached: the refund never expires",
+   "edge": null,
+   "start": 1792013600
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792007001,
+   "head_number": 1000,
+   "wall_now": 1792007001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792007000
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "open and no ready of ours can land",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792010001,
+   "head_number": 1000,
+   "wall_now": 1792010001,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [
+    1792010600
+   ],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "open and no ready of ours can land",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792008800,
+   "head_number": 1000,
+   "wall_now": 1792008800,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": true,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a ready of ours was broadcast: never cancel after a ready",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792008800,
+   "head_number": 1000,
+   "wall_now": 1792008800,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": true,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a cancel of ours was broadcast: never ready after a cancel",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792007000,
+   "head_number": 1000,
+   "wall_now": 1792007000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": true,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a refund of ours was posted: never ready after a refund",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "relayer_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792007000,
+   "head_number": 1000,
+   "wall_now": 1792007000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": true
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "a ready the relayer sent for this escrow may still land: it would revert the refund with u public",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "relayer_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "open",
+   "head_ts": 1792007000,
+   "head_number": 1000,
+   "wall_now": 1792007000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": true,
+   "reason": "open and no ready of ours can land",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "ready",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": false,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "Railgun is not taking the payout now: the swap should unwind instead",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "open",
+   "head_ts": 1792007000,
+   "head_number": 1000,
+   "wall_now": 1792007000,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": true,
+   "wallet_synced": false
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "the deposit is not confirmed in a fresh sync",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "claimed",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is claimed",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "refunded",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is refunded",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_cancel",
+  "view": {
+   "direction": "forward",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_refund",
+  "view": {
+   "direction": "forward",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_claim",
+  "view": {
+   "direction": "forward",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_claim",
+  "view": {
+   "direction": "reverse",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_refund",
+  "view": {
+   "direction": "reverse",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "maker_ready",
+  "view": {
+   "direction": "forward",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ },
+ {
+  "reveal": "user_ready",
+  "view": {
+   "direction": "reverse",
+   "stage": "none",
+   "head_ts": 1792010010,
+   "head_number": 1000,
+   "wall_now": 1792010010,
+   "t0": 1792010000,
+   "t1": 1792013600,
+   "min_window": 3600,
+   "late_window": 86400,
+   "ready_block": null,
+   "finalized_number": 900,
+   "railgun_accepts": true,
+   "deposit_confirmed": false,
+   "wallet_synced": true
+  },
+  "own": {
+   "ready_sent": false,
+   "cancel_sent": false,
+   "refund_sent": false,
+   "ready_sig_deadlines": [],
+   "own_ready_pending": false
+  },
+  "margins": {
+   "cancel": 600,
+   "refund_late_stop": 1800,
+   "claim_app": 300,
+   "claim_relayer": 300,
+   "ready_land": 600,
+   "ready_sig_ttl": 120,
+   "ready_depth": 12,
+   "final_depth": 64
+  },
+  "expect": {
+   "send": false,
+   "reason": "stage is none",
+   "edge": null,
+   "start": null
+  }
+ }
+]

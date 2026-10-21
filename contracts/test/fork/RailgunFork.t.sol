@@ -13,11 +13,9 @@ import {IRailgunTree, RailgunFixture} from "./RailgunFixture.sol";
 /// zecswap-railgun built in `vectors/railgun_note.json`. Skipped unless ETH_RPC_URL is set:
 ///   ETH_RPC_URL=… forge test --match-path test/fork/RailgunFork.t.sol -vv
 contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
-    bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
         keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
-    uint256 internal constant LOCK = 2 hours;
     uint128 internal constant AMOUNT = 500e6;
     uint128 internal constant FEE = 2e6;
 
@@ -31,7 +29,7 @@ contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
         forkMainnet();
         super.setUp();
 
-        swaps = new ZecSwap(LOCK, IRailgun(RAILGUN));
+        swaps = new ZecSwap(1 hours, 24 hours, IRailgun(RAILGUN));
         deal(USDC, maker, AMOUNT);
         vm.startPrank(maker);
         IERC20(USDC).approve(address(swaps), AMOUNT);
@@ -106,13 +104,8 @@ contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
         console.log("ready gas", gas - gasleft());
         vm.stopPrank();
 
-        uint64 deadline = uint64(block.timestamp + 5 minutes);
-        bytes memory lockSig = sign(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
         uint256 userSecret = randomVector(1).k;
         vm.startPrank(relayer);
-        gas = gasleft();
-        swaps.lockClaimWithSig(id, t, deadline, lockSig);
-        console.log("lockClaimWithSig gas", gas - gasleft());
         gas = gasleft();
         swaps.claim(id, t, userSecret);
         console.log("claim gas", gas - gasleft());
@@ -131,7 +124,7 @@ contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
     function terms() internal view returns (ZecSwap.Terms memory) {
         Vector memory e = randomVector(0);
         Vector memory z = randomVector(1);
-        uint64 t0 = uint64(block.timestamp + 45 minutes);
+        uint64 t0 = uint64(block.timestamp + 90 minutes);
         return ZecSwap.Terms(maker, USDC, AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t0 + 1 hours, commitment);
     }
 

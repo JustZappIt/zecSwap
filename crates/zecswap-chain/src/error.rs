@@ -20,6 +20,11 @@ pub enum Error {
     Reverted(alloy::primitives::B256),
     #[error("transaction {0} sent, but its receipt is unavailable: it may still mine")]
     Unconfirmed(alloy::primitives::B256),
+    #[error("the private RPC dropped transaction {0} unmined: it never landed")]
+    Dropped(alloy::primitives::B256),
+    /// A reveal found its window shut, or ending too soon to land in: nothing was sent.
+    #[error("the swap's {0} window is shut, or ends too soon to send it in; nothing was sent")]
+    Late(&'static str),
     #[error("swap {0} opened on other terms than these")]
     WrongTerms(alloy::primitives::B256),
     #[error("recording a transaction before its broadcast: {0}")]

@@ -7,7 +7,7 @@
 # and adds the scenarios that pay into it; with --fork, on a local anvil fork of it instead,
 # which needs no Sepolia ETH (Railgun's screening doesn't run there).
 #
-# Scenarios: happy no-deposit underpaid silent-maker never-claimed abandoned-claim, and with
+# Scenarios: happy no-deposit underpaid silent-maker never-claimed late-claim, and with
 # --railgun railgun-happy railgun-resume railgun-no-deposit railgun-send deposit (default: all,
 # concurrently). Deposits count after 2 confirmations, which with deadlines to match takes a run
 # about 25 minutes; set ZECSWAP_E2E_CONFIRMATIONS=10, the wallets' default, for about 50.

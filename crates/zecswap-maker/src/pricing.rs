@@ -30,7 +30,7 @@ pub struct Pricing {
 pub struct Costs {
     /// Gas of the maker's sends on a swap from ZEC to USDC: its open and its ready.
     pub forward_gas: u64,
-    /// On a swap from USDC to ZEC: its claim lock and its claim.
+    /// On a swap from USDC to ZEC: its claim.
     pub reverse_gas: u64,
     /// Its Zcash fee on either: a forward swap's sweep, or a reverse swap's deposit.
     pub zcash_fee_zat: u64,

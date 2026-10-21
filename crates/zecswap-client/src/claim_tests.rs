@@ -71,6 +71,7 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
         .unwrap();
     let mut code = creation("ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deploy(&url, maker_key.clone(), code).await.unwrap();
     let maker = Settlement::connect(&url, contract, maker_key).unwrap();
@@ -92,6 +93,7 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,
@@ -176,22 +178,25 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
     let id = swap.swap_id;
     maker.open(&terms).await.unwrap();
     maker.ready(id, &terms).await.unwrap();
-
-    let claiming = tokio::spawn(async move { user.claim(&swap).await });
-    // Once the lock lands, the gateway fails the claim; the one posted again goes out, and
-    // mining stops until its client has given up on the answer.
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    // Deep enough to claim on before t0.
+    let blocks = U256::from(zecswap_chain::evm::judge::READY_DEPTH);
+    chain
+        .raw_request::<_, serde_json::Value>("anvil_mine".into(), (blocks,))
+        .await
+        .unwrap();
+
+    // The gateway fails the claim; the one posted again goes out, and mining stops until its
+    // client has given up on the answer.
     let mine_every = async |seconds: u64| {
         chain
             .raw_request::<_, serde_json::Value>("evm_setIntervalMining".into(), (seconds,))
             .await
             .unwrap();
     };
-    let state = async || maker.swap(id, &terms).await.unwrap().unwrap();
-    while state().await.claim_lock_until == 0 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
     mine_every(0).await;
+    let claiming = tokio::spawn(async move { user.claim(&swap).await });
+    let state = async || maker.swap(id, &terms).await.unwrap().unwrap();
     while chain.get_transaction_count(claims).pending().await.unwrap() == 0 {
         assert!(!claiming.is_finished(), "{:?}", claiming.await);
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -204,8 +209,8 @@ async fn a_claim_whose_answer_never_comes_goes_through_once_the_chain_shows_it()
     assert_eq!(claims_posted.load(Ordering::SeqCst), 2);
     let landed = state().await;
     assert!(landed.stage == Stage::Claimed && landed.paid_out);
-    // One lock, one claim and one payout: nothing twice.
-    for (account, sent) in [(locks, 1), (claims, 1), (relayer_key.address(), 1)] {
+    // One claim and one payout, and no lock: nothing twice.
+    for (account, sent) in [(locks, 0), (claims, 1), (relayer_key.address(), 1)] {
         assert_eq!(
             chain.get_transaction_count(account).await.unwrap(),
             sent,

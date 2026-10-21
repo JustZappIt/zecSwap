@@ -10,17 +10,24 @@ import {Token} from "./Token.sol";
 /// @dev The ZEC sits in an Orchard address whose spend key is ±(e + z): the maker holds e,
 /// the user holds z, and this contract stores E = [e]·G and Z = [z]·G. Revealing z pays the user
 /// (and lets the maker sweep the ZEC); revealing e refunds the maker (and lets the user sweep it
-/// back). A reveal is only accepted under a lock its party holds, and the other party cannot lock
-/// while it is held, so a party that reveals only once its lock has landed can never lose a race
-/// and leave both halves public; nothing here stops a careless one revealing in the same
-/// transaction. A lock that lapses unused hands the other party the next turn, so neither can
-/// lock the other out for good. Reveals make no token calls either: payouts leave separately, so a
-/// paused or blacklisting token cannot revert a reveal.
+/// back). A swap's time is cut into windows in which only one party may reveal, so no reveal is
+/// ever raced, and one held up in the mempool still lands any time before its window closes:
+///
+/// - A forward swap: the maker may cancel it until `t0` unless it made it ready; the user may
+///   claim once it is ready, or from `t0` without, until `t1`; from `t1` only the maker may refund,
+///   for `LATE_WINDOW`, and after that only the user may claim, so neither is left waiting on
+///   the other for good.
+/// - A reverse escrow: the maker may claim once the user made it ready, until `t1`; the user may
+///   refund it while it isn't ready, and from `t1`.
+///
+/// `ready` is given only before `t0`, and `open` refuses a `t0`, or a gap from `t0` to `t1`, under
+/// `MIN_WINDOW`, so every window leaves its party time. Reveals make no token calls either: payouts
+/// leave separately, so a paused or blacklisting token cannot revert a reveal.
 ///
 /// A claim pays either the user's account, which withdraws it, or, where Railgun is deployed, the
 /// user's Railgun balance: the maker commits at open to a note the user built, and `payout` can
 /// only shield to it. Such a user has no account on this chain. Its `user` is a key of that swap
-/// alone, which signs for the claim lock and the payout, and relayers send them.
+/// alone, which signs for the payout, and relayers send its transactions.
 ///
 /// A swap's terms never change after open, so only their hash is stored: every call on a swap
 /// supplies them again, and the call reverts unless they hash to what open stored. `Opened`
@@ -55,8 +62,6 @@ contract ZecSwap {
         Stage stage;
         /// Whether a Railgun payout or reverse refund has left.
         bool paidOut;
-        uint64 claimLockUntil;
-        uint64 refundLockUntil;
         /// The share revealed at settlement: the user's once Claimed, the maker's once Refunded.
         /// Kept in storage so the other party can read it without querying logs.
         uint256 secret;
@@ -86,21 +91,21 @@ contract ZecSwap {
         "OpenReverse(address maker,address user,address token,uint128 amount,bytes32 makerKey,bytes32 userKey,uint64 t0,uint64 t1,bytes32 refundNote,uint64 deadline)"
     );
     bytes32 private constant READY_TYPEHASH = keccak256("Ready(bytes32 id,uint64 deadline)");
-    bytes32 private constant LOCK_REFUND_TYPEHASH = keccak256("LockRefund(bytes32 id,uint64 deadline)");
     bytes32 private constant REFUND_PAYOUT_TYPEHASH =
         keccak256("RefundPayout(bytes32 id,address relayer,uint128 fee)");
 
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-    bytes32 private constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
     bytes32 private constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 private constant RESCUE_TYPEHASH =
         keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
     /// secp256k1's n / 2. A signature with a larger `s` is the malleated twin of one without.
     uint256 private constant HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
-    /// @notice How long a lock gives its holder to land the reveal.
-    uint256 public immutable LOCK_DURATION;
+    /// @notice The least time `open` leaves before `t0`, and from `t0` to `t1`.
+    uint256 public immutable MIN_WINDOW;
+    /// @notice How long from `t1` only the maker may refund a forward swap; then its user may claim.
+    uint256 public immutable LATE_WINDOW;
     /// @notice Railgun's shield entry point; zero where claims can only pay accounts.
     IRailgun public immutable RAILGUN;
     /// @notice The code every swap's vault runs: each is an EIP-1167 proxy to this one.
@@ -128,11 +133,9 @@ contract ZecSwap {
         bytes32 payoutNote
     );
     event MarkedReady(bytes32 indexed id);
-    event ClaimLocked(bytes32 indexed id, uint64 until);
     event Claimed(bytes32 indexed id, uint256 userSecret);
     event PaidOut(bytes32 indexed id, address relayer, uint256 fee);
     event Rescued(bytes32 indexed id, address relayer, uint256 fee);
-    event RefundLocked(bytes32 indexed id, uint64 until);
     event Refunded(bytes32 indexed id, uint256 makerSecret);
 
     error ZeroAmount();
@@ -144,8 +147,7 @@ contract ZecSwap {
     error InvalidDeadlines();
     error Unauthorized();
     error WrongStage();
-    error LockUnavailable();
-    error LockNotHeld();
+    error NotNow();
     error WrongSecret();
     error NoShieldedPayouts();
     error WrongNote();
@@ -154,9 +156,12 @@ contract ZecSwap {
     error VaultNotDeployed();
     error WrongTerms();
 
-    constructor(uint256 lockDuration, IRailgun railgun) {
-        if (lockDuration == 0 || lockDuration > type(uint32).max) revert InvalidDeadlines();
-        LOCK_DURATION = lockDuration;
+    constructor(uint256 minWindow, uint256 lateWindow, IRailgun railgun) {
+        if (minWindow == 0 || lateWindow < minWindow || lateWindow > type(uint32).max) {
+            revert InvalidDeadlines();
+        }
+        MIN_WINDOW = minWindow;
+        LATE_WINDOW = lateWindow;
         RAILGUN = railgun;
         VAULT_LOGIC = new ShieldVault();
         VAULT_CODE_HASH = keccak256(_vaultCode());
@@ -184,7 +189,9 @@ contract ZecSwap {
     }
 
     /// @notice Commits `amount` of the caller's inventory to a swap with the holder of `userKey`,
-    /// on the terms `Terms` describes, the caller as their `maker`.
+    /// on the terms `Terms` describes, the caller as their `maker`. The user may claim from `t0`,
+    /// so an open mined less than `MIN_WINDOW` before it, leaving the maker no time to cancel, is
+    /// refused.
     function open(
         address token,
         uint128 amount,
@@ -207,7 +214,9 @@ contract ZecSwap {
         if (terms.payoutNote != 0 && address(RAILGUN) == address(0)) revert NoShieldedPayouts();
         // Railgun notes hold at most uint120: more could never be paid out after the claim.
         if (terms.payoutNote != 0 && terms.amount > type(uint120).max) revert InvalidAmount();
-        if (terms.t0 <= block.timestamp || terms.t1 <= terms.t0) revert InvalidDeadlines();
+        if (terms.t0 < block.timestamp + MIN_WINDOW || terms.t1 < terms.t0 + MIN_WINDOW) {
+            revert InvalidDeadlines();
+        }
         uint256[2] memory makerKey = terms.makerKey;
         uint256[2] memory userKey = terms.userKey;
         if (
@@ -248,7 +257,8 @@ contract ZecSwap {
     }
 
     /// @notice Called by Relay Adapt after unshielding and approving the exact escrow amount.
-    /// The stored roles remain USDC side (`maker`) and ZEC side (`user`) in both directions.
+    /// The stored roles remain USDC side (`maker`) and ZEC side (`user`) in both directions. Ready
+    /// is given only before `t0`, so an open mined less than `MIN_WINDOW` before it is refused.
     function openReverse(ReverseOpen calldata terms, bytes calldata signature)
         external
         returns (bytes32 id)
@@ -312,17 +322,6 @@ contract ZecSwap {
         _ready(id, swap, terms);
     }
 
-    function lockRefundWithSig(bytes32 id, Terms calldata terms, uint64 deadline, bytes calldata signature)
-        external
-    {
-        Swap storage swap = _load(id, terms);
-        if (block.timestamp > deadline) revert Expired();
-        if (deadline >= block.timestamp + LOCK_DURATION) revert InvalidDeadlines();
-        if (reverseFunding[id].refundNote == 0) revert WrongStage();
-        _checkSignature(terms.maker, keccak256(abi.encode(LOCK_REFUND_TYPEHASH, id, deadline)), signature);
-        _lockRefund(id, swap, terms);
-    }
-
     function refundPayout(
         bytes32 id,
         Terms calldata terms,
@@ -342,7 +341,7 @@ contract ZecSwap {
     }
 
     /// @notice The maker attests that the ZEC deposit is confirmed, giving up its right to
-    /// cancel before `t1`.
+    /// cancel. Only before `t0`, from when an unready swap is the user's to claim anyway.
     function ready(bytes32 id, Terms calldata terms) external {
         Swap storage swap = _load(id, terms);
         if (msg.sender != terms.maker) revert Unauthorized();
@@ -350,39 +349,17 @@ contract ZecSwap {
     }
 
     function _ready(bytes32 id, Swap storage swap, Terms calldata terms) private {
-        if (reverseFunding[id].refundNote != 0 && block.timestamp >= terms.t0) revert Expired();
-        if (swap.stage != Stage.Open || swap.refundLockUntil != 0) revert WrongStage();
+        if (block.timestamp >= terms.t0) revert Expired();
+        if (swap.stage != Stage.Open) revert WrongStage();
         swap.stage = Stage.Ready;
         emit MarkedReady(id);
     }
 
-    /// @notice Reserves the claim for `LOCK_DURATION`, at any time once claimable: a claim never
-    /// expires. It waits out a held refund lock, and the maker's turn after a claim lock of the
-    /// user's lapsed unused.
-    function lockClaim(bytes32 id, Terms calldata terms) external {
-        Swap storage swap = _load(id, terms);
-        if (msg.sender != terms.user) revert Unauthorized();
-        _lockClaim(id, swap, terms);
-    }
-
-    /// @notice `lockClaim` on the signature of the swap's `user`, sent by anyone. The lock it
-    /// takes outlasts `deadline`, so one signature takes at most one lock.
-    function lockClaimWithSig(bytes32 id, Terms calldata terms, uint64 deadline, bytes calldata signature)
-        external
-    {
-        Swap storage swap = _load(id, terms);
-        if (block.timestamp > deadline) revert Expired();
-        if (deadline >= block.timestamp + LOCK_DURATION) revert InvalidDeadlines();
-        _checkSignature(terms.user, keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)), signature);
-        _lockClaim(id, swap, terms);
-    }
-
     /// @notice Reveals the user's share and credits the amount to the user to withdraw at will,
-    /// or holds it for `payout` into Railgun. Callable by anyone while the claim lock is held.
+    /// or holds it for `payout` into Railgun. Callable by anyone, in the claim's window.
     function claim(bytes32 id, Terms calldata terms, uint256 userSecret) external {
         Swap storage swap = _load(id, terms);
-        if (swap.stage != Stage.Open && swap.stage != Stage.Ready) revert WrongStage();
-        if (block.timestamp >= swap.claimLockUntil) revert LockNotHeld();
+        if (!_claimable(id, swap, terms)) revert NotNow();
         if (!Pallas.isSpendAuthMul(userSecret, terms.userKey[0], terms.userKey[1])) revert WrongSecret();
         swap.stage = Stage.Claimed;
         swap.secret = userSecret;
@@ -454,33 +431,11 @@ contract ZecSwap {
         emit Rescued(id, msg.sender, fee);
     }
 
-    /// @notice Reserves the refund for `LOCK_DURATION`: any time before `ready`, or once `t1` has
-    /// passed. It waits out a held claim lock, and the user's turn after a refund lock of the
-    /// maker's lapsed unused.
-    function lockRefund(bytes32 id, Terms calldata terms) external {
-        Swap storage swap = _load(id, terms);
-        if (msg.sender != terms.maker) revert Unauthorized();
-        _lockRefund(id, swap, terms);
-    }
-
-    function _lockRefund(bytes32 id, Swap storage swap, Terms calldata terms) private {
-        Stage stage = swap.stage;
-        bool refundable = stage == Stage.Open || (stage == Stage.Ready && block.timestamp >= terms.t1);
-        if (!refundable) revert WrongStage();
-        if (_locked(swap) || _turnAfterLapse(swap.refundLockUntil, swap.claimLockUntil)) {
-            revert LockUnavailable();
-        }
-        uint64 until = uint64(block.timestamp + LOCK_DURATION);
-        swap.refundLockUntil = until;
-        emit RefundLocked(id, until);
-    }
-
     /// @notice Reveals the maker's share and returns the amount to its inventory. Callable by
-    /// anyone while the refund lock is held.
+    /// anyone, in the refund's window.
     function refund(bytes32 id, Terms calldata terms, uint256 makerSecret) external {
         Swap storage swap = _load(id, terms);
-        if (swap.stage != Stage.Open && swap.stage != Stage.Ready) revert WrongStage();
-        if (block.timestamp >= swap.refundLockUntil) revert LockNotHeld();
+        if (!_refundable(id, swap, terms)) revert NotNow();
         if (!Pallas.isSpendAuthMul(makerSecret, terms.makerKey[0], terms.makerKey[1])) revert WrongSecret();
         swap.stage = Stage.Refunded;
         swap.secret = makerSecret;
@@ -546,28 +501,26 @@ contract ZecSwap {
         if (swap.termsHash != hashTerms(terms)) revert WrongTerms();
     }
 
-    function _lockClaim(bytes32 id, Swap storage swap, Terms calldata terms) private {
+    /// @dev The claim's window: a ready swap until `t1`, and a forward one no one made ready from
+    /// `t0` until `t1`, the user's way out of a maker that neither readies nor cancels; and a
+    /// forward swap its maker didn't refund in `LATE_WINDOW` from `t1`.
+    function _claimable(bytes32 id, Swap storage swap, Terms calldata terms) private view returns (bool) {
         Stage stage = swap.stage;
-        bool claimable = stage == Stage.Ready
-            || (reverseFunding[id].refundNote == 0 && stage == Stage.Open && block.timestamp >= terms.t0);
-        if (!claimable) revert WrongStage();
-        if (_locked(swap) || _turnAfterLapse(swap.claimLockUntil, swap.refundLockUntil)) {
-            revert LockUnavailable();
-        }
-        uint64 until = uint64(block.timestamp + LOCK_DURATION);
-        swap.claimLockUntil = until;
-        emit ClaimLocked(id, until);
+        if (stage != Stage.Open && stage != Stage.Ready) return false;
+        bool forward = reverseFunding[id].refundNote == 0;
+        if (block.timestamp >= terms.t1) return forward && block.timestamp >= terms.t1 + LATE_WINDOW;
+        return stage == Stage.Ready || (forward && block.timestamp >= terms.t0);
     }
 
-    function _locked(Swap storage swap) private view returns (bool) {
-        return block.timestamp < swap.claimLockUntil || block.timestamp < swap.refundLockUntil;
-    }
-
-    /// @dev Whether the other side still has the turn that follows `own`, a lock of the caller's
-    /// that lapsed unused after `other` last ran. Turns alternate, so neither side can keep the
-    /// other out: whoever is online when its turn comes can settle.
-    function _turnAfterLapse(uint64 own, uint64 other) private view returns (bool) {
-        return own > other && block.timestamp < uint256(own) + LOCK_DURATION;
+    /// @dev The refund's window, never open while the claim's is: before `t1` a swap no one made
+    /// ready, a forward one only until `t0`; from `t1` a reverse escrow for good, a forward swap for
+    /// `LATE_WINDOW`.
+    function _refundable(bytes32 id, Swap storage swap, Terms calldata terms) private view returns (bool) {
+        Stage stage = swap.stage;
+        if (stage != Stage.Open && stage != Stage.Ready) return false;
+        bool forward = reverseFunding[id].refundNote == 0;
+        if (block.timestamp >= terms.t1) return !forward || block.timestamp < terms.t1 + LATE_WINDOW;
+        return stage == Stage.Open && (!forward || block.timestamp < terms.t0);
     }
 
     /// @dev Checks an EIP-712 signature by `signer` over `structHash`, under this contract's

@@ -10,11 +10,13 @@ import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
 /// Drives random interleavings of every swap action, on swaps that pay an account and swaps that
-/// pay into Railgun, and records any departure from the spec.
+/// pay into Railgun, and records any departure from the spec. The spec's windows are written from
+/// the English rules alone, never from the contract's code.
 contract SwapHandler is Test {
-    /// Few enough that random picks keep landing on swaps with a live lock.
+    /// Few enough that random picks keep landing on swaps in a window worth testing.
     uint256 internal constant MAX_SWAPS = 4;
-    bytes32 internal constant LOCK_CLAIM_TYPEHASH = keccak256("LockClaim(bytes32 id,uint64 deadline)");
+    uint256 internal constant MIN_WINDOW = 1 hours;
+    uint256 internal constant LATE_WINDOW = 24 hours;
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
 
     struct Secrets {
@@ -40,12 +42,11 @@ contract SwapHandler is Test {
     mapping(bytes32 => ZecSwap.Stage) internal settledAs;
 
     bool public settlementChanged;
-    bool public revealUnderLockFailed;
-    bool public revealWithoutLockSucceeded;
-    bool public claimableSwapRefusedLock;
+    bool public revealInWindowFailed;
+    bool public revealOutsideWindowSucceeded;
     bool public payoutMissedItsNote;
     bool public payoutRefused;
-    uint256 public lockedAmount;
+    uint256 public escrowedAmount;
     uint256 public unpaidAmount;
     uint256 public paidOutAmount;
 
@@ -74,8 +75,8 @@ contract SwapHandler is Test {
         SpendAuthVectors.Vector memory e = keys[nextKey++];
         SpendAuthVectors.Vector memory z = keys[nextKey++];
         amount = uint128(bound(amount, 1, 1e12));
-        uint64 t0 = uint64(block.timestamp + bound(t0Delay, 1, 2 hours));
-        uint64 t1 = uint64(t0 + bound(window, 1, 4 hours));
+        uint64 t0 = uint64(block.timestamp + bound(t0Delay, MIN_WINDOW, 2 hours));
+        uint64 t1 = uint64(t0 + bound(window, MIN_WINDOW, 4 hours));
         bytes32 note = shielded ? swaps.noteCommitment(npkOf(z.k), cipherOf(z.k)) : bytes32(0);
         ZecSwap.Terms memory t = ZecSwap.Terms(
             maker, address(usdc), amount, [e.x, e.y], [z.x, z.y], shielded ? auth : user, t0, t1, note
@@ -86,7 +87,7 @@ contract SwapHandler is Test {
         ids.push(id);
         termsOf[id] = t;
         secrets[id] = Secrets(e.k, z.k);
-        lockedAmount += amount;
+        escrowedAmount += amount;
     }
 
     function ready(uint256 i) external {
@@ -97,53 +98,19 @@ contract SwapHandler is Test {
         observe(id);
     }
 
-    function lockClaim(uint256 i) external {
-        (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
-        if (id == 0) return;
-        bool claimable =
-            s.stage == ZecSwap.Stage.Ready || (s.stage == ZecSwap.Stage.Open && block.timestamp >= t.t0);
-        bool locked = block.timestamp < s.claimLockUntil || block.timestamp < s.refundLockUntil;
-        bool makersTurn =
-            s.claimLockUntil > s.refundLockUntil && block.timestamp < s.claimLockUntil + swaps.LOCK_DURATION();
-        bool available = !locked && !makersTurn;
-        bool locks;
-        if (t.payoutNote == 0) {
-            vm.prank(user);
-            try swaps.lockClaim(id, t) {
-                locks = true;
-            } catch {}
-        } else {
-            uint64 deadline = uint64(block.timestamp);
-            bytes memory sig = sign(keccak256(abi.encode(LOCK_CLAIM_TYPEHASH, id, deadline)));
-            vm.prank(relayer);
-            try swaps.lockClaimWithSig(id, t, deadline, sig) {
-                locks = true;
-            } catch {}
-        }
-        // Claims never expire: once claimable, only a held lock or the maker's turn refuses it.
-        if (!locks && claimable && available) claimableSwapRefusedLock = true;
-        observe(id);
-    }
-
-    function lockRefund(uint256 i) external {
-        (bytes32 id,, ZecSwap.Terms memory t) = pick(i);
-        if (id == 0) return;
-        vm.prank(maker);
-        try swaps.lockRefund(id, t) {} catch {}
-        observe(id);
-    }
-
+    /// A claim at the current time, by anyone, with the user's share or (`honest` false) the
+    /// maker's. Its success must match the claim's window exactly.
     function claim(uint256 i, bool honest) external {
         (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
-        bool held = unsettled(s) && block.timestamp < s.claimLockUntil;
+        bool inWindow = claimable(s, t);
         uint256 secret = honest ? secrets[id].user : secrets[id].maker;
         try swaps.claim(id, t, secret) {
-            if (!held || !honest) revealWithoutLockSucceeded = true;
-            lockedAmount -= t.amount;
+            if (!inWindow || !honest) revealOutsideWindowSucceeded = true;
+            escrowedAmount -= t.amount;
             if (t.payoutNote != 0) unpaidAmount += t.amount;
         } catch {
-            if (held && honest) revealUnderLockFailed = true;
+            if (inWindow && honest) revealInWindowFailed = true;
         }
         observe(id);
     }
@@ -151,13 +118,13 @@ contract SwapHandler is Test {
     function refund(uint256 i, bool honest) external {
         (bytes32 id, ZecSwap.Swap memory s, ZecSwap.Terms memory t) = pick(i);
         if (id == 0) return;
-        bool held = unsettled(s) && block.timestamp < s.refundLockUntil;
+        bool inWindow = refundable(s, t);
         uint256 secret = honest ? secrets[id].maker : secrets[id].user;
         try swaps.refund(id, t, secret) {
-            if (!held || !honest) revealWithoutLockSucceeded = true;
-            lockedAmount -= t.amount;
+            if (!inWindow || !honest) revealOutsideWindowSucceeded = true;
+            escrowedAmount -= t.amount;
         } catch {
-            if (held && honest) revealUnderLockFailed = true;
+            if (inWindow && honest) revealInWindowFailed = true;
         }
         observe(id);
     }
@@ -189,12 +156,33 @@ contract SwapHandler is Test {
         }
     }
 
+    /// Up to 90 minutes a step: the late window, a day out, takes a run many steps to reach.
     function warp(uint32 by) external {
         vm.warp(block.timestamp + bound(by, 1, 90 minutes));
     }
 
+    // The windows, from the rules: a forward swap's user may claim a ready swap until t1, an
+    // unready one from t0 until t1, and either from t1 + LATE_WINDOW for good; its maker may
+    // cancel an unready swap before t0 and refund either from t1 for LATE_WINDOW.
+
+    function claimable(ZecSwap.Swap memory s, ZecSwap.Terms memory t) public view returns (bool) {
+        if (!unsettled(s)) return false;
+        if (block.timestamp >= t.t1) return block.timestamp >= t.t1 + LATE_WINDOW;
+        return s.stage == ZecSwap.Stage.Ready || block.timestamp >= t.t0;
+    }
+
+    function refundable(ZecSwap.Swap memory s, ZecSwap.Terms memory t) public view returns (bool) {
+        if (!unsettled(s)) return false;
+        if (block.timestamp >= t.t1) return block.timestamp < t.t1 + LATE_WINDOW;
+        return s.stage == ZecSwap.Stage.Open && block.timestamp < t.t0;
+    }
+
     function secretsOf(bytes32 id) external view returns (uint256 makerSecret, uint256 userSecret) {
         return (secrets[id].maker, secrets[id].user);
+    }
+
+    function termsFor(bytes32 id) external view returns (ZecSwap.Terms memory) {
+        return termsOf[id];
     }
 
     function swapCount() external view returns (uint256) {
@@ -261,7 +249,7 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
     function setUp() public override {
         super.setUp();
         railgun = new MockRailgun();
-        swaps = new ZecSwap(2 hours, railgun);
+        swaps = new ZecSwap(1 hours, 24 hours, railgun);
         usdc = new TestToken();
         Vector[] memory keys = new Vector[](RANDOM_COUNT);
         for (uint256 i; i < RANDOM_COUNT; ++i) {
@@ -275,16 +263,14 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         assertFalse(handler.settlementChanged());
     }
 
-    function invariant_aRevealUnderAHeldLockNeverFails() public view {
-        assertFalse(handler.revealUnderLockFailed());
+    /// A reveal sent in its window lands whenever it is mined in that window, whatever anyone
+    /// else sent before it.
+    function invariant_aRevealInItsWindowNeverFails() public view {
+        assertFalse(handler.revealInWindowFailed());
     }
 
-    function invariant_noRevealSucceedsWithoutItsLockAndSecret() public view {
-        assertFalse(handler.revealWithoutLockSucceeded());
-    }
-
-    function invariant_claimsNeverExpire() public view {
-        assertFalse(handler.claimableSwapRefusedLock());
+    function invariant_noRevealSucceedsOutsideItsWindowOrWithoutItsSecret() public view {
+        assertFalse(handler.revealOutsideWindowSucceeded());
     }
 
     /// A payout reaches only the note committed at open, for the amount less the signed fee.
@@ -309,10 +295,29 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         }
     }
 
-    function invariant_atMostOneLockIsHeld() public view {
+    /// What replaces the lock design's turns: at every instant exactly one side of a live swap may
+    /// reveal, tried with the true shares and undone, so nobody is ever raced or stranded.
+    function invariant_exactlyOneSideMayRevealOnEveryLiveSwap() public {
         for (uint256 i; i < handler.swapCount(); ++i) {
-            ZecSwap.Swap memory s = swaps.getSwap(handler.ids(i));
-            assertFalse(block.timestamp < s.claimLockUntil && block.timestamp < s.refundLockUntil);
+            bytes32 id = handler.ids(i);
+            ZecSwap.Swap memory s = swaps.getSwap(id);
+            if (s.stage != ZecSwap.Stage.Open && s.stage != ZecSwap.Stage.Ready) continue;
+            ZecSwap.Terms memory t = handler.termsFor(id);
+            (uint256 makerSecret, uint256 userSecret) = handler.secretsOf(id);
+            bool claims;
+            bool refunds;
+            uint256 snapshot = vm.snapshotState();
+            try swaps.claim(id, t, userSecret) {
+                claims = true;
+            } catch {}
+            vm.revertToState(snapshot);
+            try swaps.refund(id, t, makerSecret) {
+                refunds = true;
+            } catch {}
+            vm.revertToState(snapshot);
+            assertTrue(claims != refunds, "a live swap has one side that may reveal, and one only");
+            assertEq(claims, handler.claimable(s, t));
+            assertEq(refunds, handler.refundable(s, t));
         }
     }
 
@@ -320,7 +325,7 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         uint256 inventory = swaps.balanceOf(handler.maker(), address(usdc));
         uint256 claimed = swaps.balanceOf(handler.user(), address(usdc));
         uint256 held = usdc.balanceOf(address(swaps));
-        assertEq(held, inventory + claimed + handler.lockedAmount() + handler.unpaidAmount());
+        assertEq(held, inventory + claimed + handler.escrowedAmount() + handler.unpaidAmount());
         assertEq(held + handler.paidOutAmount(), type(uint128).max);
     }
 }

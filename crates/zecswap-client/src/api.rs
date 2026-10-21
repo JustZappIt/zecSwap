@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zecswap_api::relayer::{
-    Claim, Conflict, LockClaim, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
+    Claim, Conflict, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
 };
 use zecswap_api::service::{ErrorCode, ErrorResponse};
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status, TICKET_HEADER};
@@ -266,16 +266,6 @@ impl RelayerApi {
             .await
     }
 
-    pub async fn lock_reverse_refund(
-        &self,
-        request: &zecswap_api::reverse::Authorization,
-        ticket: Option<&str>,
-    ) -> Result<Sent> {
-        self.0
-            .post_for_swap("/v1/reverse/lock-refund", request, ticket)
-            .await
-    }
-
     pub async fn refund_reverse(
         &self,
         request: &zecswap_api::reverse::Refund,
@@ -334,16 +324,6 @@ impl RelayerApi {
                 error.map_or(body, |e| e.error)
             )),
         }
-    }
-
-    pub(crate) async fn lock_claim(
-        &self,
-        request: &LockClaim,
-        ticket: Option<&str>,
-    ) -> Result<Sent> {
-        self.0
-            .post_for_swap("/v1/lock-claim", request, ticket)
-            .await
     }
 
     pub(crate) async fn claim(&self, request: &Claim, ticket: Option<&str>) -> Result<Sent> {

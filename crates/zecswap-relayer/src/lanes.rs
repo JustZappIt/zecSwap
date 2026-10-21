@@ -23,8 +23,9 @@ pub(crate) const PAYOUT_GAS: u64 = 1_500_000;
 /// besides, as the fee cap their float is kept at follows the base fee.
 const TOP_UP_INTERVAL: Duration = Duration::from_secs(120);
 
-/// Claims and refunds; claim and refund locks, and readies; Railgun sends; fundings; deposits,
-/// whose fees in the relayer's token collect in their account.
+/// Claims and refunds; readies, from the account named for the locks it took on the lock
+/// contract; Railgun sends; fundings; deposits, whose fees in the relayer's token collect in their
+/// account.
 pub(crate) struct Lanes {
     pub(crate) claims: Settlement,
     pub(crate) locks: Settlement,
@@ -42,21 +43,38 @@ impl Lanes {
         Self::connect_metered(rpc, contract, key, &RpcMeter::default())
     }
 
-    /// The lanes as `config` has them, counting their requests on `meter`: deposits broadcast
-    /// through its private RPC, where it names one on the chain they read.
+    /// The lanes as `config` has them, counting their requests on `meter`: claims and refunds
+    /// with their network's reveal headroom, broadcast only with `claim_margin` of their window
+    /// left, and they and deposits through their private RPCs, where it names them on the chain
+    /// they read.
     pub(crate) async fn of(
         config: &Config,
         key: &PrivateKeySigner,
         meter: &RpcMeter,
     ) -> anyhow::Result<Self> {
         let mut lanes = Self::connect_metered(&config.evm_rpc, config.contract, key, meter)?;
-        let private = config
-            .deposits
-            .as_ref()
-            .and_then(|deposits| deposits.private_rpc.as_deref());
-        if let Some(rpc) = private {
-            lanes.deposits.broadcast_privately(rpc)?;
-            lanes.deposits.check_private_rpc().await?;
+        lanes
+            .claims
+            .set_reveal_headroom(config.network.reveal_headroom_wei());
+        lanes.claims.reveal_with_margin(config.claim_margin);
+        let private = [
+            (
+                &mut lanes.claims,
+                config.reveals.as_ref().map(|reveals| &reveals.private_rpc),
+            ),
+            (
+                &mut lanes.deposits,
+                config
+                    .deposits
+                    .as_ref()
+                    .and_then(|deposits| deposits.private_rpc.as_ref()),
+            ),
+        ];
+        for (lane, rpc) in private {
+            if let Some(rpc) = rpc {
+                lane.broadcast_privately(rpc)?;
+                lane.check_private_rpc().await?;
+            }
         }
         Ok(lanes)
     }
@@ -176,9 +194,10 @@ impl Relayer {
     }
 
     /// Keeps each lane at what `top_up_transactions` of its largest transactions must hold at
-    /// the fee cap sends are filled with now: tops up one under half of it, from what the
-    /// relayer's own account holds beyond as many payouts, and takes back what one holds beyond
-    /// twice it, filled while gas cost more. Every balance is read in one call.
+    /// the fee cap it fills them with now, a reveal's on the claims lane: tops up one under half
+    /// of it, from what the relayer's own account holds beyond as many payouts, and takes back
+    /// what one holds beyond twice it, filled while gas cost more. Every balance is read in one
+    /// call.
     pub(crate) async fn top_up(&self) -> anyhow::Result<Vec<(&'static str, U256)>> {
         let fee = U256::from(self.settlement.max_fee_per_gas().await?);
         let transactions = U256::from(self.config.top_up_transactions);
@@ -198,10 +217,13 @@ impl Relayer {
         for ((lane, settlement, gas), (account, balance)) in
             lanes.into_iter().zip(owners.into_iter().zip(balances))
         {
-            let keep = fee * U256::from(gas) * transactions;
+            let keep =
+                (fee + U256::from(settlement.reveal_headroom())) * U256::from(gas) * transactions;
             if balance > keep * U256::from(2) {
                 let taken = match lane {
                     "deposits" => self.take_back_deposit_eth(keep).await?,
+                    // A reveal sent privately before a restart may hold the next nonce.
+                    _ if self.steps.after_earlier(settlement).await.is_err() => None,
                     _ => settlement.send_eth_above(self.account, keep).await?,
                 };
                 if let Some(amount) = taken {
@@ -239,7 +261,8 @@ impl Relayer {
             .unwrap_or(&self.settlement)
     }
 
-    pub(crate) fn lane_accounts(&self) -> BTreeMap<&'static str, Address> {
+    /// The account each lane its config sends on signs with.
+    pub fn lane_accounts(&self) -> BTreeMap<&'static str, Address> {
         self.lanes
             .used(&self.config)
             .into_iter()

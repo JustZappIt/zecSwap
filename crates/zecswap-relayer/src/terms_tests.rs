@@ -1,8 +1,8 @@
 //! A relayer refuses, before sending anything, what it shouldn't pay for: a swap of another
-//! token or maker, terms that are not the swap's, and, where it prices gas, a fee under its
-//! quote. The contract would revert such a call anyway, but a claim whose payout carries other
-//! terms, or a fee that leaves nothing to shield, or that Railgun won't take, would land and
-//! reveal the user's share before the payout failed.
+//! token or maker, terms that are not the swap's, a reveal outside its window, and, where it
+//! prices gas, a fee under its quote. The contract would revert such a call anyway, but a claim
+//! whose payout carries other terms, or a fee that leaves nothing to shield, or that Railgun won't
+//! take, would land and reveal the user's share before the payout failed.
 
 use std::path::Path;
 
@@ -53,6 +53,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         .unwrap();
     let mut code = creation("ZecSwap");
     code.extend_from_slice(&U256::from(600).to_be_bytes::<32>());
+    code.extend_from_slice(&U256::from(1_200).to_be_bytes::<32>());
     code.extend_from_slice(&railgun.into_word().0);
     let contract = deploy(&url, maker_key.clone(), code).await.unwrap();
     let maker = Settlement::connect(&url, contract, maker_key).unwrap();
@@ -77,6 +78,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         providers: vec![],
         fee_margin_bps: 0,
         claim_margin: 30,
+        reveals: None,
         top_up_transactions: 8,
         reverse_funding: None,
         railgun_sends: None,
@@ -89,7 +91,10 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         domain,
         settlement: Settlement::connect(&url, contract, relayer_key.clone()).unwrap(),
         lanes: crate::lanes::Lanes::connect(&url, contract, &relayer_key).unwrap(),
-        lock_duration: 600,
+        windows: zecswap_chain::evm::Windows {
+            min: 600,
+            late: 1_200,
+        },
         turns: Default::default(),
         steps: Default::default(),
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
@@ -124,6 +129,14 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         .wallet(EthereumWallet::from(funder_key.clone()))
         .connect_http(url.parse().unwrap());
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    // Deep enough that the relayer claims on a ready before t0.
+    let deepen = async || {
+        let blocks = U256::from(zecswap_chain::evm::judge::READY_DEPTH);
+        chain
+            .raw_request::<_, serde_json::Value>("anvil_mine".into(), (blocks,))
+            .await
+            .unwrap();
+    };
     let nonces = async || {
         let mut nonces = 0;
         for account in lanes.values().chain([&relayer_account]) {
@@ -166,27 +179,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
     };
     maker.open(&terms).await.unwrap();
     let id = swap_id(maker_account, &keys.share.public());
-    let lock_until = |terms: &zecswap_core::Terms, deadline: u64| LockClaim {
-        swap_id: id,
-        terms: terms.into(),
-        deadline,
-        signature: keys.auth.sign(&domain.lock_claim(&id, deadline)).into(),
-    };
     let deadline = now + 60;
-    let lock = |terms: &zecswap_core::Terms| lock_until(terms, deadline);
-    refused(
-        relayer.lock_claim(lock(&terms)).await,
-        "once ready, or from t0",
-    );
-    maker.ready(id, &terms).await.unwrap();
-    refused(
-        relayer.lock_claim(lock_until(&terms, now - 1)).await,
-        "expired",
-    );
-    refused(
-        relayer.lock_claim(lock_until(&terms, now + 3_600)).await,
-        "too far off",
-    );
     let payout = |terms: &zecswap_core::Terms| Payout {
         swap_id: id,
         terms: terms.into(),
@@ -204,21 +197,19 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         payout: payout(paid),
     };
 
-    refused(relayer.lock_claim(lock(&other)).await, "other terms");
+    // Unready before t0, the swap is the maker's to cancel.
+    refused(
+        relayer.claim(claim(&terms, &terms)).await,
+        "once ready, or from t0",
+    );
+    maker.ready(id, &terms).await.unwrap();
+    deepen().await;
     for stranger in strangers() {
         refused(
-            stranger.lock_claim(lock(&terms)).await,
+            stranger.claim(claim(&terms, &terms)).await,
             "another token or maker",
         );
     }
-    assert_eq!(sent().await, 0);
-    let locked = relayer.lock_claim(lock(&terms)).await.unwrap();
-    assert_eq!(sent().await, 1);
-    assert_eq!(sender(locked.transactions[0]).await, lanes["locks"]);
-    let again = relayer.lock_claim(lock(&terms)).await.unwrap();
-    assert!(again.transactions.is_empty());
-    assert_eq!(sent().await, 1);
-
     refused(relayer.claim(claim(&other, &other)).await, "other terms");
     // The claim alone is right: sending it would reveal the share for a payout that can't land.
     refused(
@@ -254,13 +245,13 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         "Railgun is not accepting",
     );
     block(false).await;
-    assert_eq!(sent().await, 1);
+    assert_eq!(sent().await, 0);
     let swap = maker.swap(id, &terms).await.unwrap().unwrap();
     assert_eq!((swap.stage, swap.secret), (Stage::Ready, [0; 32]));
 
     maker.claim(id, &terms, &keys.share).await.unwrap();
     refused(relayer.payout(payout(&other)).await, "other terms");
-    assert_eq!(sent().await, 1);
+    assert_eq!(sent().await, 0);
     // Priced by gas: 100,000 gas at 1 gwei is 266,666 at 2,666.67 USDC an ETH, over the floor.
     let prices = zecswap_prices::stand_in::start(axum::http::StatusCode::OK).await;
     let pricing = crate::pricing::GasPricing::new(
@@ -287,7 +278,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         priced.payout(payout(&terms)).await,
         "less than the relayer's 266666",
     );
-    assert_eq!(sent().await, 1);
+    assert_eq!(sent().await, 0);
     let paid = Payout {
         fee: quoted.fee,
         signature: keys
@@ -297,7 +288,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         ..payout(&terms)
     };
     let paid = priced.payout(paid).await.unwrap();
-    assert_eq!(sent().await, 2);
+    assert_eq!(sent().await, 1);
     assert_eq!(sender(paid.transactions[0]).await, relayer_account);
     let rescue = Rescue {
         swap_id: id,
@@ -309,7 +300,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         signature: [0; 65].into(),
     };
     refused(relayer.rescue(rescue).await, "other terms");
-    assert_eq!(sent().await, 2);
+    assert_eq!(sent().await, 1);
 
     // A reverse escrow, opened by the user's funds through a stand-in for Relay Adapt.
     let keys = derive_user_keys(&seed, NetworkType::Test, 0, 1).unwrap();
@@ -388,11 +379,11 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         relayer.reverse_refund_payout(refund_payout(&other)).await,
         "other terms",
     );
-    assert_eq!(sent().await, 2);
+    assert_eq!(sent().await, 1);
     let relayer = Arc::new(relayer);
     let readied = relayer.ready_reverse(ready(&escrow)).await;
     let readied = relayer.observe("ready_reverse", readied).unwrap();
-    assert_eq!(sent().await, 3);
+    assert_eq!(sent().await, 2);
     assert_eq!(sender(readied.transactions[0]).await, lanes["locks"]);
     // What it sent is counted at once, and the gas its receipt shows burned once that is read.
     let snapshot = || {
@@ -415,14 +406,15 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         maker.swap(id, &escrow).await.unwrap().unwrap().stage,
         Stage::Ready
     );
-    let lock_refund = Authorization {
+    // Ready, the escrow is its maker's to claim until t1.
+    let refund = Refund {
         swap_id: id,
         terms: (&escrow).into(),
-        deadline,
-        signature: keys.auth.sign(&domain.lock_refund(&id, deadline)).into(),
+        secret: keys.share.to_be_bytes().into(),
+        payout: refund_payout(&escrow),
     };
-    refused(relayer.lock_reverse_refund(lock_refund).await, "from t1");
-    assert_eq!(sent().await, 3);
+    refused(relayer.refund_reverse(refund).await, "from t1");
+    assert_eq!(sent().await, 2);
 
     maker
         .mint_test_token(token, maker_account, 2 * terms.amount)
@@ -444,14 +436,21 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         maker.open(&opened).await.unwrap();
         (swap_id(maker_account, &keys.share.public()), opened, keys)
     };
-    let lock = async |id: B256, terms: &zecswap_core::Terms, keys: &UserSwapKeys| {
-        let deadline = maker.now().await.unwrap() + 60;
+    let claim = async |id: B256, terms: &zecswap_core::Terms, keys: &UserSwapKeys| {
+        let note = wallet.note(&keys.note_entropy).unwrap();
+        let signature = domain.payout(&id, &relayer_account.into(), 20_000);
         relayer
-            .lock_claim(LockClaim {
+            .claim(Claim {
                 swap_id: id,
                 terms: terms.into(),
-                deadline,
-                signature: keys.auth.sign(&domain.lock_claim(&id, deadline)).into(),
+                secret: keys.share.to_be_bytes().into(),
+                payout: Payout {
+                    swap_id: id,
+                    terms: terms.into(),
+                    note: (&note).into(),
+                    fee: 20_000,
+                    signature: keys.auth.sign(&signature).into(),
+                },
             })
             .await
     };
@@ -465,45 +464,35 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
             .await
             .unwrap();
     };
-    let (lapsing, opened, keys) = open(2).await;
-    maker.ready(lapsing, &opened).await.unwrap();
-    lock(lapsing, &opened, &keys).await.unwrap();
-    assert_eq!(sent().await, 4);
-    pass(600).await;
-    refused(
-        lock(lapsing, &opened, &keys).await,
-        "the maker has the next turn",
+    let (claimable, opened, keys) = open(2).await;
+    maker.ready(claimable, &opened).await.unwrap();
+    // Before t0 it waits for its ready to be deep enough.
+    let shallow = claim(claimable, &opened, &keys).await;
+    assert!(
+        matches!(shallow, Err(RelayerError::Busy(..))),
+        "{shallow:?}"
     );
-    pass(600).await;
-    lock(lapsing, &opened, &keys).await.unwrap();
-    assert_eq!(sent().await, 5);
-    let note = wallet.note(&keys.note_entropy).unwrap();
-    let signature = domain.payout(&lapsing, &relayer_account.into(), 20_000);
-    let payout = Payout {
-        swap_id: lapsing,
-        terms: (&opened).into(),
-        note: (&note).into(),
-        fee: 20_000,
-        signature: keys.auth.sign(&signature).into(),
-    };
-    let claimed = relayer
-        .claim(Claim {
-            swap_id: lapsing,
-            terms: (&opened).into(),
-            secret: keys.share.to_be_bytes().into(),
-            payout,
-        })
-        .await
-        .unwrap();
-    assert_eq!(sent().await, 7);
+    deepen().await;
+    let claimed = claim(claimable, &opened, &keys).await.unwrap();
+    assert_eq!(sent().await, 4);
     assert_eq!(sender(claimed.transactions[0]).await, lanes["claims"]);
     assert_eq!(sender(claimed.transactions[1]).await, relayer_account);
     let (refunded, opened, keys) = open(3).await;
-    maker.lock_refund(refunded, &opened).await.unwrap();
     maker
         .refund(refunded, &opened, &derive_maker_share(&[9; 32], 3).unwrap())
         .await
         .unwrap();
-    refused(lock(refunded, &opened, &keys).await, "refunded");
-    assert_eq!(sent().await, 7);
+    refused(claim(refunded, &opened, &keys).await, "Refunded");
+    assert_eq!(sent().await, 4);
+    // From t1 the swap is the maker's to refund, and no claim is sent, its share kept secret.
+    maker
+        .mint_test_token(token, maker_account, terms.amount)
+        .await
+        .unwrap();
+    maker.add_inventory(token, terms.amount).await.unwrap();
+    let (late, opened, keys) = open(4).await;
+    maker.ready(late, &opened).await.unwrap();
+    pass(7_200).await;
+    refused(claim(late, &opened, &keys).await, "its maker's to refund");
+    assert_eq!(sent().await, 4);
 }

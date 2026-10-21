@@ -9,7 +9,8 @@ import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
 contract ZecSwapTest is SpendAuthVectors {
-    uint256 internal constant LOCK = 2 hours;
+    uint256 internal constant WINDOW = 1 hours;
+    uint256 internal constant LATE = 24 hours;
     uint128 internal constant AMOUNT = 150e6;
     uint256 internal constant INVENTORY = 1_000e6;
 
@@ -26,7 +27,7 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function setUp() public override {
         super.setUp();
-        swaps = new ZecSwap(LOCK, IRailgun(address(0)));
+        swaps = new ZecSwap(WINDOW, LATE, IRailgun(address(0)));
         usdc = new TestToken();
         usdc.mint(maker, INVENTORY);
         vm.startPrank(maker);
@@ -36,8 +37,8 @@ contract ZecSwapTest is SpendAuthVectors {
 
         e = randomVector(0);
         z = randomVector(1);
-        t0 = uint64(block.timestamp + 45 minutes);
-        t1 = uint64(block.timestamp + 105 minutes);
+        t0 = uint64(block.timestamp + 90 minutes);
+        t1 = uint64(block.timestamp + 150 minutes);
     }
 
     // open
@@ -50,8 +51,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(s.termsHash, keccak256(abi.encode(terms())));
         assertEq(swaps.hashTerms(terms()), s.termsHash);
         assertFalse(s.paidOut);
-        assertEq(s.claimLockUntil, 0);
-        assertEq(s.refundLockUntil, 0);
         assertEq(s.secret, 0);
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY - AMOUNT);
     }
@@ -123,14 +122,31 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], address(0), t0, t1, bytes32(0));
     }
 
-    function test_open_rejectsDeadlinesOutOfOrder() public {
+    /// An open leaves the maker `MIN_WINDOW` to cancel before `t0`, and the user as much to
+    /// claim before `t1`.
+    function test_open_rejectsWindowsUnderTheMinimum() public {
+        uint64 now_ = uint64(block.timestamp);
         vm.startPrank(maker);
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
         swaps.open(
-            address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, uint64(block.timestamp), t1, bytes32(0)
+            address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, now_ + uint64(WINDOW) - 1, t1, bytes32(0)
+        );
+        vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
+        swaps.open(
+            address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t0 + uint64(WINDOW) - 1, bytes32(0)
         );
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
         swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t0, bytes32(0));
+        swaps.open(
+            address(usdc),
+            AMOUNT,
+            [e.x, e.y],
+            [z.x, z.y],
+            user,
+            now_ + uint64(WINDOW),
+            now_ + uint64(2 * WINDOW),
+            bytes32(0)
+        );
     }
 
     function test_open_rejectsInvalidAndDegenerateKeys() public {
@@ -185,9 +201,19 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function test_ready_cannotUndoACancellation() public {
         bytes32 id = open();
-        vm.startPrank(maker);
-        swaps.lockRefund(id, terms());
+        swaps.refund(id, terms(), e.k);
         vm.expectRevert(ZecSwap.WrongStage.selector);
+        vm.prank(maker);
+        swaps.ready(id, terms());
+    }
+
+    /// From `t0` an unready swap is the user's to claim anyway: a ready then would only move
+    /// the maker's refund of a swap nobody claimed from `t0` to `t1`.
+    function test_ready_isGivenOnlyBeforeT0() public {
+        bytes32 id = open();
+        vm.warp(t0);
+        vm.expectRevert(ZecSwap.Expired.selector);
+        vm.prank(maker);
         swaps.ready(id, terms());
     }
 
@@ -195,9 +221,6 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function test_claim_creditsTheUserAndPublishesTheShare() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-
         vm.expectEmit(address(swaps));
         emit ZecSwap.Claimed(id, z.k);
         swaps.claim(id, terms(), z.k);
@@ -209,8 +232,6 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function test_claim_settlesWhileTheTokenIsPausedAndPaysOutAfterwards() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
         usdc.setPaused(true);
         swaps.claim(id, terms(), z.k);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Claimed));
@@ -224,10 +245,8 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(user, address(usdc)), 0);
     }
 
-    function test_claim_canBeSubmittedByAnyoneWhileTheUserHoldsTheLock() public {
+    function test_claim_canBeSubmittedByAnyoneInTheUsersWindow() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
         vm.prank(relayer);
         swaps.claim(id, terms(), z.k);
         assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
@@ -236,41 +255,51 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function test_claim_withoutReadyOpensAtT0() public {
         bytes32 id = open();
-        vm.startPrank(user);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockClaim(id, terms());
+        vm.warp(t0 - 1);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
 
         vm.warp(t0);
-        swaps.lockClaim(id, terms());
         swaps.claim(id, terms(), z.k);
         assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
-    function test_claim_neverExpires() public {
+    /// The claim ends at `t1`, where the maker's refund begins; a swap the maker never refunds
+    /// in `LATE_WINDOW` is the user's to claim again, for good.
+    function test_claim_endsAtT1AndReturnsAfterTheLateWindow() public {
         bytes32 id = openReady();
-        vm.warp(t1 + 365 days);
-        vm.startPrank(user);
-        swaps.lockClaim(id, terms());
+        vm.warp(t1 - 1);
+        assertTrue(claims(id));
+        vm.warp(t1);
+        assertFalse(claims(id), "no claim from t1");
+        assertTrue(refunds(id), "the maker refunds from t1");
+        vm.warp(t1 + LATE - 1);
+        assertFalse(claims(id));
+        assertTrue(refunds(id), "the maker's window lasts LATE_WINDOW");
+        vm.warp(t1 + LATE);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.refund(id, terms(), e.k);
+        vm.warp(t1 + LATE + 365 days);
         swaps.claim(id, terms(), z.k);
         assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
-    function test_claim_requiresAHeldLock() public {
-        bytes32 id = openReady();
-        vm.expectRevert(ZecSwap.LockNotHeld.selector);
+    function test_claim_outsideItsWindowReverts() public {
+        bytes32 id = open();
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
+        vm.warp(t0 - 1);
+        vm.expectRevert(ZecSwap.NotNow.selector);
         swaps.claim(id, terms(), z.k);
 
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-        vm.warp(block.timestamp + LOCK);
-        vm.expectRevert(ZecSwap.LockNotHeld.selector);
+        vm.prank(maker);
+        swaps.ready(id, terms());
         swaps.claim(id, terms(), z.k);
+        assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
     function test_claim_rejectsAnythingButTheUserShare() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
         uint256[4] memory wrong = [e.k, z.k + 1, z.k + Pallas.Q, 0];
         for (uint256 i; i < wrong.length; ++i) {
             vm.expectRevert(ZecSwap.WrongSecret.selector);
@@ -278,40 +307,10 @@ contract ZecSwapTest is SpendAuthVectors {
         }
     }
 
-    function test_lockClaim_isTheUsersAndWaitsOutTheMakersTurnAfterALapse() public {
-        bytes32 id = openReady();
-        vm.expectRevert(ZecSwap.Unauthorized.selector);
-        vm.prank(maker);
-        swaps.lockClaim(id, terms());
-
-        vm.startPrank(user);
-        swaps.lockClaim(id, terms());
-        vm.warp(block.timestamp + LOCK);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        swaps.lockClaim(id, terms());
-
-        vm.warp(block.timestamp + LOCK);
-        swaps.lockClaim(id, terms());
-        swaps.claim(id, terms(), z.k);
-    }
-
-    function test_lockClaim_waitsOutAnActiveRefundLock() public {
-        bytes32 id = open();
-        vm.warp(t0);
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-    }
-
     // refund
 
     function test_refund_cancelsAnOpenSwapAndPublishesTheShare() public {
         bytes32 id = open();
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-
         vm.expectEmit(address(swaps));
         emit ZecSwap.Refunded(id, e.k);
         swaps.refund(id, terms(), e.k);
@@ -323,134 +322,118 @@ contract ZecSwapTest is SpendAuthVectors {
 
     function test_refund_ofAReadySwapWaitsForT1() public {
         bytes32 id = openReady();
-        vm.startPrank(maker);
         vm.warp(t1 - 1);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        swaps.lockRefund(id, terms());
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.refund(id, terms(), e.k);
 
         vm.warp(t1);
-        swaps.lockRefund(id, terms());
         swaps.refund(id, terms(), e.k);
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
     }
 
-    function test_lockRefund_isTheMakersAndWaitsOutTheUsersTurnAfterALapse() public {
+    /// The cancel of an unready swap ends at `t0` sharp: from there the swap is the user's,
+    /// deposit or not, until `t1`.
+    function test_refund_ofAnUnreadySwapEndsAtT0() public {
         bytes32 id = open();
-        vm.expectRevert(ZecSwap.Unauthorized.selector);
-        vm.prank(user);
-        swaps.lockRefund(id, terms());
-
-        vm.startPrank(maker);
-        swaps.lockRefund(id, terms());
-        vm.warp(block.timestamp + LOCK);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        swaps.lockRefund(id, terms());
-
-        vm.warp(block.timestamp + LOCK);
-        swaps.lockRefund(id, terms());
+        vm.warp(t0 - 1);
+        assertTrue(refunds(id));
+        vm.warp(t0);
+        vm.expectRevert(ZecSwap.NotNow.selector);
         swaps.refund(id, terms(), e.k);
+        swaps.claim(id, terms(), z.k);
+        assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
-    /// The live run's abandoned-claim sequence: both sides let a lock lapse, and the swap still
-    /// settles instead of stranding the funds.
-    function test_locksLapsingOnBothSidesNeverStrandTheSwap() public {
-        bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-
-        vm.warp(t1 + LOCK);
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-        vm.warp(block.timestamp + LOCK);
-
-        vm.prank(maker);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
-        swaps.lockRefund(id, terms());
-
-        vm.warp(block.timestamp + LOCK);
-        vm.startPrank(maker);
-        swaps.lockRefund(id, terms());
+    function test_refund_canBeSubmittedByAnyoneWithTheMakerShare() public {
+        bytes32 id = open();
+        vm.expectRevert(ZecSwap.WrongSecret.selector);
+        swaps.refund(id, terms(), z.k);
+        vm.prank(relayer);
         swaps.refund(id, terms(), e.k);
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Refunded));
     }
 
-    function test_lockRefund_waitsOutAnActiveClaimLock() public {
-        bytes32 id = openReady();
-        vm.warp(t1 - 1);
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-        vm.warp(t1);
-        vm.expectRevert(ZecSwap.LockUnavailable.selector);
+    /// Replaces the lock design's lapsing turns: at every moment of a forward swap's life exactly
+    /// one side may reveal, so nothing is ever stranded and nothing is ever raced.
+    function test_exactlyOneSideMayRevealAtEveryMoment() public {
+        bytes32 unready = open();
+        for (uint256 t = block.timestamp; t < t1 + LATE + 2 hours; t += 11 minutes) {
+            vm.warp(t);
+            assertTrue(claims(unready) != refunds(unready), "unready: one side, and one only");
+        }
+        vm.warp(1);
+        Vector memory e2 = randomVector(2);
+        Vector memory z2 = randomVector(3);
+        bytes32 ready = openWith(e2, z2);
         vm.prank(maker);
-        swaps.lockRefund(id, terms());
+        swaps.ready(ready, termsWith(e2, z2));
+        for (uint256 t = block.timestamp; t < t1 + LATE + 2 hours; t += 11 minutes) {
+            vm.warp(t);
+            bool claim = tryClaim(ready, termsWith(e2, z2), z2.k);
+            bool refund = tryRefund(ready, termsWith(e2, z2), e2.k);
+            assertTrue(claim != refund, "ready: one side, and one only");
+        }
     }
 
-    function test_refund_requiresAHeldLockAndTheMakerShare() public {
-        bytes32 id = open();
-        vm.expectRevert(ZecSwap.LockNotHeld.selector);
+    /// A claim not mined by `t1` leaves the swap to the maker's refund: the user takes its
+    /// deposit back with the revealed share instead.
+    function test_aClaimNotSentByT1LeavesTheRefundToTheMaker() public {
+        bytes32 id = openReady();
+        vm.warp(t1);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
         swaps.refund(id, terms(), e.k);
+        assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
+    }
 
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-        vm.expectRevert(ZecSwap.WrongSecret.selector);
-        swaps.refund(id, terms(), z.k);
+    /// A cancel not mined by `t0` leaves an unready swap to the user's claim.
+    function test_aCancelNotSentByT0LeavesTheClaimToTheUser() public {
+        bytes32 id = open();
+        vm.warp(t0);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.refund(id, terms(), e.k);
+        swaps.claim(id, terms(), z.k);
+        assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
     // settlement is final
 
     function test_aClaimedSwapCannotBeRefunded() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
         swaps.claim(id, terms(), z.k);
 
-        vm.warp(t1 + LOCK);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-        vm.expectRevert(ZecSwap.WrongStage.selector);
+        vm.warp(t1);
+        vm.expectRevert(ZecSwap.NotNow.selector);
         swaps.refund(id, terms(), e.k);
+        vm.warp(t1 + LATE);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
     }
 
     function test_aRefundedSwapCannotBeClaimed() public {
         bytes32 id = open();
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
         swaps.refund(id, terms(), e.k);
 
-        vm.warp(t1 + LOCK);
-        vm.expectRevert(ZecSwap.WrongStage.selector);
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-        vm.expectRevert(ZecSwap.WrongStage.selector);
+        vm.warp(t0);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, terms(), z.k);
+        vm.warp(t1 + LATE);
+        vm.expectRevert(ZecSwap.NotNow.selector);
         swaps.claim(id, terms(), z.k);
     }
 
-    // an expired lock hands the swap to the other side
+    // never both, whatever the time and stage
 
-    function test_anExpiredClaimLockLetsTheMakerRefund() public {
-        bytes32 id = openReady();
-        vm.warp(t1 - 1 minutes);
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
-
-        vm.warp(t1 - 1 minutes + LOCK);
-        vm.startPrank(maker);
-        swaps.lockRefund(id, terms());
-        swaps.refund(id, terms(), e.k);
-        assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
-    }
-
-    function test_anExpiredRefundLockLetsTheUserClaim() public {
+    function testFuzz_neverBothRevealsAtOnce(bool makeReady, uint32 readyAt, uint32 at) public {
         bytes32 id = open();
-        vm.prank(maker);
-        swaps.lockRefund(id, terms());
-
-        vm.warp(t0 + LOCK);
-        vm.startPrank(user);
-        swaps.lockClaim(id, terms());
-        swaps.claim(id, terms(), z.k);
-        assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
+        uint256 opened = block.timestamp;
+        if (makeReady) {
+            vm.warp(opened + bound(readyAt, 0, 2 hours));
+            vm.prank(maker);
+            try swaps.ready(id, terms()) {} catch {}
+        }
+        vm.warp(opened + bound(at, 0, 9 days));
+        assertFalse(claims(id) && refunds(id), "both reveals possible at once");
     }
 
     // inventory
@@ -475,17 +458,20 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.deposit(makeAddr("not a token"), 1);
     }
 
-    function test_constructor_rejectsDegenerateLockDurations() public {
+    function test_constructor_rejectsDegenerateWindows() public {
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        new ZecSwap(0, IRailgun(address(0)));
+        new ZecSwap(0, LATE, IRailgun(address(0)));
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
-        new ZecSwap(uint256(type(uint32).max) + 1, IRailgun(address(0)));
+        new ZecSwap(WINDOW, WINDOW - 1, IRailgun(address(0)));
+        vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
+        new ZecSwap(WINDOW, uint256(type(uint32).max) + 1, IRailgun(address(0)));
+        ZecSwap tight = new ZecSwap(WINDOW, WINDOW, IRailgun(address(0)));
+        assertEq(tight.MIN_WINDOW(), WINDOW);
+        assertEq(tight.LATE_WINDOW(), WINDOW);
     }
 
     function test_gas_claim() public {
         bytes32 id = openReady();
-        vm.prank(user);
-        swaps.lockClaim(id, terms());
         uint256 start = gasleft();
         swaps.claim(id, terms(), z.k);
         assertLt(start - gasleft(), 250_000);
@@ -517,6 +503,49 @@ contract ZecSwapTest is SpendAuthVectors {
 
     /// The terms `open` commits to, which every later call supplies.
     function terms() internal view returns (ZecSwap.Terms memory) {
-        return ZecSwap.Terms(maker, address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], user, t0, t1, bytes32(0));
+        return termsWith(e, z);
+    }
+
+    function termsWith(Vector memory makerShare, Vector memory userShare)
+        internal
+        view
+        returns (ZecSwap.Terms memory)
+    {
+        return ZecSwap.Terms(
+            maker,
+            address(usdc),
+            AMOUNT,
+            [makerShare.x, makerShare.y],
+            [userShare.x, userShare.y],
+            user,
+            t0,
+            t1,
+            bytes32(0)
+        );
+    }
+
+    /// Whether the claim would succeed now; the state is left as it was.
+    function claims(bytes32 id) internal returns (bool) {
+        return tryClaim(id, terms(), z.k);
+    }
+
+    function refunds(bytes32 id) internal returns (bool) {
+        return tryRefund(id, terms(), e.k);
+    }
+
+    function tryClaim(bytes32 id, ZecSwap.Terms memory t, uint256 share) internal returns (bool ok) {
+        uint256 snap = vm.snapshotState();
+        try swaps.claim(id, t, share) {
+            ok = true;
+        } catch {}
+        vm.revertToState(snap);
+    }
+
+    function tryRefund(bytes32 id, ZecSwap.Terms memory t, uint256 share) internal returns (bool ok) {
+        uint256 snap = vm.snapshotState();
+        try swaps.refund(id, t, share) {
+            ok = true;
+        } catch {}
+        vm.revertToState(snap);
     }
 }
