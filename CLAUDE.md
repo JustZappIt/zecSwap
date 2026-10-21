@@ -159,11 +159,16 @@ Never edit `scripts/e2e-testnet.sh` while it runs: bash reads it as it goes.
   mines; a public send unmined three blocks on goes again at its nonce at the fees then
   (`land_publicly`). The maker records a ready before sending it (`ready_sent`) and never cancels
   behind one, decides a cancel at `t0 - t0_margin` with `reveal_margin` under that, claims a
-  reverse escrow only on a finalized ready, and with `[reveals] private_rpc` (optional; staged
-  commented out on mainnet) sends its cancels and refunds through Protect. The relayer claims
-  before `t0` only on a ready `READY_DEPTH` (12) blocks deep (`503` meanwhile) and holds a reverse
-  refund while its own ready may land; the client saves each ready signature's deadline before
-  handing it out and never readies after asking for a refund. Builds from here refuse the lock
+  reverse escrow only on a final ready (a finalized block holds it, or `FINAL_DEPTH`, 64, blocks
+  are above it), and with `[reveals] private_rpc` (optional; staged commented out on mainnet)
+  sends its cancels and refunds through Protect. The relayer and the client claim before `t0`
+  only on a ready with `READY_DEPTH` (12) blocks above it (the relayer answers `503` meanwhile);
+  the relayer holds a reverse refund while its own ready may land and never readies after a
+  refund it sent; the client saves each ready signature's deadline before handing it out and
+  never readies after asking for a refund. These decisions are pure functions in
+  `evm/judge.rs` (claims, reverse refunds and readies) and the maker's `policy::decide`, and the
+  third audit's 97 spec cases (`crates/zecswap-chain/tests/windows-spec-vectors.json`) replay
+  against them (`tests/windows_spec.rs`, `policy::tests`): a Kotlin port must pass them too. Builds from here refuse the lock
   contract: mainnet-beta's services stay on their release until mainnet moves to a windows
   contract, and wallets keep the lock path for swaps still open there (`zecswap-core` keeps its
   lock digests, which `zecswap-jni` uses). The client also refuses a swap whose `t1` follows `t0`
