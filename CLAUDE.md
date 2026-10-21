@@ -67,7 +67,8 @@ vectors, a testnet maker. The original design and threat model are in
   hosted testnet since 2026-10-21 00:01 UTC (`docs/deployment.md`, October 20 windows contract):
   the contract `0x459b…980d` (30-minute minimum window, 1-hour late window), deployed by
   `deploy/testnet/deploy-windows.sh`, and `switch-windows.sh` moved the maker, its inventory and
-  the relayer onto it. zapp-dashboard reads both contracts since its `866df80` and pins this one
+  the relayer onto it; since 01:11 UTC they run a build of `e7c5467`, which judges reveals as the
+  spec's 97 cases decide. zapp-dashboard reads both contracts since its `866df80` and pins this one
   since `6b510a3`, both deployed, not pushed. Android and Veylor speak locks until ported; mainnet
   stays on the lock contract.
 - **Next: the Android client, Railgun route only: `docs/local/android.md` section 9**

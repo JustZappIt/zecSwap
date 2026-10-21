@@ -78,5 +78,37 @@
       },
       "makerSweep": "ba68939cb07ba3b18c2b502d3fc1a2cf35253cf0649d06d814fee21ad727cc80"
     }
-  }
+  },
+  "upgrades": [
+    {
+      "at": "2026-10-21T01:11:58Z",
+      "sourceCommit": "e7c5467a731f6c0629ddd39c1ecb4f48f8c9cb99",
+      "release": "/opt/zecswap/releases/20261021-windows-e7c5467",
+      "previousRelease": "/opt/zecswap/releases/20261020-windows-0de4c06",
+      "backup": "/var/backups/zecswap/20261021-windows-e7c5467",
+      "makerSha256": "ca45b2b173b4e81315ae2581708082cf38a6df7bdfcd08872c0c29b955f0d51e",
+      "relayerSha256": "48c31c90e742cb69d9d9fd2cf2d3109057f3af544846c0ee337f9d225062767f",
+      "changes": "reveals judged in one place against the port spec's 97 cases: a claim before t0 waits for 12 blocks above its ready, a reverse claim takes a ready 64 blocks deep as final, the relayer never readies after a refund it sent",
+      "liveSwap": {
+        "swap": "0x002ed8974b317b888fa7fcde4876d24dfc0ba3ab5738d58f016004e083e2e915",
+        "depositZat": 177327,
+        "opened": {
+          "transaction": "0xf35b928c84f176c7806c6fa2b874fb728adc42c8f9ab4f541c8164352f4205a0",
+          "block": 11959078
+        },
+        "ready": {
+          "transaction": "0x1f36ac948fb1c182362a191849258e1fe8dcc4e994e8fd6741855137e348a0b0",
+          "block": 11959102
+        },
+        "claimed": {
+          "transaction": "0x8487131b08a177c9249c0980edc5328f1ac4a122adfd348795ca264c1a637760",
+          "block": 11959115
+        },
+        "paidOut": {
+          "transaction": "0xeb876c2c07f3cefc749d6b6fbd7b26b2f231573ef3a91d233a40f73a2f69c80f",
+          "shielded": "1900000"
+        }
+      }
+    }
+  ]
 }

@@ -863,6 +863,17 @@ confirmations, claimed through the relayer at 00:11:00, twelve blocks after the 
 before `t0` waits, and paid out at 00:11:12, 1.9 tUSD into the wallet's Railgun balance
 (`0x136de610…`, block 11,958,774). The maker then swept the deposit (`ba68939c…`).
 
+At 01:11:58 UTC on October 21, with no live swap, the maker and the relayer moved to a build of
+`e7c5467` in `/opt/zecswap/releases/20261021-windows-e7c5467` (`previous-current` in
+`/var/backups/zecswap/20261021-windows-e7c5467`), the issuer the previous release's, byte for
+byte. Every reveal is judged there as the third audit's port spec decides its 97 cases: a claim
+before `t0` waits for 12 blocks above its ready, where the first build took 11; a reverse claim
+takes a ready 64 blocks deep as final when the finalized block doesn't hold it yet; and the
+relayer never readies an escrow after a refund it sent. A second 2 tUSD swap through the gateway
+(`0x002ed897`) then ran on it: readied at 01:17:36 (block 11,959,102), claimed at 01:20:24
+(block 11,959,115), sent once 12 blocks stood above the ready, and paid out 1.9 tUSD into the
+wallet's Railgun balance (`0xeb876c2c…`).
+
 App builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and
 the maker's info and the relayer's terms name the new contract. Mainnet stays on the lock contract
 and its release.
