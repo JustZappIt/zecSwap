@@ -105,6 +105,30 @@ fn lightwalletd_follows_the_network_unless_named() {
     assert_eq!(config.lightwalletd(), "https://testnet.zec.rocks:443");
 }
 
+#[test]
+fn mainnet_reveals_go_through_protect_alone() {
+    let example = include_str!("../../maker.example.toml");
+    let mainnet = example.replace(r#"network = "testnet""#, r#"network = "mainnet""#);
+    let mut config: Config = toml::from_str(&mainnet).unwrap();
+    assert!(config.reveals.is_none());
+    let refused = config.check_reveals().unwrap_err();
+    assert!(format!("{refused:#}").contains("set [reveals] private_rpc"));
+    let private_rpc = |url: &str| {
+        Some(crate::config::RevealsConfig {
+            private_rpc: url.into(),
+        })
+    };
+    // `/fast` shows TEE searchers whole transactions, failed ones too.
+    config.reveals = private_rpc("https://rpc.flashbots.net/fast?hint=hash");
+    assert!(config.check_reveals().is_err());
+    config.reveals = private_rpc(
+        "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10",
+    );
+    config.check_reveals().unwrap();
+    let testnet: Config = toml::from_str(example).unwrap();
+    testnet.check_reveals().unwrap();
+}
+
 fn acceptance() -> Acceptance {
     Acceptance {
         user_share: SecretShare::random(UnwrapErr(SysRng)).public(),

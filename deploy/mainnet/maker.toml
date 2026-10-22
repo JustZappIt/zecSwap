@@ -51,11 +51,12 @@ t0_margin = 3600
 reveal_margin = 600
 tick = 15
 
-# Cancels, refunds and reverse claims through Flashbots Protect, which mines one only if it
-# succeeds: the maker's other contract calls go with them, one at a time. Without it they go to
-# the public mempool, priced again every three blocks until they mine. The owner's call.
-# [reveals]
-# private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
+# Cancels, refunds and reverse claims reveal the maker's share, so on mainnet they go through
+# Flashbots Protect, which mines one only if it succeeds; the maker refuses to start without it.
+# Its other contract calls go with them, one at a time. The relayer's endpoint and builders
+# (deploy/mainnet/relayer.toml says why these).
+[reveals]
+private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
 
 # USDC to ZEC, paid from the inventory `zecswap-maker zec-inventory` shows.
 [reverse]

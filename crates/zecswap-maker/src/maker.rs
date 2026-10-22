@@ -210,9 +210,8 @@ impl Maker {
             Settlement::connect(&config.evm_rpc, config.contract, secrets.evm_key)?;
         settlement.set_reveal_headroom(network.reveal_headroom_wei());
         settlement.reveal_with_margin(config.timing.reveal_margin);
+        config.check_reveals()?;
         if let Some(reveals) = &config.reveals {
-            zecswap_chain::evm::check_keeps_secrets(&reveals.private_rpc)
-                .context("[reveals] private_rpc")?;
             settlement.broadcast_privately(&reveals.private_rpc)?;
         }
         let chain_id = settlement
