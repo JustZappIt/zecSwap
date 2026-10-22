@@ -1,0 +1,77 @@
+{
+  "chainId": 1,
+  "contract": "0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f",
+  "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "railgun": "0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9",
+  "minWindowSeconds": 3600,
+  "lateWindowSeconds": 86400,
+  "deploymentTransaction": "0x9a1f10e785f6bed8c9e3dbe17d85adc9e70844ee8694468b991d688518bea7ee",
+  "deploymentBlock": 26250774,
+  "deploymentGasUsed": 3852838,
+  "zcashNetwork": "mainnet",
+  "deployer": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "sourceCommit": "32cc6efca0f22589655eb2e61b00ec6d582e8570",
+  "deployedAt": "2026-10-22",
+  "status": "live",
+  "deploymentCostWei": "451868226530446",
+  "deploymentPriorityFeeWei": "5000000",
+  "rehearsal": "on an anvil fork of mainnet, deployed from the maker at nonce 18: the same address, and runtime code and vault logic (0x99DE0d481AdDb39D020bd61DB741720601FF9697) identical byte for byte; the contract's fork tests (real USDC, Railgun and sanctions oracle) all pass",
+  "etherscan": "not verified, the owner's call",
+  "servicesSince": "2026-10-22T21:21:05Z",
+  "replaces": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
+  "maker": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "relayer": "0xcBcb5f57C79C88a0E4BB450289dE2088958A017F",
+  "makerUrl": "https://<mainnet gateway>.workers.dev/maker",
+  "relayerUrl": "https://<mainnet gateway>.workers.dev/relayer",
+  "release": "/opt/zecswap-mainnet/releases/20261022-windows-98db2b6",
+  "previousRelease": "/opt/zecswap-mainnet/releases/20261019-deposits-63803a6",
+  "backup": "/var/backups/zecswap-mainnet/20261022-windows-98db2b6",
+  "makerSha256": "0b3b89b9906b48d03c5fc3228df421fcb00e637ffa715063cfd29728c514be3c",
+  "makerSource": "98db2b6, testnet's maker since 2026-10-22 20:13",
+  "relayerSha256": "16df58ac28ba7fc60214c30f01b92d40d2d6e8d72acf1852ad7e92aa2e1ca4c1",
+  "relayerSource": "47650c6, testnet's relayer since 2026-10-22 02:44",
+  "issuerSha256": "33e441ed29a88a8c479723e79d349ba1c57323e7029f8df502cc7ea4c060f600",
+  "issuer": "the previous release's, byte for byte; its service stays off until tokens are on",
+  "configChanges": {
+    "both": "contract; [reveals] private_rpc = Flashbots Protect, hint=hash, builders Titan, Quasar and Eureka, blockRange 10",
+    "maker": "t0_after 3600 -> 5400, t1_after 7200 -> 9000, t0_margin 300 -> 3600; [gas_alerts] low_wei 0.0005 -> 0.0015 ETH, recovery_wei 0.001 -> 0.003 ETH",
+    "heldClaims": "off on mainnet: no [held_claims], and the gateway site is unchanged"
+  },
+  "inventory": "131501012",
+  "inventoryMigrationTransactions": [
+    {
+      "withdraw": "0xe500447a107f19c58391a8beba23012836912f1ea4becbb94e188c6fe4e60038",
+      "block": 26250808,
+      "gasUsed": 47325,
+      "via": "the previous maker, public mempool"
+    },
+    {
+      "approve": "0x0d32cf797b4ca4d86083b2605e013ff416542539ed2a3c2e1e5ec99ca16fecf3",
+      "block": 26250809,
+      "gasUsed": 55558,
+      "via": "Flashbots Protect"
+    },
+    {
+      "deposit": "0x118fee82cdb2f439860008563ce6224652e7a5553419dab1624ff4ca070217fa",
+      "block": 26250810,
+      "gasUsed": 95170,
+      "via": "Flashbots Protect"
+    }
+  ],
+  "switchCostWei": "25536516322800",
+  "validation": {
+    "lockContractAfter": "0 USDC and 0 ETH; the maker's inventory there 0",
+    "newContractAfter": "131501012 USDC, all the maker's inventory",
+    "makerAccountUsdc": "1995000, untouched",
+    "lockContractPayoutVaults": "all three hold 0 USDC",
+    "makerInfo": "chain 1, this contract, contractKind windows, minWindow 3600, lateWindow 86400, reverse on",
+    "relayerTerms": "this contract, contractKind windows, fee 500000",
+    "publicGateway": "maker health 204, info and terms as above through the Worker",
+    "restarts": 0,
+    "warningsInTheFirst45Seconds": 0,
+    "relayerLaneTopUp": "the claims lane took 0.010023 ETH from the relayer's own account at start (0x4101db55c72a\u2026), the headroom main's relayer keeps for reveals",
+    "liveSwap": "none yet"
+  },
+  "dashboard": "zapp-dashboard 8007fb2 pins this contract, deployed to production",
+  "totalCostWei": "477404742853246"
+}

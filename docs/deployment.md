@@ -149,6 +149,55 @@ Rolling back then moves the inventory back on chain:
 
 Deposits then stop. Their journal stays in `/var/lib/zecswap-relayer/deposits.sqlite`.
 
+## October 22 mainnet windows contract
+
+Mainnet moved from the lock contract to a windows contract of its own, with every reveal of the
+maker's and the relayer's through Flashbots Protect. At 21:13 UTC `scripts/deploy-contract.sh`
+(`32cc6ef`) deployed it from the maker's account:
+`0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, in block 26,250,774, with a one-hour minimum window
+and a 24-hour late window, paying into Railgun's proxy. It cost 3,852,838 gas, 0.00045 ETH at a
+0.005 gwei tip. On an anvil fork of mainnet the same deployment, from the maker at the same nonce,
+landed at the same address with the same runtime code and vault logic, byte for byte, and the
+contract's fork tests passed against real USDC, Railgun and the sanctions oracle. Its source is not
+verified on Etherscan, the owner's call.
+
+At 21:20 UTC `.testnet/stage-mainnet-windows/switch-mainnet.sh` checked:
+- the release, both configs and the running binaries were as recorded;
+- the new contract's windows and Railgun, and that it held nothing;
+- that Protect answered for chain 1;
+- that the lock contract held exactly the maker's inventory, so nobody else's money stayed behind.
+
+It found no live swap, then stopped the maker and the relayer. The previous maker withdrew the
+131.501012 USDC of inventory to its own account (block 26,250,808), and the new one deposited it
+into the windows contract through Protect (blocks 26,250,809 and 26,250,810). The move cost
+0.000026 ETH. Both services restarted at 21:21 on `20261022-windows-98db2b6`, now
+`/opt/zecswap-mainnet/current`: testnet's own maker (`98db2b6`) and relayer (`47650c6`), with the
+issuer byte for byte; the issuer's service stays off until tokens are on.
+
+The configs gained:
+- in both, the contract and `[reveals]`, through Protect with the relayer's builders;
+- in the maker, `t0_after` 5400 and `t1_after` 9000, so `t0` is 1.5 h after an open and `t1` 1 h
+  after it, and `t0_margin` 3600;
+- in the maker, gas alerts at 0.0015 ETH (recovering at 0.003).
+
+Held claims stay off on mainnet, and the gateway is unchanged. At start the relayer topped its
+claims account up by 0.01 ETH, the headroom its reveals keep.
+
+Afterwards the lock contract and its three payout vaults held 0 USDC, the windows contract the whole
+inventory, and the maker's account its 1.995 USDC as before. Through the Worker the maker's health
+answered 204, and its info and the relayer's terms named the new contract, `contractKind:
+"windows"`. Neither service restarted or warned. zapp-dashboard pins the contract since `8007fb2`.
+No swap has run on it yet. `deployments/mainnet-windows.json` records the transactions;
+`mainnet-beta.json` is retired.
+
+To undo the switch before any swap opens on the new contract:
+1. Stop both services.
+2. Run `withdraw-inventory all` under the current maker config.
+3. Restore `maker-config.toml`, `relayer-config.toml` and the retired store
+   (`retired-maker.sqlite`) from `/var/backups/zecswap-mainnet/20261022-windows-98db2b6`.
+4. Point `/opt/zecswap-mainnet/current` at the release `previous-current` names.
+5. Run `add-inventory` with the amount withdrawn under the restored config, and start both.
+
 ## October 19 mainnet deposits
 
 At 03:42 UTC `deploy/mainnet/deploy-deposits.sh` (`63803a6`) deployed the Deposits contract on
