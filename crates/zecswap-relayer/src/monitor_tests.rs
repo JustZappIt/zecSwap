@@ -83,7 +83,7 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
     let (status, shown) = send(&app, monitor(Some("monitor-test-token"))).await;
     assert_eq!(status, StatusCode::OK);
     let operations = shown["operations"].as_object().unwrap();
-    assert_eq!(operations.len(), 11);
+    assert_eq!(operations.len(), 13);
     let locked = &operations["claim"];
     assert_eq!(
         (&locked["sent"], &locked["refused"], &locked["failed"]),
@@ -101,6 +101,7 @@ async fn the_monitor_counts_outcomes_and_names_failures_by_kind_alone() {
         shown["fees"],
         serde_json::json!({"payout": "1", "funding": null, "sends": null, "deposits": null})
     );
+    assert!(shown["heldClaims"].is_null(), "it holds no claims");
     // The RPC is named by its host and a fingerprint of any key; errors, which quote its URL,
     // never reach the monitor.
     assert_eq!(shown["rpc"]["endpoint"], "127.0.0.1, no key");

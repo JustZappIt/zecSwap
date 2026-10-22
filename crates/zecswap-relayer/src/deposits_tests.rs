@@ -166,6 +166,7 @@ impl Chain {
                 journal: dir.join("deposits.sqlite"),
                 private_rpc: None,
             }),
+            held_claims: None,
         }
     }
 
@@ -221,6 +222,7 @@ impl Chain {
             deposits,
             funding: None,
             pricing: None,
+            held: None,
             history: None,
         });
         relayer.top_up().await.unwrap();

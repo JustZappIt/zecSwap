@@ -31,6 +31,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         railgun_sends: None,
         gas_alerts: None,
         deposits: None,
+        held_claims: None,
     };
     Relayer {
         funding: config.funding_policy(account, 11_155_111).unwrap(),
@@ -58,6 +59,7 @@ pub(crate) fn relayer(enabled: bool) -> Relayer {
         monitor: crate::monitor::Monitor::new(MonitorToken::default()),
         sends: None,
         pricing: None,
+        held: None,
         history: None,
     }
 }

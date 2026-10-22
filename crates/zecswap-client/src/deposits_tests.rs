@@ -99,6 +99,7 @@ async fn a_wallet_shields_its_deposit_addresses_and_finds_them_again_from_its_se
             journal: dir.path().join("deposits.sqlite"),
             private_rpc: None,
         }),
+        held_claims: None,
     };
     let relayer = Arc::new(
         zecswap_relayer::Relayer::new(config, relayer_key, None)

@@ -38,8 +38,7 @@ pub(crate) struct Deployment {
     pub(crate) wallet: zecswap_railgun::Keys,
 }
 
-/// A swap open and ready, its ready deep enough to claim on, paying into the user's Railgun
-/// wallet.
+/// A swap paying into the user's Railgun wallet.
 pub(crate) struct Swap {
     pub(crate) id: B256,
     pub(crate) terms: zecswap_core::Terms,
@@ -132,6 +131,7 @@ impl Deployment {
             railgun_sends: None,
             gas_alerts: None,
             deposits: None,
+            held_claims: None,
         }
     }
 
@@ -144,6 +144,9 @@ impl Deployment {
     pub(crate) async fn relayer_with(&self, config: Config) -> Arc<Relayer> {
         let key = &self.relayer_key;
         let meter = RpcMeter::default();
+        let held = config.held_claims.as_ref().map(|held| {
+            crate::held::Held::open(&held.journal, self.domain.chain_id, self.contract).unwrap()
+        });
         let relayer = Relayer {
             settlement: Settlement::connect_metered(
                 &config.evm_rpc,
@@ -168,6 +171,7 @@ impl Deployment {
 
             deposits: None,
             pricing: None,
+            held,
             history: None,
         };
         let lanes = &relayer.lanes;
@@ -184,7 +188,17 @@ impl Deployment {
         Arc::new(relayer)
     }
 
+    /// A swap open and ready, its ready deep enough to claim on.
     pub(crate) async fn open(&self, index: u32) -> Swap {
+        let swap = self.opened(index).await;
+        self.maker.ready(swap.id, &swap.terms).await.unwrap();
+        self.mine_blocks(zecswap_chain::evm::judge::READY_DEPTH)
+            .await;
+        swap
+    }
+
+    /// A swap open and not ready.
+    pub(crate) async fn opened(&self, index: u32) -> Swap {
         let keys = derive_user_keys(&SEED, NetworkType::Test, 0, index).unwrap();
         let now = self.maker.now().await.unwrap();
         let terms = zecswap_core::Terms {
@@ -200,9 +214,6 @@ impl Deployment {
         };
         self.maker.open(&terms).await.unwrap();
         let id = swap_id(self.maker_account, &keys.share.public());
-        self.maker.ready(id, &terms).await.unwrap();
-        self.mine_blocks(zecswap_chain::evm::judge::READY_DEPTH)
-            .await;
         Swap { id, terms, keys }
     }
 

@@ -211,15 +211,16 @@ impl Relayer {
     /// Runs `request` once the earlier requests under `key` have ended, and to its own end
     /// whether or not its caller still waits: cut off half way, it would leave a transaction
     /// sent that a repeat knows nothing of. `count` counts how it ended, as `operation`.
-    pub(crate) async fn in_line<T, F>(
+    pub(crate) async fn in_line<T, U, F>(
         self: &Arc<Self>,
         operation: &'static str,
         key: B256,
         request: F,
-        count: fn(&Arc<Self>, &'static str, Result<T>) -> Result<Sent>,
-    ) -> Result<Sent>
+        count: fn(&Arc<Self>, &'static str, Result<T>) -> Result<U>,
+    ) -> Result<U>
     where
         T: Send + 'static,
+        U: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
     {
         let turn = self.turns.take(key).await;
@@ -231,7 +232,8 @@ impl Relayer {
         })
         .await
         .unwrap_or_else(|e| {
-            self.observe(
+            count(
+                self,
                 operation,
                 Err(anyhow::anyhow!("the request stopped: {e}").into()),
             )

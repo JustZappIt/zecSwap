@@ -136,7 +136,7 @@ pub struct ReverseFundingTerms {
 
 /// `POST /v1/claim`: reveals the user share in the claim's window, then pays out. The payout is
 /// checked first so that the relayer is sure of its fee before it reveals anything. It names the
-/// same swap and terms as the claim.
+/// same swap and terms as the claim. `POST /v1/claim/hold` takes the same body (`Held`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Claim {
@@ -145,6 +145,25 @@ pub struct Claim {
     /// The user share, big-endian.
     pub secret: B256,
     pub payout: Payout,
+}
+
+/// `POST /v1/claim/hold`: a `Claim` handed over before its window opens, for the relayer to send
+/// the moment it does, so its user may leave the app once the deposit is out. The relayer checks
+/// it as `/v1/claim` does, all but the window, keeps it, and sends it as `/v1/claim` would once
+/// the window opens: on a ready 2 blocks deep, from `t0`, or from `t1 + LATE_WINDOW` should the
+/// maker not refund in its late window. The payout keeps the fee it was held with, though that
+/// fee's quote expires meanwhile. The answer is `{"held": true}`, whether or not the window is
+/// open yet, and the same again for the same claim; a new payout for the swap, signed and with a
+/// fee the relayer honors now, replaces the one held. A claimed swap is answered as `/v1/claim`
+/// answers it (`Sent`). A refunded swap, a claim that fails a check, and a relayer that holds no
+/// claims are refused (`400 rejected`), nothing held; a `503`, with `Retry-After`, or another
+/// `5xx` asks for the same request again. A held claim is deleted once its swap is paid out or
+/// refunded.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Held {
+    /// Always true.
+    pub held: bool,
 }
 
 /// `POST /v1/payout` retries a payout on its own.

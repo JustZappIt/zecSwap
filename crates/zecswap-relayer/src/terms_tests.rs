@@ -84,6 +84,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
         railgun_sends: None,
         gas_alerts: None,
         deposits: None,
+        held_claims: None,
     };
     let relayer_for = |config: Config| Relayer {
         config,
@@ -103,6 +104,7 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
 
         deposits: None,
         pricing: None,
+        held: None,
         history: None,
     };
     let relayer = relayer_for(config.clone());
@@ -464,14 +466,22 @@ async fn requests_it_should_not_send_are_refused_before_anything_is_sent() {
             .await
             .unwrap();
     };
+    let mine_every = async |seconds: u64| {
+        chain
+            .raw_request::<_, serde_json::Value>("evm_setIntervalMining".into(), (seconds,))
+            .await
+            .unwrap();
+    };
     let (claimable, opened, keys) = open(2).await;
     maker.ready(claimable, &opened).await.unwrap();
-    // Before t0 it waits for its ready to be deep enough.
+    // Before t0 it waits for its ready to be deep enough, which mining held back keeps it from.
+    mine_every(0).await;
     let shallow = claim(claimable, &opened, &keys).await;
     assert!(
         matches!(shallow, Err(RelayerError::Busy(..))),
         "{shallow:?}"
     );
+    mine_every(1).await;
     deepen().await;
     let claimed = claim(claimable, &opened, &keys).await.unwrap();
     assert_eq!(sent().await, 4);

@@ -359,7 +359,7 @@ so a flood of one kind never refuses another:
 
 | Requests | Allowance |
 | --- | --- |
-| A swap's relayer requests (fundings, readies, claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
+| A swap's relayer requests (fundings, readies, claims and held claims, payouts, refunds, rescues) with a ticket that checks out | 1 a second for each swap; up to 10 more wait their turn |
 | The same requests without one | 2 a second shared; up to 20 more wait their turn |
 | Quotes | 2 a second, bursts of 30 |
 | Accepts | 10 at a time; 2 a second, bursts of 20 |
@@ -429,9 +429,31 @@ start as `rpc`. The hosted testnet's services use the key with fingerprint `f677
 | Quotes and reverse status | The gas price once a minute, the inventory every 30 s; status from the passes' reads | little, however often asked |
 | Relayer lanes | Every lane's balance in one call, after each of its sends and every 2 minutes | about 35k a day |
 | Relayer fees | The gas price, once a minute at most, however often terms are read | at most 30k a day |
+| Relayer held claims, every 4 s | With none held, nothing. Otherwise the latest block, and on each new one every claim due in one call, with the swap a ready's depth back for one waiting on its ready. One that can't go before a known time, as in the maker's late window, is looked at every 5 minutes | 0 idle; about 75 a block while one is held |
 
 Idle, the two spend about 0.15M compute units a day, and a swap about 20k more beside its own
 transactions.
+
+### Held claims
+
+With `[held_claims]`, whose `journal` is a SQLite file of its own, the relayer takes
+`POST /v1/claim/hold`: a forward claim, the body `/v1/claim` takes, posted once the deposit is out,
+so its user may leave the app (`zecswap_api::relayer::Held` has the answers). It checks the claim
+as `/v1/claim` does, all but the window, keeps it, and sends it through the claims lane the moment
+its window opens: on a ready 2 blocks deep, from `t0` where the maker never readies, and from
+`t1 + LATE_WINDOW` where the maker didn't refund in its late window. The payout keeps the fee the
+claim was held with, though that fee's quote expires meanwhile. A held claim and its share are
+deleted, the journal overwriting what it deletes, once its swap is paid out or refunded. Without
+`[held_claims]` the route answers `400`.
+
+The relayer then holds each user's share long before the claim reveals it. It can't spend the
+deposit with it, as the joint account's `nk` and `rivk` go only to the maker, but handed to the
+maker it would let the maker refund and sweep the deposit too: the owner accepts that trust while
+running both. No log, error, metric or alert carries a share, nor any request before its claim's
+own send. The logs name each held claim's swap and step: `held`, `replaced` (a new payout),
+`sent`, `deleted` (paid out), `dropped` (refunded), and `failed` with its kind. Besides
+`heldClaims`, the monitor's operations count the hold requests (`hold_claim`) and the sends of held
+claims (`held_claim`).
 
 ### Token issuer attestation
 
@@ -620,7 +642,9 @@ The relayer's `GET /relayer/v1/monitor` (`RELAYER_MONITOR_TOKEN`, in
 `/etc/zecswap-relayer/secrets.env`) counts, for each operation since it started, the transactions
 sent, the requests refused, and those that failed by kind (`reverted`, `unconfirmed` or `internal`,
 never a message), with the gas and wei they burned, from which the dashboard works out how long its
-ETH lasts. With `[railgun_sends]`, `GET /relayer/v1/monitor/sends` lists each private send and
+ETH lasts. With `[held_claims]` it adds `heldClaims`: the claims held now, and those sent and
+dropped since it started ([Held claims](#held-claims)). With `[railgun_sends]`,
+`GET /relayer/v1/monitor/sends` lists each private send and
 withdrawal it paid the gas of, with what it burned and the fee it was paid
 ([railgun-sends.md](railgun-sends.md)). The issuer's `GET /issuer/v1/monitor`
 (`ISSUER_MONITOR_TOKEN`, in `/etc/zecswap-issuer/secrets.env`) shows the day's token totals, its

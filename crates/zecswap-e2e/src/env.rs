@@ -869,6 +869,7 @@ async fn start_relayer(
                 journal: settings.work_dir.join("relayer-deposits.sqlite"),
                 private_rpc: settings.private_rpc.clone(),
             }),
+        held_claims: None,
     };
     let railgun = sends.map(|(seed, _)| zecswap_railgun::Keys::from_seed(seed, 0));
     let relayer = Arc::new(Relayer::new(config, key, railgun).await?);

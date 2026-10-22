@@ -7,13 +7,13 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use tracing::error;
 use zecswap_api::relayer::{
-    Claim, Conflict, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
+    Claim, Conflict, Held, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
 };
 use zecswap_api::server::{self, Json};
 use zecswap_api::service::ErrorCode;
 
 use crate::monitor::MonitorSnapshot;
-use crate::{Relayer, RelayerError};
+use crate::{Holding, Relayer, RelayerError};
 
 /// What a `503` with nothing better to say asks to wait, in seconds: a send's outcome is known
 /// within a block or two, prices within a minute.
@@ -34,6 +34,7 @@ pub fn router(relayer: Arc<Relayer>) -> Router {
         .route("/v1/terms", get(terms))
         .merge(monitor)
         .route("/v1/claim", post(claim))
+        .route("/v1/claim/hold", post(hold_claim))
         .route("/v1/payout", post(payout))
         .route("/v1/rescue", post(rescue))
         .route(
@@ -120,6 +121,25 @@ async fn claim(
         })
         .await;
     Ok(Json(sent?))
+}
+
+/// `{"held": true}` once held; a claimed swap is answered as `/v1/claim` answers it.
+async fn hold_claim(
+    State(relayer): State<Arc<Relayer>>,
+    Json(request): Json<Claim>,
+) -> Result<Response, RelayerError> {
+    let id = request.swap_id;
+    let holding = {
+        let relayer = Arc::clone(&relayer);
+        async move { relayer.hold_claim(request).await }
+    };
+    let holding = relayer
+        .in_line("hold_claim", id, holding, Relayer::observe_holding)
+        .await?;
+    Ok(match holding {
+        Holding::Held => Json(Held { held: true }).into_response(),
+        Holding::Claimed(sent) => Json(sent).into_response(),
+    })
 }
 
 async fn payout(
