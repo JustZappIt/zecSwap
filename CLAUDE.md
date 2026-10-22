@@ -121,8 +121,8 @@ bash reads it as it goes.
 - **Reveal judgements** are pure functions on one read, the swap at the newest block's hash
   (`Settlement::read`): `evm/judge.rs` and the maker's `policy::decide`. A window opens by the
   block's time and ends by the later of it and the wall clock, less the margin. Before `t0` a claim
-  needs a ready with `READY_DEPTH` (2) blocks above it; a reverse claim needs a final ready
-  (finalized, or `FINAL_DEPTH` 64 deep). The audit's 97 cases replay against them
+  needs a ready with `READY_DEPTH` (2) blocks above it; a reverse claim one with
+  `REVERSE_READY_DEPTH` (4) above it. The audit's 97 cases replay against them
   (`crates/zecswap-chain/tests/windows-spec-vectors.json`, `windows_spec.rs`, `policy::tests`).
 - **Contract identity.** Every service and client reads `MIN_WINDOW()` and `LATE_WINDOW()` and
   refuses the lock contract, whose six-word record alloy decodes silently under the four-word ABI.

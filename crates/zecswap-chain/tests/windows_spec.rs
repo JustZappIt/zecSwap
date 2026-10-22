@@ -56,7 +56,7 @@ pub struct Margins {
     pub ready_land: u64,
     pub ready_sig_ttl: u64,
     pub ready_depth: u64,
-    pub final_depth: u64,
+    pub reverse_ready_depth: u64,
 }
 
 #[derive(Deserialize)]
@@ -136,9 +136,7 @@ fn may_send(vector: &Vector) -> Option<bool> {
             !forward
                 && match judged {
                     Ok(Go::Now) => true,
-                    Ok(Go::OnceReadyAt(block)) => {
-                        u64::try_from(view.finalized_number).is_ok_and(ready_at) || ready_at(block)
-                    }
+                    Ok(Go::OnceReadyAt(block)) => ready_at(block),
                     Err(_) => false,
                 }
         }
@@ -168,7 +166,10 @@ fn every_claim_refund_and_ready_is_judged_as_the_port_spec_decides() {
     for (index, vector) in vectors.iter().enumerate() {
         // The depths the spec decides on are the ones the services wait for.
         assert_eq!(vector.margins.ready_depth, judge::READY_DEPTH);
-        assert_eq!(vector.margins.final_depth, judge::FINAL_DEPTH);
+        assert_eq!(
+            vector.margins.reverse_ready_depth,
+            judge::REVERSE_READY_DEPTH
+        );
         let Some(send) = may_send(vector) else {
             continue;
         };

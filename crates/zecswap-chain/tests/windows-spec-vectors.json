@@ -32,7 +32,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -74,7 +74,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -116,7 +116,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -158,7 +158,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -200,7 +200,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -242,7 +242,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -284,7 +284,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -326,7 +326,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -368,7 +368,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -410,7 +410,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -452,7 +452,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -494,7 +494,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -536,7 +536,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -578,7 +578,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -620,7 +620,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -662,7 +662,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -704,7 +704,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -746,11 +746,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
-   "reason": "ready is final, with the margin before t1",
+   "reason": "ready is deep, with the margin before t1",
    "edge": 1792013600,
    "start": null
   }
@@ -767,7 +767,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 899,
+   "ready_block": 995,
    "finalized_number": 900,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -788,11 +788,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
-   "reason": "ready is final, with the margin before t1",
+   "reason": "ready is deep, with the margin before t1",
    "edge": 1792013600,
    "start": null
   }
@@ -809,7 +809,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 935,
+   "ready_block": 995,
    "finalized_number": -1,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -830,11 +830,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
-   "reason": "ready is final, with the margin before t1",
+   "reason": "ready is deep, with the margin before t1",
    "edge": 1792013600,
    "start": null
   }
@@ -872,7 +872,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -916,7 +916,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -960,7 +960,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1002,7 +1002,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1044,7 +1044,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1086,7 +1086,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1128,7 +1128,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1170,7 +1170,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1212,7 +1212,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1254,7 +1254,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1296,7 +1296,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1338,7 +1338,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1380,7 +1380,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1422,7 +1422,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1464,7 +1464,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1506,7 +1506,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1548,7 +1548,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1590,7 +1590,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1632,7 +1632,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1674,7 +1674,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1716,7 +1716,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1737,7 +1737,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 900,
+   "ready_block": 996,
    "finalized_number": 900,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -1758,11 +1758,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
-   "reason": "ready is final, with the margin before t1",
+   "reason": "ready is deep, with the margin before t1",
    "edge": 1792013600,
    "start": null
   }
@@ -1779,7 +1779,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 936,
+   "ready_block": 996,
    "finalized_number": -1,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -1800,11 +1800,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
-   "reason": "ready is final, with the margin before t1",
+   "reason": "ready is deep, with the margin before t1",
    "edge": 1792013600,
    "start": null
   }
@@ -1842,7 +1842,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1886,7 +1886,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -1930,7 +1930,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -1972,7 +1972,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2014,7 +2014,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2056,7 +2056,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2098,7 +2098,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2140,7 +2140,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2182,7 +2182,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2224,7 +2224,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2266,7 +2266,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2308,7 +2308,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2350,7 +2350,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2392,7 +2392,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2434,7 +2434,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2476,7 +2476,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2518,7 +2518,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2560,7 +2560,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2602,7 +2602,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2644,7 +2644,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2686,7 +2686,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2707,7 +2707,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 901,
+   "ready_block": 997,
    "finalized_number": 900,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -2728,12 +2728,12 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
-   "send": true,
-   "reason": "ready is final, with the margin before t1",
-   "edge": 1792013600,
+   "send": false,
+   "reason": "the ready is 3 deep; it must be 4: a reorg could drop it and its signature cannot be re-sent",
+   "edge": null,
    "start": null
   }
  },
@@ -2749,7 +2749,7 @@
    "t1": 1792013600,
    "min_window": 3600,
    "late_window": 86400,
-   "ready_block": 937,
+   "ready_block": 997,
    "finalized_number": -1,
    "railgun_accepts": true,
    "deposit_confirmed": false,
@@ -2770,11 +2770,11 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
-   "reason": "the ready is not final: a reorg could drop it and its signature cannot be re-sent",
+   "reason": "the ready is 3 deep; it must be 4: a reorg could drop it and its signature cannot be re-sent",
    "edge": null,
    "start": null
   }
@@ -2812,7 +2812,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2856,7 +2856,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2900,7 +2900,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -2942,7 +2942,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -2984,7 +2984,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3026,7 +3026,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3068,7 +3068,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3110,7 +3110,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": true,
@@ -3152,7 +3152,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3194,7 +3194,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3236,7 +3236,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3278,7 +3278,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3320,7 +3320,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3362,7 +3362,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3404,7 +3404,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3446,7 +3446,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3488,7 +3488,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3530,7 +3530,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3572,7 +3572,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3614,7 +3614,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3656,7 +3656,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3698,7 +3698,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3740,7 +3740,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3782,7 +3782,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3824,7 +3824,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3866,7 +3866,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3908,7 +3908,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3950,7 +3950,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -3992,7 +3992,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -4034,7 +4034,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,
@@ -4076,7 +4076,7 @@
    "ready_land": 600,
    "ready_sig_ttl": 120,
    "ready_depth": 2,
-   "final_depth": 64
+   "reverse_ready_depth": 4
   },
   "expect": {
    "send": false,

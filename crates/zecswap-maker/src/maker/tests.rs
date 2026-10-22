@@ -1967,11 +1967,13 @@ async fn a_ready_sent_before_a_restart_is_never_followed_by_a_cancel() {
     assert_eq!(chain.stage, Stage::Refunded);
 }
 
-/// A reverse escrow's claim waits for its ready to be final: the user's ready signature lives
-/// minutes, and a claim sent on a ready a reorganisation then dropped would revert with the
-/// maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
+/// A reverse escrow's claim waits for its ready to have `REVERSE_READY_DEPTH` blocks above it:
+/// the user's ready signature lives minutes, and a claim sent on a ready a reorganisation then
+/// dropped would revert with the maker's share public, the escrow the user's to refund and the ZEC
+/// theirs to sweep.
 #[tokio::test]
-async fn a_reverse_claim_waits_for_its_ready_to_be_final() {
+async fn a_reverse_claim_waits_for_its_ready_to_be_deep() {
+    use zecswap_chain::evm::judge::REVERSE_READY_DEPTH;
     use zecswap_chain::evm::{reverse_funding_calls, reverse_swap_id};
     use zecswap_core::{Domain, NetworkType, derive_user_keys};
 
@@ -2070,14 +2072,22 @@ async fn a_reverse_claim_waits_for_its_ready_to_be_final() {
         let chain = maker.settlement.swap(swap.id, &swap.terms()).await.unwrap();
         chain.unwrap().stage
     };
+    let mine = async |blocks: u64| {
+        anvil_rpc(
+            &url,
+            "anvil_mine",
+            serde_json::json!([format!("{blocks:#x}")]),
+        )
+        .await;
+    };
+    mine(REVERSE_READY_DEPTH - 1).await;
     maker.advance_reverse_claim(&swap).await.unwrap();
     assert_eq!(
         stage(&maker).await,
         Stage::Ready,
-        "claimed on a ready not yet final"
+        "claimed on a ready a block short of its depth"
     );
-    // anvil finalizes 64 blocks back.
-    anvil_rpc(&url, "anvil_mine", serde_json::json!(["0x41"])).await;
+    mine(1).await;
     maker.zcash_health.completed();
     maker.advance_reverse_claim(&swap).await.unwrap();
     assert_eq!(stage(&maker).await, Stage::Claimed);
