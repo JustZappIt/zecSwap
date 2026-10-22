@@ -180,8 +180,13 @@ The configs gained:
   after it, and `t0_margin` 3600;
 - in the maker, gas alerts at 0.0015 ETH (recovering at 0.003).
 
-Held claims stay off on mainnet, and the gateway is unchanged. At start the relayer topped its
-claims account up by 0.01 ETH, the headroom its reveals keep.
+At start the relayer topped its claims account up by 0.01 ETH, the headroom its reveals keep. At
+21:50 `.testnet/stage-mainnet-held-claims/deploy.sh` gave it held claims, as testnet has them
+([Held claims](#held-claims)): `[held_claims]` with its journal in
+`/var/lib/zecswap-mainnet-relayer/held-claims.sqlite`, and the gateway's site, made from
+`deploy/nginx.conf` with `deploy/mainnet/nginx-site.sed`, counting `/relayer/v1/claim/hold` among a
+swap's requests. Only the relayer restarted. Through the Worker the route answered `422` to an
+empty body, the relayer's own answer, and its monitor showed no claim held.
 
 Afterwards the lock contract and its three payout vaults held 0 USDC, the windows contract the whole
 inventory, and the maker's account its 1.995 USDC as before. Through the Worker the maker's health

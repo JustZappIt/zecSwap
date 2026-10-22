@@ -35,7 +35,7 @@
   "configChanges": {
     "both": "contract; [reveals] private_rpc = Flashbots Protect, hint=hash, builders Titan, Quasar and Eureka, blockRange 10",
     "maker": "t0_after 3600 -> 5400, t1_after 7200 -> 9000, t0_margin 300 -> 3600; [gas_alerts] low_wei 0.0005 -> 0.0015 ETH, recovery_wei 0.001 -> 0.003 ETH",
-    "heldClaims": "off on mainnet: no [held_claims], and the gateway site is unchanged"
+    "heldClaims": "on since 2026-10-22T21:50:06Z: [held_claims] journal = /var/lib/zecswap-mainnet-relayer/held-claims.sqlite, and the gateway site from deploy/nginx.conf of main counting /relayer/v1/claim/hold; the relayer alone restarted; backups in /var/backups/zecswap-mainnet/20261022-held-claims"
   },
   "inventory": "131501012",
   "inventoryMigrationTransactions": [
@@ -70,7 +70,17 @@
     "restarts": 0,
     "warningsInTheFirst45Seconds": 0,
     "relayerLaneTopUp": "the claims lane took 0.010023 ETH from the relayer's own account at start (0x4101db55c72a\u2026), the headroom main's relayer keeps for reveals",
-    "liveSwap": "none yet"
+    "liveSwap": "none yet",
+    "heldClaims": {
+      "holdRouteThroughGateway": "422 on an empty body through the Worker, the relayer's own answer",
+      "monitor": {
+        "held": 0,
+        "sent": 0,
+        "dropped": 0
+      },
+      "restarts": 0,
+      "warnings": 0
+    }
   },
   "dashboard": "zapp-dashboard 8007fb2 pins this contract, deployed to production",
   "totalCostWei": "477404742853246"

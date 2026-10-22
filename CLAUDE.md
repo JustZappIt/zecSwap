@@ -28,8 +28,8 @@ vectors). The original design and threat model are in
   answering as designed (`.testnet/stress-windows-20261021/SUMMARY.md`).
 - **Mainnet** runs a windows contract of its own since 2026-10-22 21:21 UTC:
   `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows, the maker
-  and relayer testnet's own builds with every reveal through Flashbots Protect, held claims off
-  (`docs/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
+  and relayer testnet's own builds with every reveal through Flashbots Protect, held claims on since
+  21:50 (`docs/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
   The lock contract (`mainnet-beta.json`) is retired, its inventory moved; no swap has run on the
   new one yet.
 - **Deposits** are live on testnet since 2026-10-18 (`docs/deployment.md`, October 18 deposits and
