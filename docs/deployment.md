@@ -258,7 +258,7 @@ each service refuses to start on anything of another network:
   `[reverse_funding] relay_adapt`; another one is refused.
 - The issuer on mainnet refuses `insecure-test`, whatever `allow_insecure` says.
 - `add-inventory --mint` is refused on mainnet, and the CLI's `--network` picks its lightwalletd.
-- The relayer on mainnet refuses to start without `[reveals] private_rpc`, below.
+- The relayer and the maker on mainnet refuse to start without `[reveals] private_rpc`, below.
 
 Claims and reverse refunds reveal a share in their calldata. One that landed after its window shut
 would revert with the share public, and the other side, whose window opens next, could take both
@@ -288,9 +288,11 @@ its turn comes, judged on the newest block by the later of its time and the wall
 window ran under the margin while it waited is refused with `400`, nothing sent, as on arrival. A
 reveal sent privately is never simulated, as a simulation would show the RPC its share: it carries a
 fixed gas limit. A send through the public mempool, a testnet reveal among them, goes again at the
-same nonce at the fees then when three blocks pass without it. The maker's own cancels and refunds
-go through Protect too once its config has `[reveals] private_rpc`, which `deploy/mainnet/maker.toml`
-stages commented out: the owner's call.
+same nonce at the fees then when three blocks pass without it. The maker's own cancels, refunds and
+reverse claims reveal its share too, so on mainnet they go through Protect as well, with the
+relayer's endpoint and builders: `[reveals] private_rpc` in `deploy/mainnet/maker.toml`. The maker
+checks it as the relayer does and refuses to start on mainnet without it; its other contract calls
+then go through Protect with them, one at a time.
 
 Swaps use the Ironwood pool, which NU6.3 brought (mainnet height 3,428,143), so a maker on the
 pinned crates runs on mainnet. They schedule NU7 on testnet alone: before NU7 activates on mainnet,

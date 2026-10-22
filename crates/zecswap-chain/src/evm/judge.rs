@@ -10,9 +10,10 @@ use super::{Head, Reveal, Stage, Window, Windows};
 /// claim sent on a ready a reorganisation drops lands reverted, its share public, the swap the
 /// maker's to cancel.
 pub const READY_DEPTH: u64 = 2;
-/// Blocks above a reverse escrow's ready that make it final where the finalized block doesn't hold
-/// it yet: the maker's claim is sent only on a final ready, as its user can't sign one again.
-pub const FINAL_DEPTH: u64 = 64;
+/// Blocks a reverse escrow's ready must have above it before its maker's claim is revealed on it:
+/// its user can't sign the ready again, and a claim on one a reorganisation drops lands reverted,
+/// the maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
+pub const REVERSE_READY_DEPTH: u64 = 4;
 
 /// Why a reveal isn't sent now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub enum Refusal {
 pub enum Go {
     Now,
     /// Once the swap, read as of this block, is ready there: deep enough before `t0` for a forward
-    /// claim; for a reverse claim, that or ready as of the finalized block.
+    /// claim, and for a reverse one.
     OnceReadyAt(u64),
 }
 
@@ -81,7 +82,9 @@ pub fn reverse_claim(
     if !window.leaves(head.timestamp.max(wall), margin) {
         return Err(Refusal::TooSoon);
     }
-    Ok(Go::OnceReadyAt(head.number.saturating_sub(FINAL_DEPTH)))
+    Ok(Go::OnceReadyAt(
+        head.number.saturating_sub(REVERSE_READY_DEPTH),
+    ))
 }
 
 /// A reverse escrow's refund, its user's or a relayer's for it: `ready_signed_until` is the

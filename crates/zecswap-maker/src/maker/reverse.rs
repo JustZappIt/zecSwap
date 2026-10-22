@@ -460,10 +460,8 @@ impl Maker {
         Ok(())
     }
 
-    /// Claims a ready escrow whose ZEC deposit is spendable, once its ready is final and with
-    /// the reveal margin left before `t1`. The user's ready signature lives minutes: a ready a
-    /// reorganisation dropped could never be sent again, and a claim sent on it would revert with
-    /// the maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
+    /// Claims a ready escrow whose ZEC deposit is spendable, once its ready has
+    /// `REVERSE_READY_DEPTH` blocks above it and with the reveal margin left before `t1`.
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, operation = "advance_reverse_claim"), err(level = "warn"))]
     pub(super) async fn advance_reverse_claim(&self, swap: &ReverseSwap) -> Result<()> {
         let Some(snapshot) = self.wallet_snapshot(swap.account) else {
@@ -493,23 +491,12 @@ impl Maker {
         let Ok(Go::OnceReadyAt(deep)) = judged else {
             return Ok(());
         };
-        // Its user can't sign a ready again: claim only on one a finalized block holds, or one
-        // `FINAL_DEPTH` blocks deep. A finalized block from before the contract has no swap.
-        let ready = |then: Result<Option<OnChainSwap>, zecswap_chain::Error>| {
-            then.ok()
-                .flatten()
-                .is_some_and(|then| then.stage == Stage::Ready)
-        };
-        let finalized = self
+        let then = self
             .settlement
-            .swap_at(swap.id, &terms, BlockId::finalized());
-        if !ready(finalized.await) {
-            let then = self
-                .settlement
-                .swap_at(swap.id, &terms, BlockId::number(deep));
-            if !ready(then.await) {
-                return Ok(());
-            }
+            .swap_at(swap.id, &terms, BlockId::number(deep))
+            .await?;
+        if then.is_none_or(|then| then.stage != Stage::Ready) {
+            return Ok(());
         }
         let sent = self
             .settlement

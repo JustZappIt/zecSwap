@@ -124,6 +124,21 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// Reveals go through a private RPC that keeps them to itself until they land, and on
+    /// mainnet through nothing else: a cancel, refund or reverse claim that fails or is
+    /// reorganised away leaves the maker's share public.
+    pub fn check_reveals(&self) -> Result<()> {
+        match &self.reveals {
+            None => anyhow::ensure!(
+                self.network != Network::Mainnet,
+                "on mainnet cancels, refunds and reverse claims go through a revert-protecting private RPC: set [reveals] private_rpc"
+            ),
+            Some(reveals) => zecswap_chain::evm::check_keeps_secrets(&reveals.private_rpc)
+                .context("[reveals] private_rpc")?,
+        }
+        Ok(())
+    }
+
     pub fn lightwalletd(&self) -> &str {
         self.lightwalletd
             .as_deref()

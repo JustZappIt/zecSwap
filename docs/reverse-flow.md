@@ -29,11 +29,10 @@ a funding notification nor a reported ZEC transaction is proof that the other si
    independent relayer. Do not offer this action based only on maker progress. The contract
    takes a ready only before `t0`: sign none with less than its life left before `t0`, save its
    deadline before handing the signature out, and sign none once a refund was asked for.
-6. Once the ready is final, in a finalized block or with 64 blocks above it, the maker claims
-   before `t1`, revealing its share and crediting USDC to its inventory. The app reads and
-   verifies that share, combines it with its own, and sweeps ZEC home, to a never-used address:
-   the maker holds the joint viewing key. `depositZat` is the gross joint-account payment; the
-   receive sweep has its own Zcash fee.
+6. Once the ready has 4 blocks above it, the maker claims before `t1`, revealing its share and
+   crediting USDC to its inventory. The app reads and verifies that share, combines it with its
+   own, and sweeps ZEC home, to a never-used address: the maker holds the joint viewing key.
+   `depositZat` is the gross joint-account payment; the receive sweep has its own Zcash fee.
 
 ## Terms and the contract
 

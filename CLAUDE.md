@@ -121,8 +121,8 @@ bash reads it as it goes.
 - **Reveal judgements** are pure functions on one read, the swap at the newest block's hash
   (`Settlement::read`): `evm/judge.rs` and the maker's `policy::decide`. A window opens by the
   block's time and ends by the later of it and the wall clock, less the margin. Before `t0` a claim
-  needs a ready with `READY_DEPTH` (2) blocks above it; a reverse claim needs a final ready
-  (finalized, or `FINAL_DEPTH` 64 deep). The audit's 97 cases replay against them
+  needs a ready with `READY_DEPTH` (2) blocks above it; a reverse claim one with
+  `REVERSE_READY_DEPTH` (4) above it. The audit's 97 cases replay against them
   (`crates/zecswap-chain/tests/windows-spec-vectors.json`, `windows_spec.rs`, `policy::tests`).
 - **Contract identity.** Every service and client reads `MIN_WINDOW()` and `LATE_WINDOW()` and
   refuses the lock contract, whose six-word record alloy decodes silently under the four-word ABI.
@@ -133,8 +133,8 @@ bash reads it as it goes.
   (`cancelling`, never a ready after it); the client's ready signature deadlines and its refund
   request. The relayer holds a reverse refund while its own ready may land and never readies after
   a refund it sent. The client refuses a swap whose `t1` follows `t0` by under twice `CLAIM_MARGIN`.
-- **Protect.** The relayer's claims and refunds go through `[reveals] private_rpc`, required on
-  mainnet; the maker's cancels and refunds too where its config has one. Loading refuses any URL
+- **Protect.** The relayer's claims and refunds go through `[reveals] private_rpc`, and the maker's
+  cancels, refunds and reverse claims through its own; both are required on mainnet. Loading refuses any URL
   but Protect's default endpoint with `hint=hash` and its few safe parameters
   (`evm::check_keeps_secrets`). A private reveal is never simulated (fixed `REVEAL_GAS`) and holds
   its account until it mines or `blockRange` + 5 blocks pass (`503`, post again); a restarted
