@@ -145,6 +145,25 @@
         "errorLinesSinceRestart": 0,
         "liveSwap": "none yet"
       }
+    },
+    {
+      "at": "2026-10-22T20:13:15Z",
+      "sourceCommit": "98db2b61ced56f84e62d1881e5562a526f488f9a",
+      "mergedAs": "32cc6efca0f22589655eb2e61b00ec6d582e8570",
+      "release": "/opt/zecswap/releases/20261022-reverse-depth-98db2b6",
+      "previousRelease": "/opt/zecswap/releases/20261021-held-claims-47650c6",
+      "backup": "/var/backups/zecswap/20261022-reverse-depth-98db2b6",
+      "makerSha256": "0b3b89b9906b48d03c5fc3228df421fcb00e637ffa715063cfd29728c514be3c",
+      "relayerSha256": "16df58ac28ba7fc60214c30f01b92d40d2d6e8d72acf1852ad7e92aa2e1ca4c1",
+      "changes": "the maker claims a reverse escrow once the user's ready has 4 blocks above it, not once it is final (64 blocks); on mainnet it refuses to start without [reveals] private_rpc",
+      "config": "unchanged; the testnet maker has no [reveals] and keeps the public mempool",
+      "validation": {
+        "publicMakerHealth": 204,
+        "publicMakerInfo": "testnet, chain 11155111, this contract, contractKind windows, reverse enabled",
+        "serviceRestarts": 0,
+        "warningsInTheFirst45Seconds": 0,
+        "liveSwap": "none yet"
+      }
     }
   ]
 }

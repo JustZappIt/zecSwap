@@ -22,13 +22,16 @@ vectors). The original design and threat model are in
   2026-10-21; "How it behaves" below). All eleven live scenarios pass on a fork of Sepolia on the
   final code (`.testnet/e2e-windows-fork-final.log`). The hosted testnet runs it since 00:01 UTC
   that day: `0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`, 30-minute minimum and 1-hour late windows,
-  the maker and relayer on a build of `a28ab10` since 03:22 (`docs/deployment.md`, October 20
-  windows contract; `deployments/sepolia-windows.json`). A stress run that day found every limit
+  the maker on a build of `98db2b6` (#22) since 2026-10-22 20:13 and the relayer on `47650c6`'s
+  (#20) since 02:44 that day (`docs/deployment.md`, October 20 windows contract;
+  `deployments/sepolia-windows.json`). A stress run that day found every limit
   answering as designed (`.testnet/stress-windows-20261021/SUMMARY.md`).
-- **Mainnet** is a beta on the lock contract `0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D` and its
-  release (`deploy/mainnet/`, `deployments/mainnet-beta.json`). Builds from main refuse the lock
-  contract, so mainnet moves only with a windows contract of its own (`scripts/deploy-contract.sh`),
-  after the owner decides the audit's three open questions (plan, open question 4).
+- **Mainnet** runs a windows contract of its own since 2026-10-22 21:21 UTC:
+  `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows, the maker
+  and relayer testnet's own builds with every reveal through Flashbots Protect, held claims off
+  (`docs/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
+  The lock contract (`mainnet-beta.json`) is retired, its inventory moved; no swap has run on the
+  new one yet.
 - **Deposits** are live on testnet since 2026-10-18 (`docs/deployment.md`, October 18 deposits and
   a new test token) and on mainnet since 2026-10-19 through Flashbots Protect (October 19 mainnet
   deposits). Mainnet's minimum stays 1 USDC for now (the owner's call;

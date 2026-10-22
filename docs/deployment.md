@@ -84,24 +84,26 @@ At 00:00 UTC on October 21 `deploy/testnet/switch-windows.sh` checked the maker'
 the windows, waited for no live swap, stopped the maker and the relayer, and moved the maker's
 2,188.628126 tUSD of inventory from the terms-hash contract to this one (blocks 11,958,722 to
 11,958,724). Both configs name the new contract. The maker started on a fresh store, keeping its
-keys, root secret, wallets and spent tokens. The services have since moved to three later builds of
-main, each time with no swap live and the issuer byte for byte the same:
+keys, root secret, wallets and spent tokens. The services have since moved to four later builds of
+main, the issuer byte for byte the same each time:
 
 | Since (UTC) | Release | What it brought |
 | --- | --- | --- |
 | Oct 21 00:01 | `20261020-windows-0de4c06` | The windows contract |
 | Oct 21 01:11 | `20261021-windows-e7c5467` | Reveals judged as the port spec's 97 cases decide: a claim before `t0` waits for 12 blocks above its ready, a reverse claim takes a ready 64 blocks deep as final, and the relayer never readies after a refund it sent |
 | Oct 21 03:22 | `20261021-wire-fields-a28ab10` | `contractKind`, `minWindow` and `lateWindow` in the relayer's terms and the maker's info, and `lateWindow` in a forward accept |
-| Oct 22 02:44 | `20261021-held-claims-47650c6`, now `/opt/zecswap/current` | The relayer alone: it holds forward claims posted to `/v1/claim/hold` until their window opens ([Held claims](#held-claims); its config gained `[held_claims]`), a claim before `t0` waits for 2 blocks above its ready, not 12, and the gateway counts the new route among a swap's requests |
+| Oct 22 02:44 | `20261021-held-claims-47650c6` | The relayer alone: it holds forward claims posted to `/v1/claim/hold` until their window opens ([Held claims](#held-claims); its config gained `[held_claims]`), a claim before `t0` waits for 2 blocks above its ready, not 12, and the gateway counts the new route among a swap's requests |
+| Oct 22 20:13 | `20261022-reverse-depth-98db2b6`, now `/opt/zecswap/current` | The maker alone: it claims a reverse escrow once the user's ready has 4 blocks above it, about 48 seconds, instead of once it is final, 64 blocks (#22) |
 
 A swap through the public gateway ran end to end on each of the first three builds (`0x6f522efa`,
 `0x002ed897`, `0xd85e3cd3`), paying into the wallet's Railgun balance; the manifest lists their
 transactions. The held-claims build has had none yet: through the gateway its new route answered
-`422` to an empty body, and its monitor shows no claim held. A
-stress run from 01:35 to 02:20 UTC found every limit answering as designed. zapp-dashboard reads both
-contracts since `866df80` and pins this one since `6b510a3`, as does `BRIDGE_TESTNET_CONTRACT`. App
-builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and the
-maker's info and the relayer's terms name the new contract.
+`422` to an empty body, and its monitor shows no claim held. Nor has the reverse-depth build: its
+maker came back healthy with no warnings, and its info through the gateway names this contract with
+reverse swaps on. A stress run from 01:35 to 02:20 UTC found every limit answering as designed.
+zapp-dashboard reads both contracts since `866df80` and pins this one since `6b510a3`, as does
+`BRIDGE_TESTNET_CONTRACT`. App builds that speak locks can no longer swap on testnet: the relayer
+has no lock routes, and the maker's info and the relayer's terms name the new contract.
 
 To undo an upgrade, point `/opt/zecswap/current` at the release in
 `/var/backups/zecswap/<release>/previous-current` and restart the maker and relayer. Undoing the
@@ -146,6 +148,55 @@ Rolling back then moves the inventory back on chain:
 5. Point `/opt/zecswap/current` at the release `previous-current` names, and start both.
 
 Deposits then stop. Their journal stays in `/var/lib/zecswap-relayer/deposits.sqlite`.
+
+## October 22 mainnet windows contract
+
+Mainnet moved from the lock contract to a windows contract of its own, with every reveal of the
+maker's and the relayer's through Flashbots Protect. At 21:13 UTC `scripts/deploy-contract.sh`
+(`32cc6ef`) deployed it from the maker's account:
+`0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, in block 26,250,774, with a one-hour minimum window
+and a 24-hour late window, paying into Railgun's proxy. It cost 3,852,838 gas, 0.00045 ETH at a
+0.005 gwei tip. On an anvil fork of mainnet the same deployment, from the maker at the same nonce,
+landed at the same address with the same runtime code and vault logic, byte for byte, and the
+contract's fork tests passed against real USDC, Railgun and the sanctions oracle. Its source is not
+verified on Etherscan, the owner's call.
+
+At 21:20 UTC `.testnet/stage-mainnet-windows/switch-mainnet.sh` checked:
+- the release, both configs and the running binaries were as recorded;
+- the new contract's windows and Railgun, and that it held nothing;
+- that Protect answered for chain 1;
+- that the lock contract held exactly the maker's inventory, so nobody else's money stayed behind.
+
+It found no live swap, then stopped the maker and the relayer. The previous maker withdrew the
+131.501012 USDC of inventory to its own account (block 26,250,808), and the new one deposited it
+into the windows contract through Protect (blocks 26,250,809 and 26,250,810). The move cost
+0.000026 ETH. Both services restarted at 21:21 on `20261022-windows-98db2b6`, now
+`/opt/zecswap-mainnet/current`: testnet's own maker (`98db2b6`) and relayer (`47650c6`), with the
+issuer byte for byte; the issuer's service stays off until tokens are on.
+
+The configs gained:
+- in both, the contract and `[reveals]`, through Protect with the relayer's builders;
+- in the maker, `t0_after` 5400 and `t1_after` 9000, so `t0` is 1.5 h after an open and `t1` 1 h
+  after it, and `t0_margin` 3600;
+- in the maker, gas alerts at 0.0015 ETH (recovering at 0.003).
+
+Held claims stay off on mainnet, and the gateway is unchanged. At start the relayer topped its
+claims account up by 0.01 ETH, the headroom its reveals keep.
+
+Afterwards the lock contract and its three payout vaults held 0 USDC, the windows contract the whole
+inventory, and the maker's account its 1.995 USDC as before. Through the Worker the maker's health
+answered 204, and its info and the relayer's terms named the new contract, `contractKind:
+"windows"`. Neither service restarted or warned. zapp-dashboard pins the contract since `8007fb2`.
+No swap has run on it yet. `deployments/mainnet-windows.json` records the transactions;
+`mainnet-beta.json` is retired.
+
+To undo the switch before any swap opens on the new contract:
+1. Stop both services.
+2. Run `withdraw-inventory all` under the current maker config.
+3. Restore `maker-config.toml`, `relayer-config.toml` and the retired store
+   (`retired-maker.sqlite`) from `/var/backups/zecswap-mainnet/20261022-windows-98db2b6`.
+4. Point `/opt/zecswap-mainnet/current` at the release `previous-current` names.
+5. Run `add-inventory` with the amount withdrawn under the restored config, and start both.
 
 ## October 19 mainnet deposits
 
