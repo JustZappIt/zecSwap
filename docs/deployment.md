@@ -84,17 +84,20 @@ At 00:00 UTC on October 21 `deploy/testnet/switch-windows.sh` checked the maker'
 the windows, waited for no live swap, stopped the maker and the relayer, and moved the maker's
 2,188.628126 tUSD of inventory from the terms-hash contract to this one (blocks 11,958,722 to
 11,958,724). Both configs name the new contract. The maker started on a fresh store, keeping its
-keys, root secret, wallets and spent tokens. The services have since moved to two later builds of
+keys, root secret, wallets and spent tokens. The services have since moved to three later builds of
 main, each time with no swap live and the issuer byte for byte the same:
 
 | Since (UTC) | Release | What it brought |
 | --- | --- | --- |
 | Oct 21 00:01 | `20261020-windows-0de4c06` | The windows contract |
 | Oct 21 01:11 | `20261021-windows-e7c5467` | Reveals judged as the port spec's 97 cases decide: a claim before `t0` waits for 12 blocks above its ready, a reverse claim takes a ready 64 blocks deep as final, and the relayer never readies after a refund it sent |
-| Oct 21 03:22 | `20261021-wire-fields-a28ab10`, now `/opt/zecswap/current` | `contractKind`, `minWindow` and `lateWindow` in the relayer's terms and the maker's info, and `lateWindow` in a forward accept |
+| Oct 21 03:22 | `20261021-wire-fields-a28ab10` | `contractKind`, `minWindow` and `lateWindow` in the relayer's terms and the maker's info, and `lateWindow` in a forward accept |
+| Oct 22 02:44 | `20261021-held-claims-47650c6`, now `/opt/zecswap/current` | The relayer alone: it holds forward claims posted to `/v1/claim/hold` until their window opens ([Held claims](#held-claims); its config gained `[held_claims]`), a claim before `t0` waits for 2 blocks above its ready, not 12, and the gateway counts the new route among a swap's requests |
 
-A swap through the public gateway ran end to end on each build (`0x6f522efa`, `0x002ed897`,
-`0xd85e3cd3`), paying into the wallet's Railgun balance; the manifest lists their transactions. A
+A swap through the public gateway ran end to end on each of the first three builds (`0x6f522efa`,
+`0x002ed897`, `0xd85e3cd3`), paying into the wallet's Railgun balance; the manifest lists their
+transactions. The held-claims build has had none yet: through the gateway its new route answered
+`422` to an empty body, and its monitor shows no claim held. A
 stress run from 01:35 to 02:20 UTC found every limit answering as designed. zapp-dashboard reads both
 contracts since `866df80` and pins this one since `6b510a3`, as does `BRIDGE_TESTNET_CONTRACT`. App
 builds that speak locks can no longer swap on testnet: the relayer has no lock routes, and the
@@ -444,7 +447,9 @@ its window opens: on a ready 2 blocks deep, from `t0` where the maker never read
 `t1 + LATE_WINDOW` where the maker didn't refund in its late window. The payout keeps the fee the
 claim was held with, though that fee's quote expires meanwhile. A held claim and its share are
 deleted, the journal overwriting what it deletes, once its swap is paid out or refunded. Without
-`[held_claims]` the route answers `400`.
+`[held_claims]` the route answers `400`. The testnet relayer holds claims since October 22
+(`20261021-held-claims-47650c6`, [October 20](#october-20-windows-contract)); no wallet has handed
+one over yet.
 
 The relayer then holds each user's share long before the claim reveals it. It can't spend the
 deposit with it, as the joint account's `nk` and `rivk` go only to the maker, but handed to the

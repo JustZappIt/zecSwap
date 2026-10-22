@@ -127,6 +127,24 @@
           "shielded": "900000"
         }
       }
+    },
+    {
+      "at": "2026-10-22T02:43:42Z",
+      "sourceCommit": "47650c650bd03ac93ed39bcaab7f40416bdf66ad",
+      "release": "/opt/zecswap/releases/20261021-held-claims-47650c6",
+      "previousRelease": "/opt/zecswap/releases/20261021-wire-fields-a28ab10",
+      "backup": "/var/backups/zecswap/20261021-held-claims-47650c6",
+      "makerSha256": "759ed49740fb6c7e74af3fdfc61c8f71d09a74d1c8e6fe8b4061e4ad693e23bd",
+      "relayerSha256": "16df58ac28ba7fc60214c30f01b92d40d2d6e8d72acf1852ad7e92aa2e1ca4c1",
+      "changes": "the relayer holds forward claims posted to /v1/claim/hold until their window opens and sends them then, at the fee they were held with; a claim before t0 waits for 2 blocks above its ready, not 12; the gateway counts the new route among a swap's requests",
+      "relayerConfig": "[held_claims] journal = /var/lib/zecswap-relayer/held-claims.sqlite, appended; the maker's config and the maker unchanged",
+      "gateway": "deploy/nginx.conf of 47650c6",
+      "validation": {
+        "holdRouteThroughGateway": "422 invalidRequest on an empty body, the relayer's own answer",
+        "heldClaims": {"held": 0, "sent": 0, "dropped": 0},
+        "errorLinesSinceRestart": 0,
+        "liveSwap": "none yet"
+      }
     }
   ]
 }
