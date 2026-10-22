@@ -9,7 +9,7 @@ use super::{Head, Reveal, Stage, Window, Windows};
 /// Blocks a ready must have above it before a forward claim is revealed on it ahead of `t0`: a
 /// claim sent on a ready a reorganisation drops lands reverted, its share public, the swap the
 /// maker's to cancel.
-pub const READY_DEPTH: u64 = 12;
+pub const READY_DEPTH: u64 = 2;
 /// Blocks above a reverse escrow's ready that make it final where the finalized block doesn't hold
 /// it yet: the maker's claim is sent only on a final ready, as its user can't sign one again.
 pub const FINAL_DEPTH: u64 = 64;
