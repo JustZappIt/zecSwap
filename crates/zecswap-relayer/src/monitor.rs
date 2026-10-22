@@ -10,9 +10,12 @@ use alloy_primitives::Address;
 use serde::Serialize;
 use zecswap_api::server::MonitorToken;
 
-/// Every operation, by the name its requests are logged under.
-const OPERATIONS: [&str; 11] = [
+/// Every operation, by the name its requests are logged under: `held_claim` counts the sends of
+/// held claims, which no request makes.
+const OPERATIONS: [&str; 13] = [
     "claim",
+    "hold_claim",
+    "held_claim",
     "payout",
     "rescue",
     "fund_reverse",
@@ -72,6 +75,8 @@ pub struct MonitorSnapshot {
     gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
     /// What every account of the relayer's has asked the RPC since it started.
     rpc: zecswap_chain::evm::RpcReport,
+    /// None where the relayer holds no claims.
+    held_claims: Option<HeldClaims>,
 }
 
 #[derive(Serialize)]
@@ -105,6 +110,19 @@ pub(crate) struct Deployment {
     pub(crate) fees: Fees,
     pub(crate) gas_alerts: Option<zecswap_alerts::GasAlertsStatus>,
     pub(crate) rpc: zecswap_chain::evm::RpcReport,
+    pub(crate) held_claims: Option<HeldClaims>,
+}
+
+/// The claims the relayer holds, by count alone.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HeldClaims {
+    /// Held now, waiting for their window or their payout.
+    pub(crate) held: u64,
+    /// Sent since the relayer started.
+    pub(crate) sent: u64,
+    /// Deleted unsent since the relayer started, their swap refunded.
+    pub(crate) dropped: u64,
 }
 
 impl Monitor {
@@ -192,6 +210,7 @@ impl Monitor {
             last_failure: state.last_failure,
             gas_alerts: deployment.gas_alerts,
             rpc: deployment.rpc,
+            held_claims: deployment.held_claims,
         }
     }
 }

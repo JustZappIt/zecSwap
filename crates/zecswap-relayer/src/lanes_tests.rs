@@ -35,6 +35,7 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
             }),
             gas_alerts: None,
             deposits: None,
+            held_claims: None,
         },
         account: key.address(),
         domain: Domain {
@@ -55,6 +56,7 @@ fn relayer_on(url: &str, key: &PrivateKeySigner) -> Relayer {
 
         deposits: None,
         pricing: None,
+        held: None,
         history: None,
     }
 }

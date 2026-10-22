@@ -58,7 +58,7 @@ vectors). The original design and threat model are in
 | `crates/zecswap-api` | The maker's and relayer's wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (open, verify on-chain, deposit, claim or refund), forward and reverse (`reverse.rs`), and a wallet's deposits (`Depositor`): the reference the apps mirror |
 | `crates/zecswap-maker` | Maker service: quote API (axum), SQLite store, watchtower; `policy.rs` is the pure forward decision |
-| `crates/zecswap-relayer` | Sends what users with no Ethereum account sign for, for one token and maker: claims and refunds (`[reveals]`, through Protect), payouts, readies, fundings, wallets' Railgun sends (`[railgun_sends]`, `docs/railgun-sends.md`) and deposits (`[deposits]`, `docs/deposits.md`); never run by a maker |
+| `crates/zecswap-relayer` | Sends what users with no Ethereum account sign for, for one token and maker: claims and refunds (`[reveals]`, through Protect), claims held until their window opens (`[held_claims]`, `held.rs`), payouts, readies, fundings, wallets' Railgun sends (`[railgun_sends]`, `docs/railgun-sends.md`) and deposits (`[deposits]`, `docs/deposits.md`); never run by a maker |
 | `crates/zecswap-alerts` | Telegram alerts for the maker and relayer: bot client, a durable queue in each service's SQLite, gas alerts for the account each sends from |
 | `crates/zecswap-prices` | ZEC, USDC and ETH prices: `Feed` (providers in order, for quotes and fees) and `History` (Alchemy's five-minute candles, for costs recorded after the fact) |
 | `crates/zecswap-tokens`, `crates/zecswap-issuer` | Privacy Pass tokens (RFC 9577/9578) an accept spends, and the issuer that signs each attested Android install a day's tokens (`docs/tokens.md`) |
@@ -121,7 +121,7 @@ bash reads it as it goes.
 - **Reveal judgements** are pure functions on one read, the swap at the newest block's hash
   (`Settlement::read`): `evm/judge.rs` and the maker's `policy::decide`. A window opens by the
   block's time and ends by the later of it and the wall clock, less the margin. Before `t0` a claim
-  needs a ready with `READY_DEPTH` (12) blocks above it; a reverse claim needs a final ready
+  needs a ready with `READY_DEPTH` (2) blocks above it; a reverse claim needs a final ready
   (finalized, or `FINAL_DEPTH` 64 deep). The audit's 97 cases replay against them
   (`crates/zecswap-chain/tests/windows-spec-vectors.json`, `windows_spec.rs`, `policy::tests`).
 - **Contract identity.** Every service and client reads `MIN_WINDOW()` and `LATE_WINDOW()` and
@@ -151,6 +151,12 @@ bash reads it as it goes.
   rescues, keeps each lane at `top_up_transactions` (8) of its largest sends and takes back what's
   over twice that. Every send but a private reveal is simulated before its turn, and wallets'
   calldata must be canonical ABI (`evm/canonical.rs`).
+- **Held claims.** With `[held_claims]` the relayer takes a forward claim at `POST /v1/claim/hold`
+  once the deposit is out, checked as `/v1/claim` checks one but for its window, keeps it in its
+  journal, and sends it as `/v1/claim` would the moment the window opens, at the fee it was held
+  with (`held.rs`, `docs/deployment.md`, Held claims). It holds the share long before the claim:
+  the owner accepts that trust. Nothing logs or shows a share, and a held claim is deleted once its
+  swap is paid out or refunded. Existing routes are unchanged: older clients deny unknown fields.
 - **Turns.** A swap's relayer requests take turns, each running to its end in a task of its own
   (`Relayer::in_turn`), and each one-time step goes out once (`send_once`: `503` while one sent
   may land, `200` with nothing sent once landed). Every relayer `503` has `Retry-After`; the client

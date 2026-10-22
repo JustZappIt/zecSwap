@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
     tokio::spawn(relayer.clone().run_costs());
     tokio::spawn(relayer.clone().run_top_ups());
     tokio::spawn(relayer.clone().run_alerts());
+    tokio::spawn(relayer.clone().run_held_claims());
     tokio::spawn(zecswap_chain::evm::log_usage(
         relayer.rpc_meter(),
         std::time::Duration::from_secs(3600),

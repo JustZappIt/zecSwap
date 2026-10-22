@@ -51,6 +51,14 @@ top_up_transactions = 8
 # [reveals]
 # private_rpc = "https://rpc.flashbots.net?hint=hash&builder=Titan&builder=Quasar&builder=Eureka&blockRange=10"
 
+# Forward claims posted to /v1/claim/hold once their deposit is out, kept and sent the moment
+# their window opens, so the user may leave the app; refused when absent. Each is kept with the
+# user share it reveals, which given to the maker early would let the maker refund and sweep the
+# deposit too: keep the journal the relayer's alone. A claim is deleted, its share overwritten,
+# once its swap is paid out or refunded.
+# [held_claims]
+# journal = "/var/lib/zecswap-relayer/held-claims.sqlite"
+
 # Initial Railgun-to-escrow gas sponsorship. Disabled when absent.
 # Its derived funding account pays this gas, topped up from RELAYER_PRIVATE_KEY's: fund that one.
 # Each funding transfers `fee` escrow-token base units to that account in the same transaction.

@@ -5,7 +5,8 @@
 //! `railgun_sends` it also sends wallets' own Railgun transactions as their broadcaster, paid
 //! by a fee note to its own Railgun wallet (`sends`), and with `deposits` it shields deposit
 //! addresses' public tokens into their owners' Railgun balances on their EIP-3009
-//! authorizations, for a fee they commit to (`deposits`).
+//! authorizations, for a fee they commit to (`deposits`). With `held_claims` it keeps forward
+//! claims handed over before their window opens, and sends each the moment it does (`held`).
 
 pub mod api;
 mod deposits;
@@ -13,6 +14,9 @@ mod deposits;
 mod deposits_tests;
 #[cfg(test)]
 mod funding_tests;
+mod held;
+#[cfg(test)]
+mod held_tests;
 mod lanes;
 #[cfg(test)]
 mod lanes_tests;
@@ -57,9 +61,11 @@ use zecswap_core::{Domain, SecretShare, signer};
 use zecswap_railgun::{Keys, ShieldNote};
 
 pub use deposits::DepositsSnapshot;
+pub use held::Holding;
 pub use lanes::drain_lanes;
 pub use sends::{Sending, SendsSnapshot};
 
+use crate::held::Held;
 use crate::lanes::Lanes;
 use crate::pricing::SwapFee;
 use crate::turns::{Step, Steps, Turns};
@@ -119,6 +125,17 @@ pub struct Config {
     /// Railgun balances, through the Deposits contract.
     #[serde(default)]
     pub deposits: Option<DepositsConfig>,
+    /// Opt-in holding of forward claims posted before their window opens (`/v1/claim/hold`).
+    #[serde(default)]
+    pub held_claims: Option<HeldClaimsConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeldClaimsConfig {
+    /// The SQLite file each held claim is kept in, the user share it reveals included, until its
+    /// swap is paid out or refunded.
+    pub journal: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]
@@ -345,6 +362,14 @@ impl RelayerError {
 
 type Result<T> = std::result::Result<T, RelayerError>;
 
+/// A forward claim's window, as the relayer judges it.
+pub(crate) enum ClaimWindow {
+    Open,
+    /// Before `t0`, on a ready not yet `READY_DEPTH` blocks deep.
+    Shallow,
+    Shut(Refusal),
+}
+
 pub struct Relayer {
     config: Config,
     account: Address,
@@ -358,6 +383,7 @@ pub struct Relayer {
     monitor: monitor::Monitor,
     sends: Option<sends::Sends>,
     deposits: Option<deposits::Deposits>,
+    held: Option<Held>,
     /// With `reverse_funding`: what a funding must be, its fee the floor.
     funding: Option<FundingPolicy>,
     /// With `providers`: every fee priced by gas.
@@ -455,6 +481,15 @@ impl Relayer {
             ),
             None => None,
         };
+        let held = match &config.held_claims {
+            Some(held) => {
+                let held = Held::open(&held.journal, domain.chain_id, config.contract)
+                    .context("opening the held claims' journal")?;
+                info!(held = held.count(), "holding claims");
+                Some(held)
+            }
+            None => None,
+        };
         let pricing = (!config.providers.is_empty())
             .then(|| {
                 pricing::GasPricing::new(
@@ -489,6 +524,7 @@ impl Relayer {
             monitor: monitor::Monitor::new(MonitorToken::from_env("RELAYER_MONITOR_TOKEN")?),
             sends,
             deposits,
+            held,
             funding,
             pricing,
             history,
@@ -524,12 +560,17 @@ impl Relayer {
                     }
                 });
             }
-            Err(error) => match error.failure_kind() {
-                None => self.monitor.refused(operation),
-                Some(kind) => self.monitor.failed(operation, kind),
-            },
+            Err(error) => self.unsent(operation, error),
         }
         result
+    }
+
+    /// Counts a request for `operation` that sent nothing, refused or failed.
+    fn unsent(&self, operation: &'static str, error: &RelayerError) {
+        match error.failure_kind() {
+            None => self.monitor.refused(operation),
+            Some(kind) => self.monitor.failed(operation, kind),
+        }
     }
 
     /// What every account of the relayer's has asked the RPC.
@@ -573,6 +614,7 @@ impl Relayer {
                     .is_some_and(|sends| sends.telegram.enabled());
                 alerts.status(enabled, "Relayer", self.account)
             }),
+            held_claims: self.held.as_ref().map(Held::snapshot),
         })
     }
 
@@ -707,17 +749,7 @@ impl Relayer {
     /// still to be.
     #[tracing::instrument(skip_all, fields(swap_id = %request.swap_id, operation = "claim"), err(level = "warn"))]
     pub async fn claim(&self, request: Claim) -> Result<Sent> {
-        if request.payout.swap_id != request.swap_id || request.payout.terms != request.terms {
-            return Err(RelayerError::Rejected(
-                "the claim and its payout name different swaps or terms".into(),
-            ));
-        }
-        let (swap, terms, head) = self.railgun_swap(request.swap_id, &request.terms).await?;
-        let secret = SecretShare::from_be_bytes(&request.secret.0)
-            .map_err(|e| RelayerError::Rejected(e.to_string()))?;
-        if secret.public() != swap.user_share {
-            return Err(RelayerError::Rejected("the share is not the swap's".into()));
-        }
+        let (swap, terms, head, secret) = self.read_claim(&request).await?;
         match swap.stage {
             Stage::Claimed => return self.payout(request.payout).await,
             Stage::Open | Stage::Ready => {}
@@ -736,33 +768,105 @@ impl Relayer {
                 "Railgun is not accepting payouts now".into(),
             ));
         }
-        let id = request.swap_id;
+        let send = self.send_claim(request.swap_id, &terms, &secret, &request.payout, &note);
+        let (claim, payout) = Box::pin(send).await?;
+        Ok(Sent {
+            transactions: claim.into_iter().chain(payout).collect(),
+        })
+    }
+
+    /// The swap a claim is for as of the newest block, its terms, that block, and the share the
+    /// claim reveals: refused unless the claim and its payout name the same swap and terms, the
+    /// swap is one the relayer serves, paying into Railgun, and the share is its user's.
+    async fn read_claim(
+        &self,
+        request: &Claim,
+    ) -> Result<(OnChainSwap, zecswap_core::Terms, Head, SecretShare)> {
+        if request.payout.swap_id != request.swap_id || request.payout.terms != request.terms {
+            return Err(RelayerError::Rejected(
+                "the claim and its payout name different swaps or terms".into(),
+            ));
+        }
+        let (swap, terms, head) = self.railgun_swap(request.swap_id, &request.terms).await?;
+        let secret = SecretShare::from_be_bytes(&request.secret.0)
+            .map_err(|e| RelayerError::Rejected(e.to_string()))?;
+        if secret.public() != swap.user_share {
+            return Err(RelayerError::Rejected("the share is not the swap's".into()));
+        }
+        Ok((swap, terms, head, secret))
+    }
+
+    /// Reveals the user share in a window judged open, from the claims lane and once, then pays
+    /// out: the claim, unless one sent before landed, and the payout, unless it failed or one
+    /// sent before landed. A payout that failed leaves the swap claimed, for `payout` to retry.
+    async fn send_claim(
+        &self,
+        id: B256,
+        terms: &zecswap_core::Terms,
+        secret: &SecretShare,
+        payout: &Payout,
+        note: &ShieldNote,
+    ) -> Result<(Option<B256>, Option<B256>)> {
         let claims = &self.lanes.claims;
         let sent = self
-            .send_once(id, Step::Claim, claims, claims.claim(id, &terms, &secret))
+            .send_once(id, Step::Claim, claims, claims.claim(id, terms, secret))
             .await;
         let claim = self
-            .unless_landed(id, &terms, sent, |swap| swap.stage == Stage::Claimed)
+            .unless_landed(id, terms, sent, |swap| swap.stage == Stage::Claimed)
             .await?;
         if let Some(tx) = claim {
             info!(id = %id, %tx, "claimed");
         }
-        let mut transactions: Vec<B256> = claim.into_iter().collect();
-        match self.send_payout(&request.payout, &terms, &note).await {
-            Ok(tx) => transactions.extend(tx),
+        let paid = match self.send_payout(payout, terms, note).await {
+            Ok(tx) => tx,
             Err(e) => {
-                warn!(id = %request.swap_id, "the payout after the claim failed: {e:#}");
+                warn!(id = %id, "the payout after the claim failed: {e:#}");
                 self.monitor
                     .failed("payout", e.failure_kind().unwrap_or("internal"));
+                None
             }
-        }
-        Ok(Sent { transactions })
+        };
+        Ok((claim, paid))
     }
 
-    /// That the swap's claim window is open as of the newest block and leaves `claim_margin` by
-    /// the later of its time and the wall clock, and that before `t0` the ready that opened it is
+    /// The swap's claim window as of the newest block: open if it leaves `claim_margin` by the
+    /// later of its time and the wall clock and, before `t0`, the ready that opened it is
     /// `READY_DEPTH` blocks deep: a claim sent on a ready a reorganisation then drops lands
     /// reverted, its share public, with the swap the maker's to cancel.
+    async fn claim_window(
+        &self,
+        id: B256,
+        swap: &OnChainSwap,
+        terms: &zecswap_core::Terms,
+        head: Head,
+    ) -> Result<ClaimWindow> {
+        let deadlines = (swap.t0, swap.t1);
+        let margin = self.config.claim_margin;
+        let judged = judge::forward_claim(
+            self.windows,
+            swap.stage,
+            deadlines,
+            &head,
+            wall_now(),
+            margin,
+        );
+        Ok(match judged {
+            Ok(Go::Now) => ClaimWindow::Open,
+            Ok(Go::OnceReadyAt(block)) => {
+                let then = self
+                    .settlement
+                    .swap_at(id, terms, BlockId::number(block))
+                    .await?;
+                match then {
+                    Some(then) if then.stage == Stage::Ready => ClaimWindow::Open,
+                    _ => ClaimWindow::Shallow,
+                }
+            }
+            Err(refusal) => ClaimWindow::Shut(refusal),
+        })
+    }
+
+    /// That the swap's claim window is open (`claim_window`).
     async fn check_claim_window(
         &self,
         id: B256,
@@ -770,37 +874,19 @@ impl Relayer {
         terms: &zecswap_core::Terms,
         head: Head,
     ) -> Result<()> {
-        let deadlines = (swap.t0, swap.t1);
-        let margin = self.config.claim_margin;
-        match judge::forward_claim(
-            self.windows,
-            swap.stage,
-            deadlines,
-            &head,
-            wall_now(),
-            margin,
-        ) {
-            Ok(Go::Now) => Ok(()),
-            Ok(Go::OnceReadyAt(block)) => {
-                let then = self
-                    .settlement
-                    .swap_at(id, terms, BlockId::number(block))
-                    .await?;
-                if then.is_none_or(|then| then.stage != Stage::Ready) {
-                    return Err(RelayerError::Busy(
-                        "the swap's ready is not yet deep enough to claim on before t0",
-                        30,
-                    ));
-                }
-                Ok(())
-            }
-            Err(Refusal::MakersUntil(late)) => Err(RelayerError::Rejected(format!(
+        match self.claim_window(id, swap, terms, head).await? {
+            ClaimWindow::Open => Ok(()),
+            ClaimWindow::Shallow => Err(RelayerError::Busy(
+                "the swap's ready is not yet deep enough to claim on before t0",
+                30,
+            )),
+            ClaimWindow::Shut(Refusal::MakersUntil(late)) => Err(RelayerError::Rejected(format!(
                 "from t1 the swap is its maker's to refund; it can be claimed again from {late}"
             ))),
-            Err(Refusal::TooSoon) => Err(RelayerError::Rejected(
+            ClaimWindow::Shut(Refusal::TooSoon) => Err(RelayerError::Rejected(
                 "the claim's window ends too soon to land a claim in; nothing was sent".into(),
             )),
-            Err(_) => Err(RelayerError::Rejected(
+            ClaimWindow::Shut(_) => Err(RelayerError::Rejected(
                 "the swap can be claimed once ready, or from t0".into(),
             )),
         }

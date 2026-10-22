@@ -105,6 +105,7 @@ fn relayer(
             railgun_sends: None,
             gas_alerts: None,
             deposits: None,
+            held_claims: None,
         },
         account: key.address(),
         domain: Domain {
@@ -133,6 +134,7 @@ fn relayer(
 
         deposits: None,
         pricing: None,
+        held: None,
         history: None,
     }
 }
