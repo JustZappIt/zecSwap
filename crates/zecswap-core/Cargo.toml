@@ -4,6 +4,7 @@ description = "Split-key primitives for shielded ZEC atomic swaps settled agains
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

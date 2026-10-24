@@ -4,6 +4,7 @@ description = "ZecSwap maker: quotes, opens swaps, watches deposits and sweeps c
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

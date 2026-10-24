@@ -4,6 +4,7 @@ description = "Sends the transactions of ZecSwap users with no account on the se
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

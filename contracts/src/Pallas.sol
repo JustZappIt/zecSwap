@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
 
 /// @notice Pallas arithmetic for checking revealed Orchard spend-key shares.
