@@ -73,9 +73,9 @@ Account-wide usage includes any other services sending to the same stack.
 See [Grafana pricing](https://grafana.com/pricing/) and
 [trial-to-Free account information](https://grafana.com/docs/grafana-cloud/learn-and-build/get-started/set-up-your-account/).
 
-Alloy is capped at 5% of one CPU, 128 MiB memory, zero swap, low CPU/I/O priority,
-and one Go processor. Its Go memory target is 64 MiB; cgroup memory pressure starts
-at 96 MiB. Logs use a 64 KiB batch with bounded retries, with no log WAL. Its journal
+Alloy is capped at 15% of one CPU, 192 MiB memory, zero swap, low CPU/I/O priority,
+and one Go processor. Its Go memory target is 128 MiB; cgroup memory pressure starts
+at 160 MiB (raised on 2026-10-20, see below). Logs use a 64 KiB batch with bounded retries, with no log WAL. Its journal
 cursors, one a reader, occupy a private **8 MiB maximum RAM-only, nonswappable filesystem**.
 There is no persistent telemetry spool or local Grafana/Loki/Prometheus database.
 The pinned Alloy executable itself takes about 545 MiB of disk; the download archive
@@ -86,15 +86,18 @@ if its readers return, never drops mainnet's lines; lines over 8 KiB are dropped
 they bound a worst-case continuous stream below roughly 44 GB of log text per 31-day month;
 normal volume is far smaller (about a hundred lines an hour from each maker on 2026-10-12).
 Bursts, oversized messages, prolonged outages and collector stops may lose telemetry. On
-restart the RAM-only cursors reset: the maker replays at most two hours (a few hundred lines,
-within its burst), the usually idle relayer at most three. Duplicates are possible.
+restart the RAM-only cursors reset and every reader replays at most five minutes: older
+lines are not needed, and a longer replay is what pushed Alloy against its memory cap on
+2026-10-15. Duplicates are possible.
 
 A small systemd watchdog checks host memory and the existing lightweight maker
 `/healthz` and relayer `/v1/terms` endpoints every 30 seconds. It stops only Alloy
 and removes `/etc/alloy/ENABLED` if host resource pressure threatens the bridge. Immediate
-thresholds are available memory below 128 MiB, collector memory above 120 MiB,
-an Alloy OOM, or scratch use above 6 MiB. Two consecutive samples below 192 MiB
-available memory or above 5% memory pressure also stop it. An API or RPC failure
+thresholds are available memory below 128 MiB, collector memory above 180 MiB,
+an Alloy OOM, or scratch use above 6 MiB. Three consecutive samples below 192 MiB
+available memory or above 25% memory pressure also stop it. Host memory pressure also
+counts Alloy throttling against its own cap: on 2026-10-15 a two-hour replay after a restart
+passed the old 5% twice with 476 MiB free, and the watchdog latched Alloy off until 2026-10-20. An API or RPC failure
 alone does **not** stop collection: those failure logs are needed for diagnosis.
 `Restart=no` prevents restart loops. Investigate before restoring the latch.
 
