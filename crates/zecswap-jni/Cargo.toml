@@ -4,6 +4,7 @@ description = "The Android wallet's bindings to zecswap-core, zecswap-railgun an
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [lib]

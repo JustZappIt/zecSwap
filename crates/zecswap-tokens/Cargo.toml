@@ -4,6 +4,7 @@ description = "Privacy Pass tokens: limits per device that never say which devic
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [features]

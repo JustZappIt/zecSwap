@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
 
 /// A mintable, pausable payout token for tests and testnets. It behaves as USDC does wherever

@@ -13,7 +13,7 @@ Group=alloy
 SupplementaryGroups=systemd-journal
 EnvironmentFile=/etc/alloy/cloud.env
 Environment=GOMAXPROCS=1
-Environment=GOMEMLIMIT=64MiB
+Environment=GOMEMLIMIT=128MiB
 LoadCredential=ingestion.token:/etc/alloy/ingestion.token
 LoadCredential=redact.regex:/etc/alloy/redact.regex
 ExecStartPre=+/usr/bin/python3 /opt/zecswap-observability/admin_access.py
@@ -25,11 +25,11 @@ RuntimeDirectoryMode=0700
 # RAM-only, cannot swap into the bridge's disk. Lost on stop/reboot.
 TemporaryFileSystem=/run/alloy:rw,nosuid,nodev,noexec,noswap,size=8M,mode=0700,uid=@ALLOY_UID@,gid=@ALLOY_GID@
 MemoryAccounting=yes
-MemoryHigh=96M
-MemoryMax=128M
+MemoryHigh=160M
+MemoryMax=192M
 MemorySwapMax=0
 CPUAccounting=yes
-CPUQuota=5%
+CPUQuota=15%
 CPUWeight=10
 IOWeight=10
 Nice=19

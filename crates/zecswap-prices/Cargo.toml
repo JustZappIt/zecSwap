@@ -4,6 +4,7 @@ description = "USD prices of ZEC, USDC and ETH, now from providers in order, and
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [features]

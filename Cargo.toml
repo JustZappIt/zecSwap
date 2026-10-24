@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.92"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 blake2b_simd = "1"

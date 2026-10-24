@@ -4,6 +4,7 @@ description = "Live end-to-end runs of every swap outcome on an EVM testnet and 
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

@@ -16,7 +16,7 @@ Railgun); `docs/local/windows/audit3/` (the third audit: `REPORT.md`, `PORT-SPEC
 vectors). The original design and threat model are in
 `~/dev/zapp/ios-zapp/docs/local/shielded-swap-plan.md`; the plan says where it no longer holds.
 
-## Where things stand (2026-10-21)
+## Where things stand (2026-10-24)
 
 - **Windows contract.** It replaced the claim and refund locks (PRs #17 and #18, merged
   2026-10-21; "How it behaves" below). All eleven live scenarios pass on a fork of Sepolia on the
@@ -48,7 +48,7 @@ vectors). The original design and threat model are in
   `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
 - **Open:** the external audit (Track A), the rest of maker hardening (Track B: key custody, store
   backups, runbooks), iOS.
-- **Git:** `main` tracks `github.com/JustZappIt/zecSwap` (private). Commit and push only when the
+- **Git:** `main` tracks `github.com/JustZappIt/zecSwap` (public, Apache-2.0). Commit and push only when the
   owner asks.
 
 ## Layout

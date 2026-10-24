@@ -6,23 +6,25 @@ maker (`e`) and the user (`z`); an Ethereum contract pays out against whichever 
 revealed, verifying it on Pallas. Nothing touches a transparent address, no Ethereum account of
 the user's appears on-chain, and nothing is custodied: every failure ends in a refund.
 
-Running in beta on Ethereum mainnet:
-[`0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D`](https://etherscan.io/address/0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D#code),
-source verified on Etherscan. The Sepolia testnet runs its successor, the windows contract, at
+Running on Ethereum mainnet since 2026-10-22, in beta and not yet externally audited:
+[`0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`](https://etherscan.io/address/0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f),
+the windows contract, with a one-hour minimum window and a 24-hour late window. It replaced the
+beta's lock contract. The Sepolia testnet runs the same contract, with shorter windows, at
 [`0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`](https://sepolia.etherscan.io/address/0x459b0a69e0f736666b66a3ffe0fc17c11f05980d).
 
 ## How a swap works
 
-The normal path of a ZEC to USDC swap, start to finish, on the mainnet contract.
-[The full explainer](https://claude.ai/artifact/RY2zKsM5x7Yc1nyBn23gRg) adds the deadlines, what
-happens when something goes wrong, and the USDC to ZEC direction. Both show its claim lock, step
-8 below. The windows contract has none: at every moment at most one side may reveal its half, by
-the deadlines and the swap's stage alone, and you claim as soon as the swap is ready, or from `t0`
-if the maker never readies it, until `t1`.
+The normal path of a ZEC to USDC swap, start to finish. At every moment at most one side may
+reveal its half of the key, by the deadlines and the swap's stage alone. You claim once the maker
+has readied the swap, or from `t0` if it never does, until `t1`. The maker may take its USDC back
+only from an unready swap before `t0`, or for a day from `t1`, after which the claim is yours for
+good. Claims and refunds go through Flashbots Protect, so a half stays out of the public mempool
+until it is mined. [The reverse flow guide](docs/reverse-flow.md) covers the USDC to ZEC
+direction.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/swap-flow-dark.png">
-  <img alt="Sequence diagram of a ZEC to USDC swap between you (Zapp), Zcash, the Ethereum contract and the maker, in thirteen steps from quote to the maker spending the ZEC" src="docs/images/swap-flow-light.png">
+  <img alt="Sequence diagram of a ZEC to USDC swap between you (Veylor), Zcash, the Ethereum contract and the maker, in thirteen steps from quote to the maker spending the ZEC" src="docs/images/swap-flow-light.png">
 </picture>
 
 ## Layout
@@ -81,3 +83,7 @@ Deploy the contract with `contracts/script/Deploy.s.sol`; on Sepolia, whose repr
 `forge script` misjudges, use `deploy/testnet/deploy-windows.sh`, and on mainnet
 `scripts/deploy-contract.sh`.
 [The deployment guide](docs/deployment.md) covers the hosted maker, relayer and token issuer.
+
+## License
+
+Apache-2.0: see [`LICENSE`](LICENSE).

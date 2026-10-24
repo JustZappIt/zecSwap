@@ -43,9 +43,11 @@ if __name__ == "__main__":
     previous = json.loads(state.read_text()) if state.exists() else {}
     # An RPC outage or failed bridge service is precisely when logs are needed.
     # Stop for resource pressure, never for API failure alone.
-    bad = record["available_mib"] < 192 or record["memory_psi_avg10"] > 5
+    # Host PSI also counts Alloy throttling against its own MemoryHigh (a journal replay after a
+    # restart tripped 5% on 2026-10-15 with 476 MiB free), so it needs a wider margin.
+    bad = record["available_mib"] < 192 or record["memory_psi_avg10"] > 25
     record["bad_samples"] = previous.get("bad_samples", 0) + 1 if bad else 0
-    urgent = record["available_mib"] < 128 or record["collector_mib"] > 120
+    urgent = record["available_mib"] < 128 or record["collector_mib"] > 180
     if int(record["memory_events"].get("oom", 0)) > 0:
         urgent = True
     pid = subprocess.check_output(["systemctl", "show", "alloy", "-p", "MainPID", "--value"], text=True).strip()
@@ -56,7 +58,7 @@ if __name__ == "__main__":
         record["buffer_mib"] = (st.f_blocks - st.f_bfree) * st.f_frsize / 1048576
         urgent |= record["buffer_mib"] > 6
     state.write_text(json.dumps(record))
-    if urgent or record["bad_samples"] >= 2:
+    if urgent or record["bad_samples"] >= 3:
         Path("/etc/alloy/ENABLED").unlink(missing_ok=True)
         subprocess.run(["systemctl", "stop", "alloy.service"], check=True)
         print("Alloy stopped and latched off to protect bridge availability: " + json.dumps(record))
