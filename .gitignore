@@ -12,3 +12,5 @@ node_modules/
 /deploy/worker/dist/
 /android/build
 /deploy/worker/wrangler*.local.jsonc
+/.claude/
+/android/.gradle/
