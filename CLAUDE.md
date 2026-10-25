@@ -9,11 +9,12 @@ contract can still pay an account (the Base route, shelved for the app, still te
 the Android wallet `~/dev/zapp/zapp-android`, and Veylor (`~/dev/vizor-fork`), a Vizor fork with
 Private USD that another session ports.
 
-Read next (gitignored, on the owner's machine only): `docs/local/plan.md` (decisions, tracks, open
-questions); `docs/local/android.md` (the Android handoff; section 2 covers moving to the windows
-contract); `docs/local/private-usd.md` (the Railgun route's brief, section 8 what was verified about
-Railgun); `docs/local/windows/audit3/` (the third audit: `REPORT.md`, `PORT-SPEC.md`, its model and
-vectors). The original design and threat model are in
+Read next (gitignored, on the owner's machine only): `docs/local/deployment.md` (the hosted
+deployments, how to operate and reach the droplet, every release); `docs/local/plan.md` (decisions,
+tracks, open questions); `docs/local/android.md` (the Android handoff; section 2 covers moving to
+the windows contract); `docs/local/private-usd.md` (the Railgun route's brief, section 8 what was
+verified about Railgun); `docs/local/windows/audit3/` (the third audit: `REPORT.md`, `PORT-SPEC.md`,
+its model and vectors). The original design and threat model are in
 `~/dev/zapp/ios-zapp/docs/local/shielded-swap-plan.md`; the plan says where it no longer holds.
 
 ## Where things stand (2026-10-24)
@@ -23,16 +24,16 @@ vectors). The original design and threat model are in
   final code (`.testnet/e2e-windows-fork-final.log`). The hosted testnet runs it since 00:01 UTC
   that day: `0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`, 30-minute minimum and 1-hour late windows,
   the maker on a build of `98db2b6` (#22) since 2026-10-22 20:13 and the relayer on `47650c6`'s
-  (#20) since 02:44 that day (`docs/deployment.md`, October 20 windows contract;
+  (#20) since 02:44 that day (`docs/local/deployment.md`, October 20 windows contract;
   `deployments/sepolia-windows.json`). A stress run that day found every limit
   answering as designed (`.testnet/stress-windows-20261021/SUMMARY.md`).
 - **Mainnet** runs a windows contract of its own since 2026-10-22 21:21 UTC:
   `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows, the maker
   and relayer testnet's own builds with every reveal through Flashbots Protect, held claims on since
-  21:50 (`docs/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
+  21:50 (`docs/local/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
   The lock contract (`mainnet-beta.json`) is retired, its inventory moved; no swap has run on the
   new one yet.
-- **Deposits** are live on testnet since 2026-10-18 (`docs/deployment.md`, October 18 deposits and
+- **Deposits** are live on testnet since 2026-10-18 (`docs/local/deployment.md`, October 18 deposits and
   a new test token) and on mainnet since 2026-10-19 through Flashbots Protect (October 19 mainnet
   deposits). Mainnet's minimum stays 1 USDC for now (the owner's call;
   `deploy/mainnet/relayer-deposits.toml` stages 5).
@@ -111,7 +112,9 @@ bash reads it as it goes.
 - `.testnet/user`: the funded Zcash testnet wallet (seed and sqlite; `status` prints its address).
   `.testnet/deposit-test-wallet`: the deposits' test wallet. Each live run keeps its makers' data
   and root secrets in `target/zecswap-e2e/<timestamp>/`.
-- The hosted services and the droplet: `docs/deployment.md`, Operating the deployment.
+- The hosted services and the droplet: `docs/local/deployment.md`, Operating the deployment, which
+  says how to reach the droplet. Keep deployment details there and out of every tracked file: the
+  repo is public.
 
 ## How it behaves (all tested)
 
@@ -157,7 +160,7 @@ bash reads it as it goes.
 - **Held claims.** With `[held_claims]` the relayer takes a forward claim at `POST /v1/claim/hold`
   once the deposit is out, checked as `/v1/claim` checks one but for its window, keeps it in its
   journal, and sends it as `/v1/claim` would the moment the window opens, at the fee it was held
-  with (`held.rs`, `docs/deployment.md`, Held claims). It holds the share long before the claim:
+  with (`held.rs`, `docs/local/deployment.md`, Held claims). It holds the share long before the claim:
   the owner accepts that trust. Nothing logs or shows a share, and a held claim is deleted once its
   swap is paid out or refunded. Existing routes are unchanged: older clients deny unknown fields.
 - **Turns.** A swap's relayer requests take turns, each running to its end in a task of its own
@@ -175,7 +178,7 @@ bash reads it as it goes.
 - **Tokens.** With `[tokens]`, each accept spends a Privacy Pass token, handed back once the user
   pays in, so a device walks away from at most `tokens_per_day` swaps a day; the issuer's
   `android-key` mode checks hardware attestation (`docs/tokens.md`). The hosted testnet maker takes
-  none since 2026-10-14 (the owner's call; `docs/deployment.md`, Testnet as it runs, says how to
+  none since 2026-10-14 (the owner's call; `docs/local/deployment.md`, Testnet as it runs, says how to
   undo it).
 - **Deposits.** A deposit address derives from the seed (BIP-44
   `m/44'/60'/(1000 + account)'/0/index`, testnet `1'`); the relayer moves its USDC into the

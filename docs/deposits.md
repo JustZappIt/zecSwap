@@ -58,7 +58,7 @@ The relayer never watches deposit addresses: the wallet does, and signs once one
 
 Pin per network the chain, the Deposits contract and its token, and check the terms against
 them; never take them from the relayer. The deployments are recorded in
-[deployment.md](deployment.md).
+`docs/local/deployment.md`, on the owner's machine.
 
 ## Terms
 

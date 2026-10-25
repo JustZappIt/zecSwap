@@ -166,4 +166,4 @@ curl -fsS http://127.0.0.1:8788/v1/terms | python3 -c 'import json, sys
 terms = json.load(sys.stdin)
 assert terms["contract"].lower() == sys.argv[1].lower(), terms' "$contract"
 echo "Switched: $inventory base units of tUSD moved from $old_contract to $contract; release $release."
-echo "Record it in docs/deployment.md, and point the dashboard's BRIDGE_TESTNET_CONTRACT at $contract."
+echo "Record it in docs/local/deployment.md, and point the dashboard's BRIDGE_TESTNET_CONTRACT at $contract."

@@ -110,4 +110,4 @@ print("deposits go from", terms["relayer"], "for a fee of", terms["fee"], "and",
       "bps, at least", terms["minValue"])' "$terms" "$deposits" "$usdc"
 trap - ERR
 echo "Deposits on: release $release. The relayer tops the deposits account above up from its own"
-echo "account's ETH; record it in docs/deployment.md, and the account in the wallets' pins."
+echo "account's ETH; record it in docs/local/deployment.md, and the account in the wallets' pins."

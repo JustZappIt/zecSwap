@@ -172,4 +172,4 @@ assert terms["token"].lower() == sys.argv[3].lower(), terms
 print("deposits go from", terms["relayer"], "for a fee of", terms["fee"], "and", terms["feeBps"], "bps")' \
     "$terms" "$deposits" "$new_token"
 echo "Switched: $inventory base units of $old_token withdrawn, $minted of $new_token minted and deposited; release $release."
-echo "Record it in docs/deployment.md, and point the dashboard's BRIDGE_TESTNET_TOKEN at $new_token."
+echo "Record it in docs/local/deployment.md, and point the dashboard's BRIDGE_TESTNET_TOKEN at $new_token."
