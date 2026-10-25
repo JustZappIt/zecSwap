@@ -82,7 +82,6 @@ MAKER_PRIVATE_KEY=... MAKER_ROOT_SECRET=... cargo run -p zecswap-maker -- --conf
 Deploy the contract with `contracts/script/Deploy.s.sol`; on Sepolia, whose repricing
 `forge script` misjudges, use `deploy/testnet/deploy-windows.sh`, and on mainnet
 `scripts/deploy-contract.sh`.
-[The deployment guide](docs/deployment.md) covers the hosted maker, relayer and token issuer.
 
 ## License
 

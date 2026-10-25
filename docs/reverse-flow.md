@@ -89,7 +89,7 @@ refund for; it reads the escrow again when a refund's turn to broadcast comes an
 contract would revert, `400` with nothing sent. On mainnet it sends
 refunds through Flashbots Protect, which lands one only if it succeeds, so one that would land
 reverted is dropped with its share never public
-([deployment.md](deployment.md#switching-to-mainnet)). Refund settlement reveals the user's share
+(`docs/local/deployment.md`, Switching to mainnet). Refund settlement reveals the user's share
 without making token calls; the maker can recover its ZEC. A separate payout shields USDC only to
 the committed refund note, less the signed fee. Failed shielding can be retried.
 
@@ -188,8 +188,8 @@ failure recovery on that submission path.
 
 ## Service setup
 
-See [deployment.md](deployment.md) for public endpoints through Cloudflare and the persistent
-host requirement.
+The hosted services, and why they need a persistent host, are in `docs/local/deployment.md`, on
+the owner's machine.
 
 Leave `[reverse]` absent to keep the maker's reverse admission disabled. The example config
 includes optional settings; the maker refuses to start unless its reverse deadlines leave the
