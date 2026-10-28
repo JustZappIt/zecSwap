@@ -1,11 +1,12 @@
 //! What each binding computes, over plain bytes, so it runs and is tested without a JVM. Every
-//! call derives the swap's keys from the seed again: nothing secret outlives it. Railgun notes
-//! pay the wallet of a seed of their own, which no swap key derives from.
+//! call derives the swap's or the deposit address's keys from the seed again: nothing secret
+//! outlives it. Railgun notes pay the wallet of a seed of their own, which no swap key derives
+//! from.
 
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_core::{
     Domain, JointAccount, NetworkType, Payout, PublicShare, ReverseOpen, SecretShare, ShareProof,
-    SwapContext, SweepIntent, UserSwapKeys, derive_user_keys, sign_pczt_bytes,
+    SwapContext, SweepIntent, UserSwapKeys, derive_deposit_keys, derive_user_keys, sign_pczt_bytes,
 };
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 
@@ -115,14 +116,9 @@ impl<'a> Swap<'a> {
     pub fn new(seed: &'a [u8], mainnet: bool, index: i32) -> Result<Self> {
         check_seed(seed)?;
         let index = u32::try_from(index).map_err(|_| format!("a swap index can't be {index}"))?;
-        let network = if mainnet {
-            NetworkType::Main
-        } else {
-            NetworkType::Test
-        };
         Ok(Self {
             seed,
-            network,
+            network: network(mainnet),
             index,
         })
     }
@@ -146,16 +142,7 @@ impl<'a> Swap<'a> {
     /// encryptedBundle ‖ shieldKey ‖ commitment`: the quote names the commitment and the relayer
     /// sends the rest.
     pub fn payout_note(&self, railgun_seed: &[u8]) -> Result<Vec<u8>> {
-        let note = self.note(&self.keys()?, railgun_seed)?;
-        let mut bytes = Vec::with_capacity(6 * 32);
-        bytes.extend_from_slice(&note.npk);
-        note.ciphertext
-            .encrypted_bundle
-            .iter()
-            .for_each(|word| bytes.extend_from_slice(word));
-        bytes.extend_from_slice(&note.ciphertext.shield_key);
-        bytes.extend_from_slice(&note.commitment());
-        Ok(bytes)
+        Ok(note_bytes(&self.note(&self.keys()?, railgun_seed)?))
     }
 
     /// Checks the maker's proof of `E`, then proves `Z` bound to both shares and the payout into
@@ -254,9 +241,52 @@ impl<'a> Swap<'a> {
     }
 }
 
+/// The note a shield of deposit address `index` of ZIP 32 account `account` pays, or a rescue of
+/// its vault when `rescue`, in the wallet of `railgun_seed`, laid out as a payout note is
+/// (`docs/deposits.md`). `number` is the authorization's `validBefore`, or the rescue's nonce on
+/// the contract: each signing has a note of its own, and the request kept for it builds it again.
+pub fn deposit_note(
+    seed: &[u8],
+    mainnet: bool,
+    account: u32,
+    index: u32,
+    railgun_seed: &[u8],
+    rescue: bool,
+    number: u64,
+) -> Result<Vec<u8>> {
+    check_seed(seed)?;
+    let keys = derive_deposit_keys(seed, network(mainnet), account, index).map_err(error)?;
+    let entropy = if rescue {
+        keys.rescue_entropy(number)
+    } else {
+        keys.shield_entropy(number)
+    };
+    let note = railgun(railgun_seed)?.note(&entropy).map_err(error)?;
+    Ok(note_bytes(&note))
+}
+
 /// The `0zk` address of the Railgun wallet the mnemonic of `seed` opens in Railgun's own wallets.
 pub fn railgun_address(seed: &[u8]) -> Result<String> {
     Ok(railgun(seed)?.address())
+}
+
+fn network(mainnet: bool) -> NetworkType {
+    if mainnet {
+        NetworkType::Main
+    } else {
+        NetworkType::Test
+    }
+}
+
+/// `npk ‖ encryptedBundle ‖ shieldKey ‖ commitment`: the five words a contract takes a note as,
+/// then what commits to them.
+fn note_bytes(note: &ShieldNote) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(6 * 32);
+    note.words()
+        .iter()
+        .for_each(|word| bytes.extend_from_slice(word));
+    bytes.extend_from_slice(&note.commitment());
+    bytes
 }
 
 fn railgun(seed: &[u8]) -> Result<RailgunKeys> {
