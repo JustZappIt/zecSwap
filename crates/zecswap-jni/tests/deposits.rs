@@ -65,6 +65,23 @@ fn a_shield_note_is_the_known_answer() {
     );
 }
 
+/// The first rescue of address 0's vault, nonce 0.
+#[test]
+fn a_rescue_note_is_the_known_answer() {
+    let words: Vec<_> = rescue(0, 0).chunks(32).map(hex).collect();
+    assert_eq!(
+        words,
+        [
+            "0x2cb930fd875166de6013f1de6c85b7e3c8f92e056e397580a3353ca93c61de45",
+            "0xbc4c816d390cea4ce439b2bb5de87e6d2627b2c25f332248750a614e1c4a7ad6",
+            "0xbb1a50eaa74ed61b1fa7c0f40cfe709fb4176642e6939bb743d1b35dc8ab920b",
+            "0xd7fa1977849a1bf55fa460e415909e3390aaef0c894d8836a693f4629c16ecfa",
+            "0x2b19ea4d15e10221fba6ef9f984a38405dfb7affa618116f4bb16b537dd0ba1e",
+            "0xc3eee5aa58bc19bf3b51b253422437ef3f85202c73154981583fcd619f0b329d",
+        ]
+    );
+}
+
 #[test]
 fn a_note_opens_in_the_railgun_seeds_wallet_alone_and_ends_with_its_commitment() {
     for bytes in [shield(false, 0, 0, VALID_BEFORE), rescue(0, 0)] {
