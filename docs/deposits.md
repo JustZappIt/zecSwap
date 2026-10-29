@@ -113,9 +113,10 @@ apply here.
    `shielded − ⌊shielded × shieldFee / 10000⌋`, where `shielded = value − fee` and `shieldFee()`
    is Railgun's (25 today).
 4. Build the note: `zecswap_railgun::Keys::note(&deposit_keys.shield_entropy(validBefore))`, for
-   the wallet's own Railgun wallet. The authorization's own `validBefore` gives each signing a note
-   of its own, so no two deposits of one address share a note or a nonce, and the persisted
-   request rebuilds it.
+   the wallet's own Railgun wallet (on Android, `AtomicSwap.shieldNote`, which libzecswap builds
+   from both seeds and hands back with its commitment). The authorization's own `validBefore`
+   gives each signing a note of its own, so no two deposits of one address share a note or a
+   nonce, and the persisted request rebuilds it.
 5. **Build the token's domain from the token**: read its `name()` and `version()`, and check
    `TokenDomain::separator()` against its `DOMAIN_SEPARATOR()`. Never hardcode either: USDC's is
    `"USD Coin"`, `"2"`, testnet's tUSD's `"ZecSwap Test USD"`, `"2"`.
@@ -237,7 +238,8 @@ Railgun's wallets let a note its screening refuses go back only to the address t
 here the address's vault, `vaultOf(from)`. A rescue shields what came back again, to a note the
 depositor signs for, less the fee for the relayer that sends it.
 
-- Its note: `zecswap_railgun::Keys::note(&deposit_keys.rescue_entropy(nonce))`.
+- Its note: `zecswap_railgun::Keys::note(&deposit_keys.rescue_entropy(nonce))` (on Android,
+  `AtomicSwap.rescueNote`).
 - The depositor signs `Rescue(address from,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)`
   under the Deposits contract's EIP-712 domain (`"ZecSwap Deposits"`, `"1"`, the chain, the
   contract) with the deposit key (`DepositsDomain::rescue`): `note` is

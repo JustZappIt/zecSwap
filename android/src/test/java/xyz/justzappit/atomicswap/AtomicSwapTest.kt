@@ -1,6 +1,7 @@
 package xyz.justzappit.atomicswap
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -130,6 +131,46 @@ class AtomicSwapTest {
         )
         assertEquals("0x02356776cb176876b31960b8ccbf0c0850a76e9a2ef49caa6631bca732d064b2", note.shieldKey.hex())
         assertEquals("0x14d061e0bf2b24d75b75adb91c04cc6b82be6b407b5901dbdb86bbbabe7a9acd", note.commitment.hex())
+    }
+
+    @Test
+    fun depositNotes() {
+        val note = AtomicSwap.shieldNote(key.seed, mainnet = false, account = 0, index = 0, 1_790_000_000, railgun)
+        assertEquals("0x15f85d1d25c867703e280aca9580d5e32936dab954250744893bf967f9b86758", note.npk.hex())
+        assertEquals(
+            listOf(
+                "0x8da3b2fca02e90a1ff4e8c84d2997579485257500db5935a9d39f1480650a2d5",
+                "0x6d9e51f2199703b7ae13b6435d63e1e232ba0c4cb64ac4f7d5cfcd8d1b5e55c7",
+                "0x1881c394f5d1926107f78fc402ade1354aa2d2a70021868691fd74d50dcc9298",
+            ),
+            note.encryptedBundle.map { it.hex() },
+        )
+        assertEquals("0xdfd7ff431856fb4cfb9de4047e42f9481270266327a4c11361abe5f8b648a6dd", note.shieldKey.hex())
+        assertEquals("0x7544c517c31d651b094aa7d6eae02d4265f711a56cc4e0e11533cac7539bfa14", note.commitment.hex())
+        // The same inputs build the same note; the address's rescue with that number is another one.
+        val again = AtomicSwap.shieldNote(key.seed, false, 0, 0, 1_790_000_000, railgun)
+        assertEquals(note.commitment.hex(), again.commitment.hex())
+        val sameNumber = AtomicSwap.rescueNote(key.seed, false, 0, 0, 1_790_000_000, railgun)
+        assertNotEquals(note.commitment.hex(), sameNumber.commitment.hex())
+        // The first rescue of address 0's vault, nonce 0.
+        val rescue = AtomicSwap.rescueNote(key.seed, mainnet = false, account = 0, index = 0, nonce = 0, railgun)
+        assertEquals("0x2cb930fd875166de6013f1de6c85b7e3c8f92e056e397580a3353ca93c61de45", rescue.npk.hex())
+        assertEquals(
+            listOf(
+                "0xbc4c816d390cea4ce439b2bb5de87e6d2627b2c25f332248750a614e1c4a7ad6",
+                "0xbb1a50eaa74ed61b1fa7c0f40cfe709fb4176642e6939bb743d1b35dc8ab920b",
+                "0xd7fa1977849a1bf55fa460e415909e3390aaef0c894d8836a693f4629c16ecfa",
+            ),
+            rescue.encryptedBundle.map { it.hex() },
+        )
+        assertEquals("0x2b19ea4d15e10221fba6ef9f984a38405dfb7affa618116f4bb16b537dd0ba1e", rescue.shieldKey.hex())
+        assertEquals("0xc3eee5aa58bc19bf3b51b253422437ef3f85202c73154981583fcd619f0b329d", rescue.commitment.hex())
+        assertThrows(AtomicSwapException::class.java) { AtomicSwap.shieldNote(key.seed, false, 0, -1, 1, railgun) }
+        assertThrows(AtomicSwapException::class.java) { AtomicSwap.shieldNote(key.seed, false, -1, 0, 1, railgun) }
+        assertThrows(AtomicSwapException::class.java) { AtomicSwap.rescueNote(key.seed, false, 0, 0, -1, railgun) }
+        assertThrows(AtomicSwapException::class.java) {
+            AtomicSwap.shieldNote(key.seed, false, 0, 0, 1, RailgunSeed(ByteArray(32)))
+        }
     }
 
     @Test

@@ -19,6 +19,16 @@ internal object AtomicSwapNative {
         railgunSeed: ByteArray,
     ): ByteArray
 
+    @JvmStatic external fun depositNote(
+        seed: ByteArray,
+        mainnet: Boolean,
+        account: Int,
+        index: Int,
+        railgunSeed: ByteArray,
+        rescue: Boolean,
+        number: Long,
+    ): ByteArray
+
     @JvmStatic external fun accept(
         seed: ByteArray,
         mainnet: Boolean,

@@ -1,8 +1,8 @@
 //! JNI bindings for `xyz.justzappit.atomicswap.AtomicSwapNative`, in the `android` module. Each
-//! takes the wallet's 64-byte BIP-39 seed, the network and the swap's index, plus the 64-byte seed
-//! of the Railgun wallet a note pays where it builds one, and computes what `ops` does; the token
-//! bindings compute what `tokens` does. Errors and panics surface as `AtomicSwapException` instead
-//! of crossing into the JVM.
+//! takes the wallet's 64-byte BIP-39 seed, the network and the swap's or deposit address's index,
+//! plus the 64-byte seed of the Railgun wallet a note pays where it builds one, and computes what
+//! `ops` does; the token bindings compute what `tokens` does. Errors and panics surface as
+//! `AtomicSwapException` instead of crossing into the JVM.
 
 pub mod ops;
 pub mod tokens;
@@ -56,6 +56,10 @@ fn fixed<const N: usize>(env: &JNIEnv, array: &JByteArray, what: &str) -> Result
 
 fn unsigned(value: jlong, what: &str) -> Result<u64> {
     u64::try_from(value).map_err(|_| format!("{what} can't be {value}"))
+}
+
+fn index(value: jint, what: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| format!("{what} can't be {value}"))
 }
 
 fn domain(env: &JNIEnv, chain_id: jlong, contract: &JByteArray) -> Result<Domain> {
@@ -136,6 +140,42 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_payoutNot
         let seed = self::seed(env, &seed)?;
         let railgun_seed = self::seed(env, &railgun_seed)?;
         let note = swap(&seed, mainnet, index)?.payout_note(&railgun_seed)?;
+        byte_array(env, &note)
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_depositNote<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    seed: JByteArray<'local>,
+    mainnet: jboolean,
+    account: jint,
+    index: jint,
+    railgun_seed: JByteArray<'local>,
+    rescue: jboolean,
+    number: jlong,
+) -> jbyteArray {
+    run(&mut env, |env| {
+        let seed = self::seed(env, &seed)?;
+        let railgun_seed = self::seed(env, &railgun_seed)?;
+        let rescue = rescue != JNI_FALSE;
+        let number = if rescue {
+            unsigned(number, "a rescue nonce")?
+        } else {
+            unsigned(number, "an authorization's validity")?
+        };
+        let note = ops::deposit_note(
+            &seed,
+            mainnet != JNI_FALSE,
+            self::index(account, "a deposit account")?,
+            self::index(index, "a deposit address index")?,
+            &railgun_seed,
+            rescue,
+            number,
+        )?;
         byte_array(env, &note)
     })
     .unwrap_or(std::ptr::null_mut())
