@@ -135,6 +135,9 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
         swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s));
+        vm.prank(relayer);
+        vm.expectRevert(ZecSwap.BadSignature.selector);
+        swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s, v, uint8(0)));
 
         vm.prank(relayer);
         swaps.payout(id, terms(), npk, ciphertext, FEE, abi.encodePacked(r, s, v));
@@ -174,14 +177,28 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertTrue(swaps.getSwap(id).paidOut);
     }
 
+    /// Only the committed note, whichever way another note's commitment compares with it.
     function test_payout_goesOnlyToTheCommittedNote() public {
         bytes32 id = claimed();
         bytes memory sig = payoutSig(id, relayer, FEE);
+        (bytes32 below, bytes32 above) = npksAround(committedNote);
         vm.startPrank(relayer);
         vm.expectRevert(ZecSwap.WrongNote.selector);
-        swaps.payout(id, terms(), keccak256("another npk"), ciphertext, FEE, sig);
+        swaps.payout(id, terms(), below, ciphertext, FEE, sig);
+        vm.expectRevert(ZecSwap.WrongNote.selector);
+        swaps.payout(id, terms(), above, ciphertext, FEE, sig);
         vm.expectRevert(ZecSwap.WrongNote.selector);
         swaps.payout(id, terms(), npk, cipher("another ciphertext"), FEE, sig);
+    }
+
+    /// Two other npks whose notes, with `ciphertext`, commit below and above `note`.
+    function npksAround(bytes32 note) internal view returns (bytes32 below, bytes32 above) {
+        IRailgun.ShieldCiphertext memory c = ciphertext;
+        for (uint256 i; below == 0 || above == 0; ++i) {
+            bytes32 other = keccak256(abi.encode("another npk", i));
+            if (keccak256(abi.encode(other, c)) < note) below = other;
+            else above = other;
+        }
     }
 
     function test_payout_isSentOnlyByTheRelayerAndForTheFeeTheUserSigned() public {
@@ -378,6 +395,14 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.prank(relayer);
         swaps.rescue(id, terms(), npk, ciphertext, FEE, 0, deadline, sig);
         assertEq(swaps.rescueNonces(id), 0);
+
+        // Good until its deadline, that second included.
+        deadline = uint64(block.timestamp);
+        bytes32 note = keccak256(abi.encode(npk, ciphertext));
+        sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(0), deadline)));
+        vm.prank(relayer);
+        swaps.rescue(id, terms(), npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(swaps.rescueNonces(id), 1);
     }
 
     function testRescueNonceAndDeadlineAreSigned() public {

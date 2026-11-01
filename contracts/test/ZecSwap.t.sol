@@ -497,6 +497,8 @@ contract ZecSwapTest is SpendAuthVectors {
         ZecSwap tight = new ZecSwap(WINDOW, WINDOW, IRailgun(address(0)));
         assertEq(tight.MIN_WINDOW(), WINDOW);
         assertEq(tight.LATE_WINDOW(), WINDOW);
+        ZecSwap widest = new ZecSwap(WINDOW, type(uint32).max, IRailgun(address(0)));
+        assertEq(widest.LATE_WINDOW(), type(uint32).max);
     }
 
     function test_gas_claim() public {

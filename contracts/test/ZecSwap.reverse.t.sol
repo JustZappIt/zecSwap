@@ -52,16 +52,33 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(swaps.balanceOf(address(this), address(token)), 0);
     }
 
-    /// More than a Railgun note holds could never leave after the claim, so it never opens.
+    /// More than a Railgun note holds could never leave after the claim, so it never opens; all a
+    /// note holds does, and a swap that pays an account has no such cap.
     function test_openRefusesRailgunPayoutsANoteCannotHold() public {
         uint128 amount = uint128(type(uint120).max) + 1;
-        usdc.mint(maker, amount);
+        usdc.mint(maker, 2 * uint256(amount));
         vm.startPrank(maker);
-        usdc.approve(address(swaps), amount);
-        swaps.deposit(address(usdc), amount);
+        swaps.deposit(address(usdc), 2 * uint256(amount));
         vm.expectRevert(ZecSwap.InvalidAmount.selector);
         swaps.open(address(usdc), amount, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        swaps.open(address(usdc), amount - 1, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        (Vector memory e2, Vector memory z2) = (randomVector(2), randomVector(3));
+        swaps.open(address(usdc), amount, [e2.x, e2.y], [z2.x, z2.y], auth, t0, t1, bytes32(0));
         vm.stopPrank();
+    }
+
+    /// What arrives must be exactly what is credited: a token that delivers more than it was asked
+    /// for is refused, as one that delivers less is.
+    function test_tokensThatDeliverMoreAreRefused() public {
+        LongToken token = new LongToken();
+        vm.expectRevert(ZecSwap.InsufficientBalance.selector);
+        swaps.deposit(address(token), AMOUNT);
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        request.token = address(token);
+        bytes memory signature = openSig(request);
+        vm.expectRevert(ZecSwap.InsufficientBalance.selector);
+        swaps.openReverse(request, signature);
+        assertEq(token.balanceOf(address(swaps)), 0);
     }
 
     /// The escrowing user's `Ready` signature authorises nothing else of its: not the payout of
@@ -118,6 +135,8 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
 
         request = reverseOpen();
         request.deadline = t0;
+        assertRefused(swaps, request, ZecSwap.InvalidDeadlines.selector);
+        request.deadline = t0 + 1;
         assertRefused(swaps, request, ZecSwap.InvalidDeadlines.selector);
     }
 
@@ -455,6 +474,15 @@ contract ShortToken {
 
     function transferFrom(address, address to, uint256 amount) external returns (bool) {
         balanceOf[to] += amount - 1;
+        return true;
+    }
+}
+
+contract LongToken {
+    mapping(address => uint256) public balanceOf;
+
+    function transferFrom(address, address to, uint256 amount) external returns (bool) {
+        balanceOf[to] += amount + 1;
         return true;
     }
 }
