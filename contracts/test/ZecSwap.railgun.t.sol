@@ -311,6 +311,34 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         );
     }
 
+    /// A vault shields everything it holds less the fee, up to all a Railgun note holds.
+    function test_rescue_shieldsUpToAllANoteHolds() public {
+        bytes32 id = paidOut();
+        address vault = swaps.vaultOf(id);
+        usdc.mint(vault, uint256(type(uint120).max) + FEE);
+        vm.prank(relayer);
+        swaps.rescue(
+            id,
+            terms(),
+            npk,
+            ciphertext,
+            FEE,
+            0,
+            uint64(block.timestamp + 5 minutes),
+            rescueSig(id, npk, ciphertext, relayer, FEE)
+        );
+        assertEq(usdc.balanceOf(vault), 0);
+
+        usdc.mint(vault, uint256(type(uint120).max) + FEE + 1);
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes32 note = keccak256(abi.encode(npk, ciphertext));
+        bytes memory sig =
+            sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(1), deadline)));
+        vm.prank(relayer);
+        vm.expectRevert(ShieldVault.ValueTooLarge.selector);
+        swaps.rescue(id, terms(), npk, ciphertext, FEE, 1, deadline, sig);
+    }
+
     function test_vault_takesOrdersOnlyFromTheEscrow() public {
         bytes32 id = paidOut();
         ShieldVault vault = ShieldVault(swaps.vaultOf(id));
@@ -523,12 +551,20 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
     }
 
     function sign(bytes32 structHash) internal view returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(authKey, digestOf(structHash));
+        return signFor(swaps, structHash);
+    }
+
+    function signFor(ZecSwap target, bytes32 structHash) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(authKey, digestOf(target, structHash));
         return abi.encodePacked(r, s, v);
     }
 
     /// The EIP-712 digest a wallet computes for `swaps`, the contract under test.
     function digestOf(bytes32 structHash) internal view returns (bytes32) {
+        return digestOf(swaps, structHash);
+    }
+
+    function digestOf(ZecSwap target, bytes32 structHash) internal view returns (bytes32) {
         bytes32 domain = keccak256(
             abi.encode(
                 keccak256(
@@ -537,7 +573,7 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
                 keccak256("ZecSwap"),
                 keccak256("1"),
                 block.chainid,
-                address(swaps)
+                address(target)
             )
         );
         return keccak256(abi.encodePacked("\x19\x01", domain, structHash));

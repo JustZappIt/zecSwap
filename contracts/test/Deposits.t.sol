@@ -223,6 +223,33 @@ contract DepositsTest is Test {
         send(a);
     }
 
+    /// A fee of the whole deposit or more is refused even when the vault holds a returned note: that
+    /// would pay the relayer the deposit and shield the old note in its place.
+    function test_shield_refusesAFeeOfTheWholeValueBesideAReturnedNote() public {
+        send(signed(authorization(), relayer));
+        usdc.mint(deposits.vaultOf(depositor), VALUE);
+        usdc.mint(depositor, VALUE);
+        Authorization memory a = authorization();
+        a.fee = uint128(VALUE);
+        a = signed(a, relayer);
+        vm.expectRevert(Deposits.InvalidFee.selector);
+        send(a);
+
+        a = authorization();
+        a.fee = uint128(VALUE) + 1;
+        a = signed(a, relayer);
+        vm.expectRevert(Deposits.InvalidFee.selector);
+        send(a);
+    }
+
+    function test_shield_takesAllANoteHolds() public {
+        Authorization memory a = authorization();
+        a.value = type(uint120).max;
+        usdc.mint(depositor, a.value - VALUE);
+        send(signed(a, relayer));
+        assertEq(usdc.balanceOf(relayer), FEE);
+    }
+
     function test_shield_failingInRailgunLeavesTheAuthorizationToSendAgain() public {
         railgun.setPaused(true);
         Authorization memory a = signed(authorization(), relayer);
@@ -349,6 +376,31 @@ contract DepositsTest is Test {
         assertEq(deposits.rescueNonces(depositor), 2);
     }
 
+    /// A signature one byte short or long is refused, and so is one for the nonce after the next:
+    /// nonces are taken in order.
+    function test_rescue_takesWellFormedSignaturesForTheNextNonceOnly() public {
+        send(signed(authorization(), relayer));
+        usdc.mint(deposits.vaultOf(depositor), VALUE);
+        uint64 deadline = uint64(block.timestamp + 10 minutes);
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(depositorKey, rescueDigest(npk, ciphertext, relayer, FEE, 0, deadline));
+        vm.prank(relayer);
+        vm.expectRevert(Deposits.BadSignature.selector);
+        deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, abi.encodePacked(r, s));
+        vm.prank(relayer);
+        vm.expectRevert(Deposits.BadSignature.selector);
+        deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, abi.encodePacked(r, s, v, uint8(0)));
+
+        bytes memory early = rescueSig(depositorKey, npk, ciphertext, relayer, FEE, 1, deadline);
+        vm.prank(relayer);
+        vm.expectRevert(Deposits.BadSignature.selector);
+        deposits.rescue(depositor, npk, ciphertext, FEE, 1, deadline, early);
+
+        vm.prank(relayer);
+        deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, abi.encodePacked(r, s, v));
+        assertEq(deposits.rescueNonces(depositor), 1);
+    }
+
     function test_rescue_expiresAndNeedsAVaultWithSomethingInIt() public {
         uint64 deadline = uint64(block.timestamp + 10 minutes);
         bytes memory sig = rescueSig(depositorKey, npk, ciphertext, relayer, FEE, 0, deadline);
@@ -367,6 +419,13 @@ contract DepositsTest is Test {
         vm.expectRevert(Deposits.Expired.selector);
         deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, sig);
         assertEq(deposits.rescueNonces(depositor), 0);
+
+        // Good until its deadline, that second included.
+        deadline = uint64(block.timestamp);
+        sig = rescueSig(depositorKey, npk, ciphertext, relayer, FEE, 0, deadline);
+        vm.prank(relayer);
+        deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, sig);
+        assertEq(deposits.rescueNonces(depositor), 1);
     }
 
     function test_rescue_failingConsumesNothing() public {
