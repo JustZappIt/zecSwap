@@ -27,6 +27,9 @@ contract DepositsHandler is Test {
     mapping(address vault => address) public ownerOf;
     /// The notes each depositor signed for, by `noteKey`.
     mapping(address depositor => mapping(bytes32 note => bool)) public signedFor;
+    /// The nonces of each depositor's authorizations that landed. The nonce commits to the note, the
+    /// fee and the relayer, and the token takes each once.
+    mapping(address depositor => mapping(bytes32 nonce => bool)) internal landed;
     /// The fees signed for the relayer, of what landed.
     uint256 public fees;
     uint256 public minted;
@@ -46,7 +49,8 @@ contract DepositsHandler is Test {
     }
 
     /// Some token arrives at a deposit address, whose owner signs to shield its whole balance;
-    /// sent as signed, or with its sender, fee or note altered.
+    /// sent as signed, or with its sender, fee or note altered. Signed again for a note, fee and
+    /// relayer that landed before, it is that authorization again and must not land twice.
     function deposit(uint256 who, uint96 amount, uint96 fee, uint256 seed, uint8 alteration) external {
         uint256 i = who % DEPOSITORS;
         address from = depositors[i];
@@ -64,10 +68,11 @@ contract DepositsHandler is Test {
         bytes32 sentNpk = alteration == 2 ? keccak256(abi.encode(npk)) : npk;
         vm.prank(alteration == 3 ? copier : relayer);
         try deposits.shield(from, value, 0, validBefore, sentNpk, c, sentFee, v, r, s) {
-            if (alteration != 0) alteredLanded = true;
+            if (alteration != 0 || landed[from][nonce]) alteredLanded = true;
+            landed[from][nonce] = true;
             fees += signedFee;
         } catch {
-            if (alteration == 0) honestFailed = true;
+            if (alteration == 0 && !landed[from][nonce]) honestFailed = true;
         }
     }
 
@@ -198,7 +203,7 @@ contract DepositsInvariantTest is Test {
     /// Into Railgun from a depositor's own vault, to a note that depositor signed for, or to the
     /// relayer the signatures name, for the fees they name: nowhere else.
     function invariant_tokensLeaveOnlyToTheSignedNoteOrTheBoundRelayer() public view {
-        assertFalse(handler.alteredLanded(), "an altered request landed");
+        assertFalse(handler.alteredLanded(), "an altered or replayed request landed");
         assertFalse(handler.honestFailed(), "a request sent as signed failed");
         assertEq(usdc.balanceOf(handler.relayer()), handler.fees());
         assertEq(usdc.balanceOf(handler.copier()), 0);
