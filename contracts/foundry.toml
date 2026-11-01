@@ -18,6 +18,16 @@ runs = 1024
 runs = 256
 depth = 128
 fail_on_revert = false
+# Coverage-guided: keeps the call sequences that reach new code, and builds on them run after run.
+corpus_dir = "cache/invariant-corpus"
+
+# Long runs: FOUNDRY_PROFILE=soak forge test --match-path 'test/*.invariants.t.sol'
+[profile.soak.fuzz]
+runs = 65536
+
+[profile.soak.invariant]
+runs = 4096
+depth = 256
 
 # Differential fuzzing of Pallas.sol against the Rust implementation:
 #   cargo build --release -p zecswap-core --example evm_vectors

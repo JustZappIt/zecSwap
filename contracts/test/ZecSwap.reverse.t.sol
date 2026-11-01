@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
 
+import {IRailgun} from "../src/ShieldVault.sol";
 import {ZecSwap} from "../src/ZecSwap.sol";
 import {Token} from "../src/Token.sol";
 import {ZecSwapRailgunTest} from "./ZecSwap.railgun.t.sol";
@@ -37,7 +38,9 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         ZecSwap.Terms memory forward =
             ZecSwap.Terms(evil, address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], victim, t0, t1, bytes32(0));
         assertEq(swaps.getSwap(id).termsHash, swaps.hashTerms(forward));
-        assertEq(id, swaps.reverseSwapId(evil, [z.x, z.y]));
+        // The id wallets compute: keccak256(abi.encode(userAuthAddress, makerShare, true)).
+        assertEq(id, keccak256(abi.encode(evil, z.x, z.y, true)));
+        assertEq(swaps.reverseSwapId(evil, [z.x, z.y]), id);
         assertEq(uint8(swaps.getSwap(swaps.swapId(evil, [z.x, z.y])).stage), uint8(ZecSwap.Stage.None));
     }
 
@@ -49,25 +52,40 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(swaps.balanceOf(address(this), address(token)), 0);
     }
 
-    /// More than a Railgun note holds could never leave after the claim, so it never opens.
+    /// More than a Railgun note holds could never leave after the claim, so it never opens; all a
+    /// note holds does, and a swap that pays an account has no such cap.
     function test_openRefusesRailgunPayoutsANoteCannotHold() public {
         uint128 amount = uint128(type(uint120).max) + 1;
-        usdc.mint(maker, amount);
+        usdc.mint(maker, 2 * uint256(amount));
         vm.startPrank(maker);
-        usdc.approve(address(swaps), amount);
-        swaps.deposit(address(usdc), amount);
+        swaps.deposit(address(usdc), 2 * uint256(amount));
         vm.expectRevert(ZecSwap.InvalidAmount.selector);
         swaps.open(address(usdc), amount, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        swaps.open(address(usdc), amount - 1, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        (Vector memory e2, Vector memory z2) = (randomVector(2), randomVector(3));
+        swaps.open(address(usdc), amount, [e2.x, e2.y], [z2.x, z2.y], auth, t0, t1, bytes32(0));
         vm.stopPrank();
+    }
+
+    /// What arrives must be exactly what is credited: a token that delivers more than it was asked
+    /// for is refused, as one that delivers less is.
+    function test_tokensThatDeliverMoreAreRefused() public {
+        LongToken token = new LongToken();
+        vm.expectRevert(ZecSwap.InsufficientBalance.selector);
+        swaps.deposit(address(token), AMOUNT);
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        request.token = address(token);
+        bytes memory signature = openSig(request);
+        vm.expectRevert(ZecSwap.InsufficientBalance.selector);
+        swaps.openReverse(request, signature);
+        assertEq(token.balanceOf(address(swaps)), 0);
     }
 
     /// The escrowing user's `Ready` signature authorises nothing else of its: not the payout of
     /// its refund, which it signs for separately.
     function test_reverseReadySignatureAuthorisesOnlyReady() public {
         bytes32 id = funded();
-        uint64 deadline = uint64(block.timestamp + 60);
-        bytes memory signature =
-            sign(keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline)));
+        bytes memory signature = readySig(id, uint64(block.timestamp + 60));
         refundReverse(id);
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
@@ -90,6 +108,127 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         request.t0 = uint64(block.timestamp + WINDOW);
         swaps.openReverse(request, openSig(request));
         vm.stopPrank();
+    }
+
+    /// A request the escrow could not settle as its user signed it is refused before a token moves.
+    function test_reverseOpenRefusesRequestsItCouldNotSettle() public {
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        request.deadline = uint64(block.timestamp - 1);
+        assertRefused(swaps, request, ZecSwap.Expired.selector);
+
+        request = reverseOpen();
+        request.user = address(0);
+        assertRefused(swaps, request, ZecSwap.ZeroAddress.selector);
+        request = reverseOpen();
+        request.maker = address(0);
+        assertRefused(swaps, request, ZecSwap.ZeroAddress.selector);
+
+        // With no refund note the escrow would read as a forward swap, which its ZEC maker may claim
+        // from `t0` without the user's ready.
+        request = reverseOpen();
+        request.refundNote = 0;
+        assertRefused(swaps, request, ZecSwap.WrongNote.selector);
+
+        request = reverseOpen();
+        request.amount = uint128(type(uint120).max) + 1;
+        assertRefused(swaps, request, ZecSwap.InvalidAmount.selector);
+
+        request = reverseOpen();
+        request.deadline = t0;
+        assertRefused(swaps, request, ZecSwap.InvalidDeadlines.selector);
+        request.deadline = t0 + 1;
+        assertRefused(swaps, request, ZecSwap.InvalidDeadlines.selector);
+    }
+
+    /// Without Railgun a reverse refund could never be paid out, so no escrow opens.
+    function test_reverseOpenNeedsRailgun() public {
+        ZecSwap noRailgun = new ZecSwap(WINDOW, LATE, IRailgun(address(0)));
+        assertRefused(noRailgun, reverseOpen(), ZecSwap.NoShieldedPayouts.selector);
+    }
+
+    /// Each limit is the last value allowed: a request sent the second its signature expires, for
+    /// all a Railgun note holds, opens, and so does one signed to expire the second before `t0`.
+    function test_reverseOpenAcceptsEachLimitExactly() public {
+        ZecSwap.ReverseOpen memory request = reverseOpen();
+        request.deadline = uint64(block.timestamp);
+        request.amount = type(uint120).max;
+        bytes32 id = fundedWith(request);
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Open));
+        assertEq(usdc.balanceOf(address(swaps)), INVENTORY + type(uint120).max);
+
+        request = reverseOpen();
+        (Vector memory m, Vector memory u) = (randomVector(2), randomVector(3));
+        (request.makerKey, request.userKey) = ([m.x, m.y], [u.x, u.y]);
+        request.deadline = t0 - 1;
+        id = fundedWith(request);
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Open));
+    }
+
+    /// An escrow's open leaves whatever its user's address already holds here as it was.
+    function test_reverseOpenLeavesItsUsersBalance() public {
+        usdc.mint(auth, AMOUNT);
+        vm.startPrank(auth);
+        usdc.approve(address(swaps), AMOUNT);
+        swaps.deposit(address(usdc), AMOUNT);
+        vm.stopPrank();
+        funded();
+        assertEq(swaps.balanceOf(auth, address(usdc)), AMOUNT);
+    }
+
+    /// Only the escrowing user's signature readies its escrow. A ready the maker could make itself
+    /// would let it claim the escrow before `t1` without ever sending the ZEC.
+    function test_reverseReadyTakesOnlyTheUsersSignature() public {
+        bytes32 id = funded();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        (, uint256 strangerKey) = makeAddrAndKey("stranger");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerKey, digestOf(readyHash(id, deadline)));
+        vm.expectRevert(ZecSwap.BadSignature.selector);
+        swaps.readyWithSig(id, reverseTerms(), deadline, abi.encodePacked(r, s, v));
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Open));
+        vm.prank(maker);
+        vm.expectRevert(ZecSwap.NotNow.selector);
+        swaps.claim(id, reverseTerms(), e.k);
+    }
+
+    /// A signed ready is a reverse escrow's alone: a forward swap is readied by its maker's own call,
+    /// even when its maker signs. Each ready emits `MarkedReady`, from which the maker records it.
+    function test_forwardSwapsTakeNoSignedReady() public {
+        (address keyed, uint256 keyedKey) = makeAddrAndKey("keyed maker");
+        usdc.mint(keyed, AMOUNT);
+        vm.startPrank(keyed);
+        usdc.approve(address(swaps), AMOUNT);
+        swaps.deposit(address(usdc), AMOUNT);
+        bytes32 id = swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], auth, t0, t1, commitment());
+        vm.stopPrank();
+        ZecSwap.Terms memory forward = terms();
+        forward.maker = keyed;
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(keyedKey, digestOf(readyHash(id, deadline)));
+        vm.expectRevert(ZecSwap.WrongStage.selector);
+        swaps.readyWithSig(id, forward, deadline, abi.encodePacked(r, s, v));
+        vm.expectEmit(address(swaps));
+        emit ZecSwap.MarkedReady(id);
+        vm.prank(keyed);
+        swaps.ready(id, forward);
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Ready));
+    }
+
+    /// The user's ready signature is good until its deadline, that second included.
+    function test_reverseReadySignatureLastsUntilItsDeadline() public {
+        bytes32 id = funded();
+        uint64 deadline = uint64(block.timestamp + 5 minutes);
+        bytes memory signature = readySig(id, deadline);
+        vm.warp(deadline + 1);
+        vm.expectRevert(ZecSwap.Expired.selector);
+        swaps.readyWithSig(id, reverseTerms(), deadline, signature);
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Open));
+
+        deadline = uint64(block.timestamp);
+        signature = readySig(id, deadline);
+        vm.expectEmit(address(swaps));
+        emit ZecSwap.MarkedReady(id);
+        swaps.readyWithSig(id, reverseTerms(), deadline, signature);
+        assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Ready));
     }
 
     function reverseOpen() internal view returns (ZecSwap.ReverseOpen memory) {
@@ -138,23 +277,45 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
     }
 
     function funded() internal returns (bytes32) {
-        ZecSwap.ReverseOpen memory request = reverseOpen();
-        usdc.mint(relayer, AMOUNT);
+        return fundedWith(reverseOpen());
+    }
+
+    /// Relay Adapt's part: approve the exact amount and open.
+    function fundedWith(ZecSwap.ReverseOpen memory request) internal returns (bytes32 id) {
+        usdc.mint(relayer, request.amount);
         vm.startPrank(relayer);
-        usdc.approve(address(swaps), AMOUNT);
-        bytes32 id = swaps.openReverse(request, openSig(request));
+        usdc.approve(address(swaps), request.amount);
+        id = swaps.openReverse(request, openSig(request));
         vm.stopPrank();
-        return id;
+    }
+
+    /// Relay Adapt's open of `request`, signed by its user for `target`, refused with `error`, no
+    /// escrow recorded and no token taken.
+    function assertRefused(ZecSwap target, ZecSwap.ReverseOpen memory request, bytes4 error) internal {
+        bytes memory signature = signFor(target, openHash(request));
+        usdc.mint(relayer, request.amount);
+        uint256 held = usdc.balanceOf(address(target));
+        vm.startPrank(relayer);
+        usdc.approve(address(target), request.amount);
+        vm.expectRevert(error);
+        target.openReverse(request, signature);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(target)), held);
+        bytes32 id = target.reverseSwapId(request.user, request.makerKey);
+        assertEq(uint8(target.getSwap(id).stage), uint8(ZecSwap.Stage.None));
     }
 
     function readyReverse(bytes32 id) internal {
         uint64 deadline = uint64(block.timestamp + 5 minutes);
-        swaps.readyWithSig(
-            id,
-            reverseTerms(),
-            deadline,
-            sign(keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline)))
-        );
+        swaps.readyWithSig(id, reverseTerms(), deadline, readySig(id, deadline));
+    }
+
+    function readySig(bytes32 id, uint64 deadline) internal view returns (bytes memory) {
+        return sign(readyHash(id, deadline));
+    }
+
+    function readyHash(bytes32 id, uint64 deadline) internal pure returns (bytes32) {
+        return keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline));
     }
 
     /// The user's refund, which anyone may send: an unready escrow's at any time, a ready one's
@@ -313,6 +474,15 @@ contract ShortToken {
 
     function transferFrom(address, address to, uint256 amount) external returns (bool) {
         balanceOf[to] += amount - 1;
+        return true;
+    }
+}
+
+contract LongToken {
+    mapping(address => uint256) public balanceOf;
+
+    function transferFrom(address, address to, uint256 amount) external returns (bool) {
+        balanceOf[to] += amount + 1;
         return true;
     }
 }

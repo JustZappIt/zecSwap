@@ -458,6 +458,35 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.deposit(makeAddr("not a token"), 1);
     }
 
+    /// A token that turns a transfer down by returning false, not reverting, is refused as a
+    /// reverting one is: a withdrawal it turned down keeps its credit.
+    function test_tokensThatReturnFalseAreRefused() public {
+        FalseToken token = new FalseToken();
+        token.mint(maker, 2 * AMOUNT);
+        vm.startPrank(maker);
+        swaps.deposit(address(token), AMOUNT);
+        token.setRefusing(true);
+        vm.expectRevert(Token.TransferFailed.selector);
+        swaps.deposit(address(token), AMOUNT);
+        vm.expectRevert(Token.TransferFailed.selector);
+        swaps.withdraw(address(token), AMOUNT, relayer);
+        vm.stopPrank();
+        assertEq(swaps.balanceOf(maker, address(token)), AMOUNT);
+        assertEq(token.balanceOf(address(swaps)), AMOUNT);
+    }
+
+    /// A token whose transfers return nothing, as USDT's do, deposits and withdraws.
+    function test_tokensWhoseTransfersReturnNothingWork() public {
+        SilentToken token = new SilentToken();
+        token.mint(maker, AMOUNT);
+        vm.startPrank(maker);
+        swaps.deposit(address(token), AMOUNT);
+        swaps.withdraw(address(token), AMOUNT, relayer);
+        vm.stopPrank();
+        assertEq(token.balanceOf(relayer), AMOUNT);
+        assertEq(swaps.balanceOf(maker, address(token)), 0);
+    }
+
     function test_constructor_rejectsDegenerateWindows() public {
         vm.expectRevert(ZecSwap.InvalidDeadlines.selector);
         new ZecSwap(0, LATE, IRailgun(address(0)));
@@ -468,6 +497,8 @@ contract ZecSwapTest is SpendAuthVectors {
         ZecSwap tight = new ZecSwap(WINDOW, WINDOW, IRailgun(address(0)));
         assertEq(tight.MIN_WINDOW(), WINDOW);
         assertEq(tight.LATE_WINDOW(), WINDOW);
+        ZecSwap widest = new ZecSwap(WINDOW, type(uint32).max, IRailgun(address(0)));
+        assertEq(widest.LATE_WINDOW(), type(uint32).max);
     }
 
     function test_gas_claim() public {
@@ -547,5 +578,53 @@ contract ZecSwapTest is SpendAuthVectors {
             ok = true;
         } catch {}
         vm.revertToState(snap);
+    }
+}
+
+/// Turns transfers down by returning false, as some tokens do when paused or blacklisting.
+contract FalseToken {
+    mapping(address => uint256) public balanceOf;
+    bool public refusing;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function setRefusing(bool refusing_) external {
+        refusing = refusing_;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        return move(msg.sender, to, amount);
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        return move(from, to, amount);
+    }
+
+    function move(address from, address to, uint256 amount) internal returns (bool) {
+        if (refusing) return false;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+/// Returns nothing from its transfers, as USDT does.
+contract SilentToken {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address to, uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external {
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
     }
 }

@@ -43,7 +43,8 @@ contract MockRailgun is IRailgun {
         for (uint256 i; i < requests.length; ++i) {
             CommitmentPreimage calldata preimage = requests[i].preimage;
             require(preimage.value > 0, "Invalid Note Value");
-            uint120 fee = preimage.value * FEE_BPS / 10_000;
+            // Wider than the note, as Railgun computes it: a note near uint120's limit must not overflow.
+            uint120 fee = uint120(uint256(preimage.value) * FEE_BPS / 10_000);
             uint120 base = preimage.value - fee;
             IERC20 token = IERC20(preimage.token.tokenAddress);
             require(token.transferFrom(msg.sender, address(this), base), "transfer");
