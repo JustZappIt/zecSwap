@@ -16,7 +16,7 @@
   "deploymentCostWei": "451868226530446",
   "deploymentPriorityFeeWei": "5000000",
   "rehearsal": "on an anvil fork of mainnet, deployed from the maker at nonce 18: the same address, and runtime code and vault logic (0x99DE0d481AdDb39D020bd61DB741720601FF9697) identical byte for byte; the contract's fork tests (real USDC, Railgun and sanctions oracle) all pass",
-  "etherscan": "not verified, the owner's call",
+  "etherscan": "source verified on 2026-11-01 from sourceCommit; its vault logic (0x99DE0d481AdDb39D020bd61DB741720601FF9697) was already verified by matching bytecode",
   "servicesSince": "2026-10-22T21:21:05Z",
   "replaces": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
   "maker": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
