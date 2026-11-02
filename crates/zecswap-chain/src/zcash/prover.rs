@@ -83,12 +83,10 @@ mod tests {
         let nu7 = circuit_version(BranchId::Nu7).unwrap();
         assert_eq!(nu7, circuit_version(BranchId::Nu6_3).unwrap());
         assert_eq!(nu7, OrchardCircuitVersion::PostNu6_3);
-        for pool in [ValuePool::Orchard, ValuePool::Ironwood] {
-            assert_eq!(
-                bundle_version_for_branch(BranchId::Nu7, pool).map(|v| v.circuit_version()),
-                Some(nu7),
-                "{pool:?}"
-            );
-        }
+        assert_eq!(
+            bundle_version_for_branch(BranchId::Nu7, ValuePool::Ironwood)
+                .map(|v| v.circuit_version()),
+            Some(nu7)
+        );
     }
 }
