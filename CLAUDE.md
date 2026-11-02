@@ -32,8 +32,10 @@ its model and vectors). The original design and threat model are in
 - **NU7** activates on mainnet at block 3,543,405, about 2026-11-06 02:00 UTC (testnet passed it at
   4,465,026), and blocks come every 25 s from then. The makers are ready (#30: librustzcash's final
   releases and expiries capped before an upgrade, "Networks" below); rolling one back to its previous
-  build works only until activation. Veylor needs its own NU7 release by then, and its Zakura build of
-  zecswap-core pushed and repinned (`docs/local/plan.md`). At 25 s blocks `confirmations = 2` is
+  build works only until activation. The apps need their own NU7 releases by then: zapp-android's
+  Zcash SDK (3.2.1, zcash_protocol 0.10.5) leaves NU7 unscheduled, so from activation every
+  transaction it builds is refused (`docs/local/android.md`, section 7); Veylor needs its release and
+  its Zakura build of zecswap-core pushed and repinned (`docs/local/plan.md`). At 25 s blocks `confirmations = 2` is
   about 50 s, windows counted in blocks shrink to a third, and zcash_primitives 0.31.0 still charges
   5,000 zatoshis an action under ZIP 317, where NU7 asks 1,000.
 - **Security.** The keys of intermediate CAs under "emSign ECC Root CA - G3" leaked in October
@@ -47,9 +49,9 @@ its model and vectors). The original design and threat model are in
 - **Dashboard** (`~/dev/zapp-dashboard`) reads both contracts. It deploys by hand
   (`npm run deploy`) and pins the testnet contract in Vercel's `BRIDGE_TESTNET_CONTRACT` and in
   `lib/bridge/config.ts`, the testnet token there alone: move them with every redeploy.
-- **Next:** the Android client on the windows contract (`docs/local/android.md`, sections 2
-  and 10; zapp-android still speaks locks), and Veylor's port. New app code is named
-  `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
+- **Next:** zapp-android's NU7 SDK build and release (`docs/local/android.md`, section 10; its
+  Shielded USD runs on the windows contract since 2026-10-23, held claims included), and Veylor's
+  port. New app code is named `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
 - **Open:** the external audit (Track A; the contract is stateful-fuzzed and mutation-tested since
   #29), the rest of maker hardening (Track B in `docs/local/plan.md`: key custody, store backups,
   runbooks, and three items from #30's review), iOS.
