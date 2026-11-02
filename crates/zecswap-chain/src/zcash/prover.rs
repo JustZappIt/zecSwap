@@ -27,11 +27,7 @@ impl Prover {
     pub(crate) fn prove(&self, pczt: Pczt) -> Result<(Pczt, Arc<Circuit>), Error> {
         let branch =
             BranchId::try_from(*pczt.global().consensus_branch_id()).map_err(Error::wallet)?;
-        // Both Orchard-protocol pools use the same circuit under any one branch.
-        let version = bundle_version_for_branch(branch, ValuePool::Orchard)
-            .ok_or_else(|| Error::Wallet(format!("{branch:?} has no Orchard protocol")))?
-            .circuit_version();
-        let circuit = self.circuit(version);
+        let circuit = self.circuit(circuit_version(branch)?);
 
         let mut prover = PcztProver::new(pczt);
         if prover.requires_sapling_proofs() {
@@ -66,5 +62,33 @@ impl Prover {
         });
         circuits.push((version, circuit.clone()));
         circuit
+    }
+}
+
+/// The circuit proving both Orchard-protocol pools under `branch`: they share one under any
+/// branch.
+fn circuit_version(branch: BranchId) -> Result<OrchardCircuitVersion, Error> {
+    bundle_version_for_branch(branch, ValuePool::Orchard)
+        .map(|version| version.circuit_version())
+        .ok_or_else(|| Error::Wallet(format!("{branch:?} has no Orchard protocol")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NU7 keeps Orchard protocol V3: nodes refuse a proof from any other circuit as invalid.
+    #[test]
+    fn nu7_proves_both_pools_with_the_nu6_3_circuit() {
+        let nu7 = circuit_version(BranchId::Nu7).unwrap();
+        assert_eq!(nu7, circuit_version(BranchId::Nu6_3).unwrap());
+        assert_eq!(nu7, OrchardCircuitVersion::PostNu6_3);
+        for pool in [ValuePool::Orchard, ValuePool::Ironwood] {
+            assert_eq!(
+                bundle_version_for_branch(BranchId::Nu7, pool).map(|v| v.circuit_version()),
+                Some(nu7),
+                "{pool:?}"
+            );
+        }
     }
 }

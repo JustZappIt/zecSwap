@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zcash_address.workspace = true
-zcash_keys = { version = "=0.17.0-pre.0", features = ["orchard"] }
+zcash_keys = { version = "0.17.0", features = ["orchard"] }
 zcash_protocol.workspace = true
 zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain" }

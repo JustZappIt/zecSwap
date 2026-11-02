@@ -40,16 +40,16 @@ tokio = { version = "1", features = ["sync", "time"] }
 tonic = { version = "0.14", default-features = false, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
 tracing = "0.1"
 zcash_address.workspace = true
-zcash_client_backend = { version = "=0.25.0-pre.0", features = [
+zcash_client_backend = { version = "0.25.0", features = [
     "lightwalletd-tonic",
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
     "sync",
 ] }
-zcash_client_sqlite = { version = "=0.23.0-pre.0", features = ["orchard", "serde", "transparent-inputs"] }
-zcash_keys = { version = "=0.17.0-pre.0", features = ["orchard"] }
-zcash_primitives = "=0.31.0-pre.0"
+zcash_client_sqlite = { version = "0.23.0", features = ["orchard", "serde", "transparent-inputs"] }
+zcash_keys = { version = "0.17.0", features = ["orchard"] }
+zcash_primitives = "0.31.0"
 zcash_protocol.workspace = true
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }

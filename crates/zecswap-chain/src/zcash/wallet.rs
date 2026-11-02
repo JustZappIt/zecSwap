@@ -138,7 +138,7 @@ impl Wallet {
         }
         self.check_server(client).await?;
         let encoded = joint.ufvk(self.network.network_type());
-        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
+        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)?;
         let birthday = Self::birthday_at_tip(client).await?;
         // A spending account whose key is assembled outside the wallet, as for hardware signers.
         let purpose = AccountPurpose::Spending { derivation: None };
@@ -163,7 +163,7 @@ impl Wallet {
         }
         self.check_server(client).await?;
         let encoded = joint.ufvk(self.network.network_type());
-        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::Wallet)?;
+        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)?;
         let birthday = if let Some(height) = from_height {
             let state = lightwalletd::tree_state(client, BlockHeight::from(height)).await?;
             AccountBirthday::from_treestate(state, None).map_err(Error::wallet)?
