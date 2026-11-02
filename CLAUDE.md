@@ -17,38 +17,42 @@ verified about Railgun); `docs/local/windows/audit3/` (the third audit: `REPORT.
 its model and vectors). The original design and threat model are in
 `~/dev/zapp/ios-zapp/docs/local/shielded-swap-plan.md`; the plan says where it no longer holds.
 
-## Where things stand (2026-10-24)
+## Where things stand (2026-11-02)
 
-- **Windows contract.** It replaced the claim and refund locks (PRs #17 and #18, merged
-  2026-10-21; "How it behaves" below). All eleven live scenarios pass on a fork of Sepolia on the
-  final code (`.testnet/e2e-windows-fork-final.log`). The hosted testnet runs it since 00:01 UTC
-  that day: `0x459b0a69e0f736666b66a3ffe0fc17c11f05980d`, 30-minute minimum and 1-hour late windows,
-  the maker on a build of `98db2b6` (#22) since 2026-10-22 20:13 and the relayer on `47650c6`'s
-  (#20) since 02:44 that day (`docs/local/deployment.md`, October 20 windows contract;
-  `deployments/sepolia-windows.json`). A stress run that day found every limit
-  answering as designed (`.testnet/stress-windows-20261021/SUMMARY.md`).
-- **Mainnet** runs a windows contract of its own since 2026-10-22 21:21 UTC:
-  `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows, the maker
-  and relayer testnet's own builds with every reveal through Flashbots Protect, held claims on since
-  21:50 (`docs/local/deployment.md`, October 22 mainnet windows contract; `deployments/mainnet-windows.json`).
-  The lock contract (`mainnet-beta.json`) is retired, its inventory moved; no swap has run on the
-  new one yet.
-- **Deposits** are live on testnet since 2026-10-18 (`docs/local/deployment.md`, October 18 deposits and
-  a new test token) and on mainnet since 2026-10-19 through Flashbots Protect (October 19 mainnet
-  deposits). Mainnet's minimum stays 1 USDC for now (the owner's call;
-  `deploy/mainnet/relayer-deposits.toml` stages 5).
+- **Deployments.** Testnet and mainnet both run the windows contract (PRs #17 and #18; "How it
+  behaves" below), on one droplet (`docs/local/deployment.md`; manifests in `deployments/`):
+  - Testnet: `0x459b0a69e0f736666b66a3ffe0fc17c11f05980d` on Sepolia, 30-minute minimum and 1-hour
+    late windows, paying tUSD into Railgun (`deployments/sepolia-windows.json`).
+  - Mainnet: `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows,
+    paying USDC into Railgun, every reveal through Flashbots Protect, held claims on
+    (`deployments/mainnet-windows.json`). One swap has settled on it.
+  - On both, the maker runs a build of `7c73986` (#30) since 2026-11-02 and the relayer one of
+    `47650c6` (#20). Deposits are live on both (`docs/deposits.md`); mainnet's minimum stays 1 USDC,
+    the owner's call.
+- **NU7** activates on mainnet at block 3,543,405, about 2026-11-06 02:00 UTC (testnet passed it at
+  4,465,026), and blocks come every 25 s from then. The makers are ready (#30: librustzcash's final
+  releases and expiries capped before an upgrade, "Networks" below); rolling one back to its previous
+  build works only until activation. Veylor needs its own NU7 release by then, and its Zakura build of
+  zecswap-core pushed and repinned (`docs/local/plan.md`). At 25 s blocks `confirmations = 2` is
+  about 50 s, windows counted in blocks shrink to a third, and zcash_primitives 0.31.0 still charges
+  5,000 zatoshis an action under ZIP 317, where NU7 asks 1,000.
+- **Security.** The keys of intermediate CAs under "emSign ECC Root CA - G3" leaked in October
+  (RUSTSEC-2026-0381). The makers' lightwalletd TLS uses roots bundled in the binary, patched in #30;
+  everything else on the droplet uses the system store, which Ubuntu fixed. The relayers and the
+  issuer take #30's rustls and tokio patches with their next release. The droplet's kernel awaits
+  Ubuntu's fix for CVE-2026-98432, which its daily updates install; nothing reaches its listeners.
 - **Railgun on Sepolia.** A relayed send's change never clears screening there, as Railgun's
-  indexer broke its transaction-ID chain (`docs/railgun-sends.md`, Screening; Veylor plans a
-  worker that repairs it). Separately, Railgun's Sepolia screening validated no shield that landed
-  after 2026-10-20 17:13 UTC, through at least 00:50 the next day: testnet payouts stayed pending.
+  indexer broke its transaction-ID chain (`docs/railgun-sends.md`, Screening), and screening has
+  stalled for hours at a time (2026-10-20), leaving testnet payouts pending.
 - **Dashboard** (`~/dev/zapp-dashboard`) reads both contracts. It deploys by hand
   (`npm run deploy`) and pins the testnet contract in Vercel's `BRIDGE_TESTNET_CONTRACT` and in
   `lib/bridge/config.ts`, the testnet token there alone: move them with every redeploy.
 - **Next:** the Android client on the windows contract (`docs/local/android.md`, sections 2
   and 10; zapp-android still speaks locks), and Veylor's port. New app code is named
   `AtomicSwap` (zapp-android's `ZecSwap*` types are NEAR's).
-- **Open:** the external audit (Track A), the rest of maker hardening (Track B: key custody, store
-  backups, runbooks), iOS.
+- **Open:** the external audit (Track A; the contract is stateful-fuzzed and mutation-tested since
+  #29), the rest of maker hardening (Track B in `docs/local/plan.md`: key custody, store backups,
+  runbooks, and three items from #30's review), iOS.
 - **Git:** `main` tracks `github.com/JustZappIt/zecSwap` (public, Apache-2.0). Commit and push only when the
   owner asks.
 
@@ -240,9 +244,10 @@ bash reads it as it goes.
   logs `ABI decoding failed` reading settled swaps there. Harmless.
 - The CLI resumes the `swap.json` in its data dir, and one in an older format stops it
   (`missing field t0`): rename a finished one `swap.json.finished-<date>`.
-- Rust is pinned to 1.92, the Android SDK's Rust backend's. Hence alloy 1.8 with
-  `alloy-primitives`/`alloy-sol-type-parser` at `~1.5`: newer alloy needs Rust 1.94, and
-  alloy-primitives 1.6+ clashes with zcash_transparent's pre-release `digest`.
+- Rust is pinned to 1.92, the Android SDK's Rust backend's. Hence alloy 1.8, as newer alloy
+  needs Rust 1.94, with `alloy-primitives`/`alloy-sol-type-parser` at `~1.5`. That pin also kept
+  out a `digest` clash with zcash_transparent's pre-release one, gone with the final librustzcash
+  crates; whether 1.6+ builds now is untried.
 - `zcash_client_sqlite` needs `transparent-inputs` because `zcash_client_backend/pczt` turns it on.
 - Don't reintroduce an orchard fork or SDK patch: signing goes through pczt's public Signer.
 - A maker store from an older maker lacks columns the swaps need, and the maker refuses to start on

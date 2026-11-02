@@ -293,8 +293,8 @@ impl Wallet {
         }
     }
 
-    /// Compares keys, not encodings: a stored key re-encodes in a newer revision than
-    /// `JointAccount::ufvk`.
+    /// Compares keys, not encodings: a key has an encoding per revision, so a stored key's need not
+    /// be `JointAccount::ufvk`'s.
     pub fn tracks_joint(&self, account: AccountUuid, joint: &JointAccount) -> Result<bool, Error> {
         Ok(self.db.get_account(account)?.and_then(|account| {
             account

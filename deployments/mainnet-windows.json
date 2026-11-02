@@ -69,7 +69,7 @@
     "publicGateway": "maker health 204, info and terms as above through the Worker",
     "restarts": 0,
     "warningsInTheFirst45Seconds": 0,
-    "relayerLaneTopUp": "the claims lane took 0.010023 ETH from the relayer's own account at start (0x4101db55c72a\u2026), the headroom main's relayer keeps for reveals",
+    "relayerLaneTopUp": "the claims lane took 0.010023 ETH from the relayer's own account at start (0x4101db55c72a…), the headroom main's relayer keeps for reveals",
     "liveSwap": "none yet",
     "heldClaims": {
       "holdRouteThroughGateway": "422 on an empty body through the Worker, the relayer's own answer",
@@ -83,5 +83,27 @@
     }
   },
   "dashboard": "zapp-dashboard 8007fb2 pins this contract, deployed to production",
-  "totalCostWei": "477404742853246"
+  "totalCostWei": "477404742853246",
+  "upgrades": [
+    {
+      "at": "2026-11-02T03:36:51Z",
+      "sourceCommit": "7c7398691c3917f6de7e4d2c397720fa4609f2cc",
+      "mergedAs": "99810cc034820e8afcfeb2732869b178ecbbc91e",
+      "release": "/opt/zecswap-mainnet/releases/20261102-nu7-7c73986",
+      "previousRelease": "/opt/zecswap-mainnet/releases/20261022-windows-98db2b6",
+      "backup": "/var/backups/zecswap/20261102-nu7-7c73986-mainnet",
+      "makerSha256": "6b576c0eeb09e68dfdb297a17a72fbb1670577869ca8cbf9b6fd8ef076add9f1",
+      "relayerSha256": "16df58ac28ba7fc60214c30f01b92d40d2d6e8d72acf1852ad7e92aa2e1ca4c1",
+      "changes": "the maker alone (#30): librustzcash's final NU7 releases, which schedule NU7 on mainnet at 3,543,405; Zcash expiries that stop at the block before a scheduled upgrade; lightwalletd TLS without the leaked emSign ECC Root CA - G3 (webpki-roots 1.0.11, rustls-webpki 0.103.16), with rustls, tokio and crypto-bigint patches",
+      "config": "unchanged",
+      "validation": {
+        "beforehand": "cargo test --workspace and the live railgun-happy scenario passed on this commit",
+        "health": "204 once a chain pass and a Zcash sync over the new roots completed",
+        "info": "through nginx: mainnet, chain 1, this contract, reverse on",
+        "monitor": "a minute on: last pass 11 s before, watchtower healthy, nothing in flight",
+        "warnings": "one 'Service was not ready: transport error' on the first lightwalletd sync at start, clean since"
+      },
+      "rollback": "the previous release, until NU7 activates; the previous maker can't build an accepted transaction after it"
+    }
+  ]
 }
