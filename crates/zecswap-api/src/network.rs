@@ -210,6 +210,8 @@ impl std::error::Error for Mismatch {}
 
 #[cfg(test)]
 mod tests {
+    use zcash_protocol::consensus::{BlockHeight, BranchId};
+
     use super::*;
 
     const SEPOLIA_RAILGUN: Address = address!("eCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea");
@@ -280,5 +282,24 @@ mod tests {
             assert!(network.ironwood());
         }
         assert!("main".parse::<Network>().is_err());
+    }
+
+    /// Crates that leave NU7 unscheduled build transactions under NU6.3's rules after it
+    /// activates, and nodes refuse every one.
+    #[test]
+    fn nu7_activates_at_each_networks_height() {
+        for (network, height) in [(Network::Mainnet, 3_543_405), (Network::Testnet, 4_465_026)] {
+            let zcash = network.zcash();
+            let activation = BlockHeight::from_u32(height);
+            assert_eq!(
+                zcash.activation_height(NetworkUpgrade::Nu7),
+                Some(activation)
+            );
+            assert_eq!(
+                BranchId::for_height(&zcash, activation - 1),
+                BranchId::Nu6_3
+            );
+            assert_eq!(BranchId::for_height(&zcash, activation), BranchId::Nu7);
+        }
     }
 }

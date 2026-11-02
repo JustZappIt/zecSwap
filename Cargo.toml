@@ -13,10 +13,10 @@ ff = "0.14"
 group = "0.14"
 orchard = { version = "0.16.0", default-features = false, features = ["std"] }
 pasta_curves = "0.6"
-pczt = { version = "=0.10.0-pre.0", default-features = false, features = ["std", "orchard", "signer"] }
+pczt = { version = "0.10.0", default-features = false, features = ["std", "orchard", "signer"] }
 rand = { version = "0.10", default-features = false, features = ["sys_rng"] }
-zcash_address = "=0.14.0-pre.0"
-zcash_protocol = "=0.11.0-pre.0"
+zcash_address = "0.14.0"
+zcash_protocol = "0.11.0"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [profile.release]

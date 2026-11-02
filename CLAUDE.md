@@ -203,8 +203,12 @@ bash reads it as it goes.
   refuses live swaps opened under another key; `cancel_after` counts from the open landing;
   `max_awaiting_deposit` caps swaps waiting on users.
 - **Networks.** `network = "testnet" | "mainnet"` in each service's config fixes the Zcash network,
-  chains, Railgun, USDC and lightwalletd, and each refuses another's. The pinned crates schedule
-  NU7 on testnet alone: move to crates that schedule it on mainnet before it activates there.
+  chains, Railgun, USDC and lightwalletd, and each refuses another's. librustzcash's final NU7
+  releases schedule NU7 on both (mainnet 3,543,405, testnet 4,465,026). Nothing checks at run time
+  that the crates schedule the next upgrade: move them before each one activates, or every Zcash
+  transaction built after it carries the old branch and nodes refuse it. While an upgrade is
+  scheduled, a Zcash transaction's expiry stops at the block before it (`expiry_before_upgrade`):
+  one still unmined then reads as expired at activation and is built again under the new rules.
 
 ## Gotchas
 
