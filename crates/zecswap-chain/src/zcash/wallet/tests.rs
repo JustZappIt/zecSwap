@@ -1,9 +1,12 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use incrementalmerkletree::Position;
+use incrementalmerkletree::frontier::Frontier;
 use orchard::builder::BundleType;
 use orchard::bundle::BundleVersion;
 use orchard::keys::Scope;
 use orchard::note_encryption::COMPACT_NOTE_SIZE;
+use orchard::tree::MerkleHashOrchard;
 use orchard::value::NoteValue;
 use orchard::{Anchor, Bundle};
 use tempfile::TempDir;
@@ -23,6 +26,8 @@ use super::*;
 
 const TIP: u32 = 4_395_130;
 const DEPOSIT: u64 = 1_000_000;
+/// Mainnet's NU7 activation height.
+const NU7: u32 = 3_543_405;
 
 fn random_joint() -> JointAccount {
     JointAccount::derive(
@@ -86,7 +91,7 @@ fn previous_swap(scanned: bool) -> (TempDir, Wallet) {
             0,
             &[CommitmentTreeRoot::from_parts(
                 BlockHeight::from_u32(4_094_022),
-                orchard::tree::MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(),
+                MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(),
             )],
         )
         .unwrap();
@@ -250,9 +255,13 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
     assert!(!wallet.is_confirmed(TxId::from_bytes([2; 32])).unwrap());
 }
 
-/// `TIP` holding an Ironwood deposit of `DEPOSIT` to `to`, as lightwalletd serves it, and the
-/// block after it.
-fn deposit_blocks(to: orchard::Address) -> Vec<CompactBlock> {
+/// `count` chained blocks from `tip`, the first holding an Ironwood deposit of `DEPOSIT` to `to`,
+/// as lightwalletd serves them, and the deposit's leaf in the note commitment tree.
+fn deposit_blocks(
+    tip: u32,
+    to: orchard::Address,
+    count: u8,
+) -> (Vec<CompactBlock>, MerkleHashOrchard) {
     let version = BundleVersion::ironwood_v3();
     let mut builder = orchard::builder::Builder::new(
         BundleType::DEFAULT,
@@ -283,21 +292,24 @@ fn deposit_blocks(to: orchard::Address) -> Vec<CompactBlock> {
         }],
         ..Default::default()
     };
-    [vec![deposit], vec![]]
-        .into_iter()
-        .zip(0u8..)
-        .map(|(vtx, i)| CompactBlock {
-            height: u64::from(TIP + u32::from(i)),
+    let blocks = (0..count)
+        .map(|i| CompactBlock {
+            height: u64::from(tip + u32::from(i)),
             hash: vec![i + 1; 32],
             prev_hash: vec![i; 32],
-            vtx,
+            vtx: if i == 0 {
+                vec![deposit.clone()]
+            } else {
+                vec![]
+            },
             chain_metadata: Some(ChainMetadata {
                 ironwood_commitment_tree_size: 1,
                 ..Default::default()
             }),
             ..Default::default()
         })
-        .collect()
+        .collect();
+    (blocks, MerkleHashOrchard::from_cmx(action.cmx()))
 }
 
 #[tokio::test]
@@ -317,11 +329,8 @@ async fn the_other_side_cannot_read_where_a_sweep_went() {
     )
     .unwrap();
     let account = import_at(&mut wallet, &joint, TIP);
-    wallet
-        .blocks
-        .insert(deposit_blocks(joint.deposit_address()))
-        .await
-        .unwrap();
+    let (blocks, _) = deposit_blocks(TIP, joint.deposit_address(), 2);
+    wallet.blocks.insert(blocks).await.unwrap();
     wallet
         .db
         .update_chain_tip(BlockHeight::from_u32(TIP + 1))
@@ -363,4 +372,84 @@ async fn the_other_side_cannot_read_where_a_sweep_went() {
             "the joint viewing key reads where the sweep went"
         );
     }
+}
+
+/// A sweep built under NU6.3's rules can't be mined once NU7 activates. Left to the builder's
+/// expiry, 40 blocks on, it would hold the deposit and read as pending through NU7's first 40
+/// blocks.
+#[tokio::test]
+async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::MainNetwork)
+        .unwrap()
+        .with_confirmations(NonZeroU32::new(1).unwrap());
+    let (e, z) = (
+        SecretShare::random(UnwrapErr(SysRng)),
+        SecretShare::random(UnwrapErr(SysRng)),
+    );
+    let joint = JointAccount::derive(
+        &e.public(),
+        &z.public(),
+        &ViewingKeys::random(UnwrapErr(SysRng)),
+    )
+    .unwrap();
+    let tip = NU7 - 3;
+    let account = import_at(&mut wallet, &joint, tip);
+    let (blocks, deposit) = deposit_blocks(tip, joint.deposit_address(), 4);
+    wallet.blocks.insert(blocks).await.unwrap();
+    wallet
+        .db
+        .update_chain_tip(BlockHeight::from_u32(tip + 1))
+        .unwrap();
+    scan_cached_blocks(
+        &wallet.network,
+        &wallet.blocks,
+        &mut wallet.db,
+        BlockHeight::from_u32(tip),
+        &ChainState::empty(BlockHeight::from_u32(tip - 1), BlockHash([0; 32])),
+        2,
+    )
+    .unwrap();
+
+    let to = random_joint()
+        .unified_address(wallet.network.network_type())
+        .parse()
+        .unwrap();
+    let key = joint.spend_key(&e, &z).unwrap();
+    let prover = Prover::default();
+    let before = wallet.sweep(&prover, account, &key, &to).unwrap();
+    let tx = wallet.db.get_transaction(before).unwrap().unwrap();
+    assert_eq!(tx.consensus_branch_id(), BranchId::Nu6_3);
+    assert_eq!(tx.expiry_height(), BlockHeight::from_u32(NU7 - 1));
+    assert_eq!(wallet.funds(account).unwrap().spendable, 0);
+
+    // The chain reaches NU7 without the sweep.
+    wallet
+        .db
+        .update_chain_tip(BlockHeight::from_u32(NU7))
+        .unwrap();
+    let ironwood = Frontier::from_parts(Position::from(0), deposit, vec![]).unwrap();
+    scan_cached_blocks(
+        &wallet.network,
+        &wallet.blocks,
+        &mut wallet.db,
+        BlockHeight::from_u32(tip + 2),
+        &ChainState::new(
+            BlockHeight::from_u32(tip + 1),
+            BlockHash([2; 32]),
+            Frontier::empty(),
+            Frontier::empty(),
+            ironwood,
+        ),
+        2,
+    )
+    .unwrap();
+    assert!(!wallet.is_mined(before).unwrap());
+    assert!(wallet.is_expired(before).unwrap());
+    assert_eq!(wallet.funds(account).unwrap().spendable, DEPOSIT);
+
+    let after = wallet.sweep(&prover, account, &key, &to).unwrap();
+    let tx = wallet.db.get_transaction(after).unwrap().unwrap();
+    assert_eq!(tx.consensus_branch_id(), BranchId::Nu7);
+    assert_eq!(tx.expiry_height(), BlockHeight::from_u32(NU7 + 1 + 120));
 }

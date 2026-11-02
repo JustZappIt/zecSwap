@@ -28,8 +28,8 @@ use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
-use zcash_primitives::transaction::builder::BundlePadding;
-use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
+use zcash_primitives::transaction::builder::{BundlePadding, default_tx_expiry_delta};
+use zcash_protocol::consensus::{BlockHeight, BranchId, Network, Parameters, UPGRADES_IN_ORDER};
 use zcash_protocol::value::{BalanceError, Zatoshis};
 use zcash_protocol::{ShieldedPool, TxId};
 use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
@@ -488,6 +488,7 @@ impl Wallet {
         ovk_policy: OvkPolicy,
         sign: impl FnOnce(Pczt) -> Result<Pczt, Error>,
     ) -> Result<TxId, Error> {
+        let target = BlockHeight::from(proposal.min_target_height());
         let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
             &mut self.db,
             &self.network,
@@ -496,7 +497,7 @@ impl Wallet {
             account,
             ovk_policy,
             proposal,
-            None,
+            expiry_before_upgrade(&self.network, target),
             BundlePadding::DEFAULT,
         )
         .map_err(Error::wallet)?;
@@ -511,6 +512,21 @@ impl Wallet {
         )
         .map_err(Error::wallet)
     }
+}
+
+/// The expiry of a transaction targeting `target` while a network upgrade is scheduled above it:
+/// the builder's default, but no later than the block before the upgrade, as zcashd's wallet sets
+/// it. Built under the old rules, it can never be mined once the upgrade activates, yet until its
+/// expiry it would hold its notes and read as pending, so `is_expired` would keep it from being
+/// built again. A ZIP 318 crossing takes no expiry but its own rolling one, a month or more out,
+/// so none is built while an upgrade is scheduled.
+fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Option<BlockHeight> {
+    let upgrade = UPGRADES_IN_ORDER
+        .iter()
+        .filter_map(|&upgrade| network.activation_height(upgrade))
+        .find(|&activation| activation > target)?;
+    let default = target + default_tx_expiry_delta(BranchId::for_height(network, target));
+    Some(default.min(upgrade - 1))
 }
 
 fn sign_own_spends(pczt: Pczt, ask: &SpendAuthorizingKey) -> Result<Pczt, Error> {

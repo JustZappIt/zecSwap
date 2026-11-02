@@ -204,7 +204,10 @@ bash reads it as it goes.
   `max_awaiting_deposit` caps swaps waiting on users.
 - **Networks.** `network = "testnet" | "mainnet"` in each service's config fixes the Zcash network,
   chains, Railgun, USDC and lightwalletd, and each refuses another's. librustzcash's final NU7
-  releases schedule NU7 on both (mainnet 3,543,405, testnet 4,465,026).
+  releases schedule NU7 on both (mainnet 3,543,405, testnet 4,465,026). While an upgrade is
+  scheduled, a Zcash transaction's expiry stops at the block before it (`expiry_before_upgrade`):
+  one still unmined then reads as expired at activation and is built again under the new rules.
+  No ZIP 318 crossing is built meanwhile, as one takes no expiry but its own.
 
 ## Gotchas
 

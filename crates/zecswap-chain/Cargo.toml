@@ -58,6 +58,7 @@ zip32 = "0.3"
 [dev-dependencies]
 alloy = { version = "1.8", default-features = false, features = ["node-bindings"] }
 hex = "0.4"
+incrementalmerkletree = "0.9"
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }

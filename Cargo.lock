@@ -7023,6 +7023,7 @@ dependencies = [
  "async-trait",
  "hex",
  "http-body",
+ "incrementalmerkletree",
  "orchard",
  "pczt",
  "rand 0.10.3",
