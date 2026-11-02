@@ -519,7 +519,8 @@ impl Wallet {
 /// it. Built under the old rules, it can never be mined once the upgrade activates, yet until its
 /// expiry it would hold its notes and read as pending, so `is_expired` would keep it from being
 /// built again. A ZIP 318 crossing takes no expiry but its own rolling one, a month or more out,
-/// so none is built while an upgrade is scheduled.
+/// so building one fails while an upgrade is scheduled, with no fallback. None arises here: a
+/// crossing spends an Orchard note made before NU6.3, and every account here is younger.
 fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Option<BlockHeight> {
     let upgrade = UPGRADES_IN_ORDER
         .iter()
