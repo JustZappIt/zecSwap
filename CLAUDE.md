@@ -17,7 +17,7 @@ verified about Railgun); `docs/local/windows/audit3/` (the third audit: `REPORT.
 its model and vectors). The original design and threat model are in
 `~/dev/zapp/ios-zapp/docs/local/shielded-swap-plan.md`; the plan says where it no longer holds.
 
-## Where things stand (2026-11-02)
+## Where things stand (2026-11-03)
 
 - **Deployments.** Testnet and mainnet both run the windows contract (PRs #17 and #18; "How it
   behaves" below), on one droplet (`docs/local/deployment.md`; manifests in `deployments/`):
@@ -26,22 +26,24 @@ its model and vectors). The original design and threat model are in
   - Mainnet: `0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f`, 1-hour minimum and 24-hour late windows,
     paying USDC into Railgun, every reveal through Flashbots Protect, held claims on
     (`deployments/mainnet-windows.json`). One swap has settled on it.
-  - On both, the maker runs a build of `7c73986` (#30) since 2026-11-02 and the relayer one of
-    `47650c6` (#20). Deposits are live on both (`docs/deposits.md`); mainnet's minimum stays 1 USDC,
+  - On both, the maker runs a build of `7c73986` (#30) since 2026-11-02, and the relayer (with
+    testnet's issuer) one of main at `8a5c642` since 2026-11-03: their code as before, on #30's
+    library patches. Deposits are live on both (`docs/deposits.md`); mainnet's minimum stays 1 USDC,
     the owner's call.
 - **NU7** activates on mainnet at block 3,543,405, about 2026-11-06 02:00 UTC (testnet passed it at
   4,465,026), and blocks come every 25 s from then. The makers are ready (#30: librustzcash's final
   releases and expiries capped before an upgrade, "Networks" below); rolling one back to its previous
   build works only until activation. The apps need their own NU7 releases by then: zapp-android's
   Zcash SDK (3.2.1, zcash_protocol 0.10.5) leaves NU7 unscheduled, so from activation every
-  transaction it builds is refused (`docs/local/android.md`, section 7); Veylor needs its release and
-  its Zakura build of zecswap-core pushed and repinned (`docs/local/plan.md`). At 25 s blocks `confirmations = 2` is
+  transaction it builds is refused (`docs/local/android.md`, section 7), while main's libzecswap is on
+  the final crates since #33 (`631b9bb`; a rebuild from main reproduces it byte for byte). Veylor
+  needs its release and its Zakura build of zecswap-core pushed and repinned (`docs/local/plan.md`). At 25 s blocks `confirmations = 2` is
   about 50 s, windows counted in blocks shrink to a third, and zcash_primitives 0.31.0 still charges
   5,000 zatoshis an action under ZIP 317, where NU7 asks 1,000.
 - **Security.** The keys of intermediate CAs under "emSign ECC Root CA - G3" leaked in October
   (RUSTSEC-2026-0381). The makers' lightwalletd TLS uses roots bundled in the binary, patched in #30;
   everything else on the droplet uses the system store, which Ubuntu fixed. The relayers and the
-  issuer take #30's rustls and tokio patches with their next release. The droplet's kernel awaits
+  issuer run on #30's rustls and tokio patches since 2026-11-03. The droplet's kernel awaits
   Ubuntu's fix for CVE-2026-98432, which its daily updates install; nothing reaches its listeners.
 - **Railgun on Sepolia.** A relayed send's change never clears screening there, as Railgun's
   indexer broke its transaction-ID chain (`docs/railgun-sends.md`, Screening), and screening has

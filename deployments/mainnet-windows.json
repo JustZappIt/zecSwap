@@ -104,6 +104,26 @@
         "warnings": "one 'Service was not ready: transport error' on the first lightwalletd sync at start, clean since"
       },
       "rollback": "the previous release, until NU7 activates; the previous maker can't build an accepted transaction after it"
+    },
+    {
+      "at": "2026-11-03T05:21:36Z",
+      "sourceCommit": "8a5c642571ec730dcf0b0c2359484c2c71ae341d",
+      "builtFrom": "631b9bbf0c5029d34a3e29bb7a8059d6d1419e58, the same tree",
+      "release": "/opt/zecswap-mainnet/releases/20261103-patches-8a5c642",
+      "previousRelease": "/opt/zecswap-mainnet/releases/20261102-nu7-7c73986",
+      "backup": "/var/backups/zecswap/20261103-patches-8a5c642-mainnet",
+      "makerSha256": "6b576c0eeb09e68dfdb297a17a72fbb1670577869ca8cbf9b6fd8ef076add9f1",
+      "relayerSha256": "62bdd8672d9a0ef5d9368dae354e06d88c3d663cee9bfba7691ea2d4b48e6843",
+      "issuerSha256": "b5baf657a6cc081e14692eecaa281ea7303809ab463c1e460c672dfbb3c04a16",
+      "changes": "the relayer alone: its code as it was (47650c6) rebuilt on #30's library patches (rustls 0.23.46, rustls-webpki 0.103.16, tokio 1.54.1); it trusts the system's roots, none bundled. The issuer's service stays off, this build of its unchanged code in the release for when tokens are on. The maker and its process are unchanged",
+      "config": "unchanged",
+      "validation": {
+        "relayer": "terms through nginx and the public gateway: the windows contract, fee 0.5 USDC, windows 3600 and 86400 s; its monitor's account, lanes and contract as before, no claims held",
+        "maker": "health 204 and its info (mainnet, chain 1, windows) through the public gateway after",
+        "aMinuteOn": "nothing restarted, the maker included",
+        "warnings": "none"
+      },
+      "rollback": "the previous release; the configs never changed"
     }
   ]
 }
