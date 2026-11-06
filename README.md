@@ -76,6 +76,21 @@ lasts 24 hours (an hour on the testnet).
 | You haven't claimed by `t1` | The maker refunds and your ZEC comes back; if it hasn't within 24 hours, you may claim again |
 | Railgun sends the payout back | It returns to the swap's own vault, and you can shield it again |
 
+## CROPS
+
+On the EF's EIP-8141 devnet only, a claim can go out as a frame transaction the swap's own key
+sends straight to ERC-8421's alternative mempool, its gas paid by a sponsor contract
+([docs/frames.md](docs/frames.md)). Frame transactions exist on that devnet alone.
+
+- **Censorship resistance:** a claim no longer needs our relayer, and nobody can switch the sponsor
+  off: it has no owner.
+- **Open source:** Apache-2.0, the maker and the sponsor included.
+- **Privacy:** the ZEC stays shielded, and the claiming address is fresh for every swap and never
+  funded, so no funding transaction links it to anyone.
+- **Security:** the windows contract is unchanged (three internal audits, fuzzing and mutation
+  testing, no external audit yet), the sponsor's spend is capped per transaction, and the wallet
+  never sends a share with under 15 minutes of its window left.
+
 ## More in the docs
 
 | Doc | What it covers |
@@ -85,6 +100,7 @@ lasts 24 hours (an hour on the testnet).
 | [Railgun sends](docs/railgun-sends.md) | Private sends and withdrawals the relayer broadcasts for wallets with no ETH |
 | [Tokens](docs/tokens.md) | Privacy Pass tokens that limit how many swaps a device can walk away from each day |
 | [Observability](docs/observability.md) | The services' logs |
+| [Frames](docs/frames.md) | Devnet only: claims sent as EIP-8141 frame transactions to ERC-8421's alternative mempool, their gas paid by a sponsor contract |
 
 ## Repository layout
 

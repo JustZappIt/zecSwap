@@ -31,5 +31,27 @@
   "deployer": "0x63CE263dDD0d772E01F496DC43423651Be4b9772",
   "sourceCommit": "b3fcd2d47dee84ca1a21e310aeb8a37318804d38",
   "deployedAt": "2026-11-06",
-  "status": "active"
+  "status": "active",
+  "liveSwap": {
+    "swap": "0x7d7b2585886561254901002facd066f4d7c8dab418e9d0834b0293b88b7af822",
+    "route": "zecswap-cli swap --frames against a local maker: 1 tUSD for testnet ZEC",
+    "opened": "0x01012e8e9aebfe1348d0e9ff01502fab8eada1073f1b90ed9091d65703cec93f",
+    "deposit": {
+      "zcashTransaction": "9356608ae63136369aac97cac272503ef24b410a1e68b3d41f8b2636bdcb4f00",
+      "zat": 202021
+    },
+    "ready": "0x3ceceabaae4891fa544ea191ae8de2cb21c347dd07ba890fc953926891c6c2c9",
+    "claimed": {
+      "transaction": "0xf0465fe7fa2054feac2d3d63491b7674f1aa5f3fa080f882a9c6305cbc89bc52",
+      "block": 4674,
+      "sender": "0x7e3252de57df5d1ee5b4842896e150a635248e2e",
+      "payer": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+      "gasUsed": 483678,
+      "admitted": "2026-11-06T14:16:15Z",
+      "mined": "2026-11-06T14:16:25Z",
+      "senderEthBalance": "0",
+      "paid": "1000000"
+    },
+    "makerSweep": "cae3d48e769ac214f6c9fff0b06eead1ea8537119eaed40443b157341eec42a4"
+  }
 }
