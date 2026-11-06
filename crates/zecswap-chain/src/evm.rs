@@ -3,6 +3,7 @@
 mod canonical;
 pub mod deposits;
 mod events;
+pub mod frames;
 pub mod funding;
 pub mod judge;
 mod meter;
@@ -128,6 +129,11 @@ sol! {
         function MIN_WINDOW() external view returns (uint256);
         function LATE_WINDOW() external view returns (uint256);
         function RAILGUN() external view returns (address);
+    }
+
+    /// The frames devnet's claim sponsor (frames/contracts/src/ClaimSponsor.sol).
+    interface IClaimSponsor {
+        function sponsor(bytes32 id, TermsWords terms) external;
     }
 
     #[sol(rpc)]

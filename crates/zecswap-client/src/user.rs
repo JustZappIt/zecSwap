@@ -6,6 +6,7 @@ use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zecswap_api::relayer::{self, Claim, Sent};
 use zecswap_api::{Acceptance, Network, Quote};
+use zecswap_chain::evm::frames::{self, Mempool};
 use zecswap_chain::evm::judge::{self, Go, READY_DEPTH, Refusal};
 use zecswap_chain::evm::{
     BlockId, OnChainSwap, Reveal, Settlement, Stage, Window, swap_id, wall_now,
@@ -25,6 +26,9 @@ pub const MAX_TIME_TO_T0: u64 = 2 * 60 * 60;
 /// Never reveal with less than this left in the claim's window: a claim landing after `t1`
 /// reverts, its share public, with the swap the maker's to refund.
 pub const CLAIM_MARGIN: u64 = 5 * 60;
+/// A claim through the alt mempool goes out only with this left in its window: nothing keeps a
+/// public share out of a block that lands after `t1`.
+pub const FRAMES_MIN_LEFT: u64 = 15 * 60;
 /// How long a claim waits for its ready to be deep enough.
 const DEPTH_WAIT: Duration = Duration::from_secs(10 * 60);
 const CATCH_UP: Duration = Duration::from_secs(60);
@@ -62,6 +66,14 @@ pub enum Route {
         relayer: RelayerApi,
         /// The most the relayer may keep from a payout, in token base units.
         max_fee: u128,
+    },
+    /// To the swap's own key, or `to`: that key sends the claim as an EIP-8141 frame
+    /// transaction straight into an ERC-8421 mempool, and `sponsor` pays its gas, so the key
+    /// never holds ETH and no relayer takes part. On the EF's frames devnet alone (docs/frames.md).
+    Frames {
+        mempool: Mempool,
+        sponsor: Address,
+        to: Option<Address>,
     },
 }
 
@@ -244,6 +256,11 @@ impl User {
             Route::Railgun { relayer, max_fee } => {
                 self.claim_into_railgun(swap, relayer, *max_fee).await
             }
+            Route::Frames {
+                mempool,
+                sponsor,
+                to,
+            } => self.claim_by_frame(swap, mempool, *sponsor, *to).await,
         }
     }
 
@@ -290,6 +307,85 @@ impl User {
         Ok(Paid {
             amount,
             tx: Some(tx),
+        })
+    }
+
+    /// The share is public once sent: the alt mempool gossips it, and nothing keeps a late claim
+    /// out of a block. So on top of every claim's judgement, it goes out only with
+    /// `FRAMES_MIN_LEFT` of its window to spare, and always as the one transaction: signed
+    /// deterministically, the same swap and settings rebuild the same bytes after an interruption.
+    async fn claim_by_frame(
+        &self,
+        swap: &UserSwap,
+        mempool: &Mempool,
+        sponsor: Address,
+        to: Option<Address>,
+    ) -> Result<Paid> {
+        let chain = self.state(swap).await?;
+        let keys = self.keys(swap.index)?;
+        let user = Address::from(keys.auth.address());
+        let terms = self.terms(swap)?;
+        let to = to.unwrap_or(user);
+        let tx = frames::claim_tx(
+            swap.quote.chain_id,
+            self.settlement.contract(),
+            sponsor,
+            swap.swap_id,
+            &terms,
+            &keys.share,
+            to,
+        )
+        .sign(&keys.auth);
+        let hash = tx.hash();
+        match chain.stage {
+            Stage::Refunded => bail!("the maker refunded the swap"),
+            Stage::Claimed => {}
+            Stage::Open | Stage::Ready => {
+                let window = self.claim_window(swap).await?;
+                let now = self.settlement.now().await?.max(wall_now());
+                ensure!(
+                    window.leaves(now, FRAMES_MIN_LEFT),
+                    "the claim's window ends too soon to claim through the alt mempool; the share stays secret"
+                );
+                let mut sent: Option<Instant> = None;
+                loop {
+                    let state = self.settlement.swap(swap.swap_id, &terms).await?;
+                    if state.is_some_and(|state| !matches!(state.stage, Stage::Open | Stage::Ready))
+                    {
+                        break;
+                    }
+                    let now = self.settlement.now().await?.max(wall_now());
+                    ensure!(
+                        window.leaves(now, 0),
+                        "the claim {hash} never landed in its window: its share is public, and the swap is the maker's to refund"
+                    );
+                    if sent.is_none_or(|at| at.elapsed() >= frames::RESEND_AFTER) {
+                        match mempool.send(&tx).await {
+                            Ok(_) => sent = Some(Instant::now()),
+                            // Refused before it was ever admitted: nothing was gossiped.
+                            Err(e) if sent.is_none() => return Err(e.into()),
+                            // Landed meanwhile, or the node is down: the swap's state says.
+                            Err(_) => {}
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+        let chain = self
+            .caught_up(swap, |chain| {
+                !matches!(chain.stage, Stage::Open | Stage::Ready)
+            })
+            .await?;
+        ensure!(chain.stage == Stage::Claimed, "the maker refunded the swap");
+        let credit = self.settlement.balance_of(user, chain.token).await?;
+        ensure!(
+            credit == 0,
+            "claimed, but the withdrawal failed: {credit} stays credited to {user} in the contract"
+        );
+        Ok(Paid {
+            amount: chain.amount,
+            tx: Some(hash),
         })
     }
 
@@ -439,6 +535,10 @@ impl User {
             Route::Railgun { .. } => Payout {
                 user: keys.auth.address(),
                 note: Some(self.railgun.note(&keys.note_entropy)?.commitment()),
+            },
+            Route::Frames { .. } => Payout {
+                user: keys.auth.address(),
+                note: None,
             },
         })
     }
