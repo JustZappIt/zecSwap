@@ -1,0 +1,23 @@
+# The frames devnet's contracts, kept apart from the audited contracts/ tree. Its solc and optimizer
+# settings are contracts/foundry.toml's.
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+libs = []
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 10000
+remappings = [
+    "@forshtat/hegota-support/=../node_modules/@forshtat/hegota-support/",
+    "zecswap/=../../contracts/src/",
+    "zecswap-test/=../../contracts/test/",
+    "forge-std/=../../contracts/lib/forge-std/src/",
+]
+allow_paths = ["../node_modules", "../../contracts"]
+# test/vectors links to contracts/test/vectors, which the windows tests' base reads.
+fs_permissions = [{ access = "read", path = "./test/vectors" }, { access = "read", path = "../../contracts/test/vectors" }]
+
+[fmt]
+line_length = 110
