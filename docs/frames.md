@@ -6,6 +6,10 @@ part, and the address that claims never holds ETH. It runs only on the Ethereum 
 EIP-8141 devnet, where frame transactions exist: not on Sepolia, Base Sepolia or mainnet, and it
 is not merged into main.
 
+It's opt-in: the CLI claims this way only with `--frames`, and nothing else changes. Swaps on
+Sepolia and mainnet, the apps' included, claim as before, through the relayer (on mainnet through
+Flashbots Protect): neither chain has frame transactions yet.
+
 ## Why
 
 Today a user with no ETH can't send their own claim, so our relayer sends it, through Flashbots
@@ -30,6 +34,13 @@ The key, not the sponsor, sends it: on the account route `claim` credits `terms.
 `terms.user` can `withdraw`. The contract is unchanged. The claim and the withdrawal are separate
 frames, never one atomic batch: a batch that failed would undo the claim with its share already on
 chain, while a failed withdrawal only leaves the amount credited.
+
+The devnet has no Railgun, so the claim takes the account route. On the Railgun route anyone may
+send the claim, as the relayer does today, and `payout` then shields the amount to the note fixed
+at open. On a chain with both frame transactions and Railgun, the same sponsored transaction would
+end with that payout in place of the withdrawal, the swap's key signing it for itself with no fee,
+so the amount would land straight in the user's private balance; the sponsor would take Railgun
+swaps too.
 
 The limits are fixed, never estimated, because an estimate would show a node the share before the
 claim goes out. The devnet measured 100, 29,891, 194,468 and 36,247 execution gas. The claim

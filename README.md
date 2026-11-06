@@ -80,7 +80,8 @@ lasts 24 hours (an hour on the testnet).
 
 On the EF's EIP-8141 devnet only, a claim can go out as a frame transaction the swap's own key
 sends straight to ERC-8421's alternative mempool, its gas paid by a sponsor contract
-([docs/frames.md](docs/frames.md)). Frame transactions exist on that devnet alone.
+([docs/frames.md](docs/frames.md)). Frame transactions exist on that devnet alone: everywhere
+else, Sepolia and mainnet included, claims go through the relayer as before.
 
 - **Censorship resistance:** a claim no longer needs our relayer, and nobody can switch the sponsor
   off: it has no owner.
