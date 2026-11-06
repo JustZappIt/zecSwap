@@ -1,0 +1,35 @@
+{
+  "chainId": 1337,
+  "chain": "the EF's EIP-8141 alt-mempool devnet: frame transactions exist nowhere else (docs/frames.md)",
+  "contract": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+  "token": "0x6784ac633ba2a44b143599e5d7124cd01da94f01",
+  "railgun": "0x0000000000000000000000000000000000000000",
+  "minWindowSeconds": 1800,
+  "lateWindowSeconds": 3600,
+  "deploymentTransaction": "0xc190f6905e1470e09e030c4ec629ed86e41b6162bb0286b4e0aa693730092f9b",
+  "deploymentBlock": 4305,
+  "deploymentGasUsed": 27474350,
+  "tokenTransaction": "0xffbff9b9d7aaf1f9c68a88da47d726ea0e87ca2c39683275bf6648ff0799b6b9",
+  "zcashNetwork": "testnet",
+  "maker": "0xd13371Dbb11b61Ad22b9AB120D659f42c00a3233",
+  "sponsor": {
+    "address": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+    "transaction": "0x8706efb3f6e0dd6c220de18a9721e669874c1baa55e6d979525194bd2493f313",
+    "maxCostWei": "5000000000000000",
+    "fundingWei": "200000000000000000",
+    "stake": {
+      "registry": "0xd51c04d7a0b01124e84de152f4e56d9eecb22d2f",
+      "wei": "12000000000000000",
+      "unstakeDelaySeconds": 86400,
+      "transaction": "0x8bba660726650e54cc0786677651490109284e7f7d130effba36b04fa661fb7b"
+    }
+  },
+  "rpc": "https://altmempool.forshtat.com",
+  "mempool": "https://altmempool.forshtat.com/rpc",
+  "explorer": "https://explorer.altmempool.wtf/",
+  "block1Hash": "0x0ffd85bd5d44d9eda64978049debdb00da15b7d4ac5be004fc993aee51ecc559",
+  "deployer": "0x63CE263dDD0d772E01F496DC43423651Be4b9772",
+  "sourceCommit": "b3fcd2d47dee84ca1a21e310aeb8a37318804d38",
+  "deployedAt": "2026-11-06",
+  "status": "active"
+}
