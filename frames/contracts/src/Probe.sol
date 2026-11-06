@@ -17,7 +17,8 @@ contract Probe is HegotaSupport(Devnet.ERC8421_WORKSHOP) {
         emit Caller(msg.sender);
         for (uint256 id; id <= uint256(type(TxParam).max); ++id) {
             // Bounded: an id the devnet halts on burns what it is given.
-            (bool ok, bytes memory out) = address(this).staticcall{gas: 50_000}(abi.encodeCall(this.read, (id)));
+            (bool ok, bytes memory out) =
+                address(this).staticcall{gas: 50_000}(abi.encodeCall(this.read, (id)));
             emit Param(id, ok, ok && out.length == 32 ? abi.decode(out, (uint256)) : 0);
         }
     }
