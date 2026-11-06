@@ -1,20 +1,23 @@
 // The go/no-go probe on the EF frames devnet: deploys tUSD, ZecSwap, a TXPARAM probe and a
 // ClaimSponsor, opens and readies a swap whose user key is a test vector's (its share is public),
 // and sends the sponsored claim to the canonical mempool, the alt mempool unstaked, and the alt
-// mempool staked. Resumable: it keeps what it did in runs/probe.json. Prints a JSON report.
-//   node scripts/probe.mjs [--fresh]
+// mempool staked. With --deployment it claims such a swap on deployments/frames-devnet.json's
+// contracts instead, at the claim's fixed limits. Resumable: it keeps what it did in runs/.
+// Writes a JSON report there.
+//   node scripts/probe.mjs [--fresh] [--deployment]
 import fs from "node:fs";
 import path from "node:path";
 import { encodeFunctionData, decodeEventLog, parseEther, maxUint256 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
-  ROOT, CHAIN_ID, ETHREX, MEMPOOL, explorerLink, REGISTRY, FRAME_MAX_FEE, env, rpc, RpcError, waitReceipt,
+  ROOT, CHAIN_ID, ETHREX, MEMPOOL, explorerLink, REGISTRY, REGISTRY_ABI, MANIFEST, CLAIM_LIMITS, FRAME_MAX_FEE, env, rpc, RpcError, waitReceipt,
   sendLegacy, deploy, call, zecswapArtifact, framesArtifact, hashTerms, claimTx, profile, frame, newTx,
   secp256k1Placeholder, signTx, encodeTx, txHash, toWire,
 } from "./devnet.mjs";
 
-const STATE = path.join(ROOT, "frames/runs/probe.json");
 const fresh = process.argv.includes("--fresh");
+const deployed = process.argv.includes("--deployment") ? JSON.parse(fs.readFileSync(MANIFEST, "utf8")) : null;
+const STATE = path.join(ROOT, `frames/runs/${deployed ? "smoke" : "probe"}.json`);
 const keys = env();
 const deployer = keys.FRAMES_DEPLOYER_KEY;
 const maker = keys.MAKER_PRIVATE_KEY;
@@ -32,9 +35,6 @@ const tokenArt = zecswapArtifact("TestToken");
 const swapsArt = zecswapArtifact("ZecSwap");
 const sponsorArt = framesArtifact("ClaimSponsor");
 const probeArt = framesArtifact("Probe");
-const registryAbi = [
-  { type: "function", name: "getDepositInfo", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }, { type: "uint32" }, { type: "uint64" }] },
-];
 
 // --- the chain, and a reset since the last run
 if (Number(await rpc(ETHREX, "eth_chainId")) !== CHAIN_ID) throw new Error("not chain 1337");
@@ -54,9 +54,9 @@ async function ensure(name, art, args, value = 0n) {
   save({ [name]: d.address, [`${name}Deploy`]: { hash: d.hash, gasUsed: d.gasUsed, block: d.block } });
   return d.address;
 }
-const token = await ensure("token", tokenArt, []);
-const swaps = await ensure("swaps", swapsArt, [1800n, 3600n, "0x0000000000000000000000000000000000000000"]);
-const probe = await ensure("probe", probeArt, []);
+const token = deployed?.token ?? (await ensure("token", tokenArt, []));
+const swaps = deployed?.contract ?? (await ensure("swaps", swapsArt, [1800n, 3600n, "0x0000000000000000000000000000000000000000"]));
+const probe = deployed ? null : await ensure("probe", probeArt, []);
 
 // --- (a) TXPARAM in a self-paid transaction from the deployer, whose nonce is not zero
 async function decodeProbe(receipt) {
@@ -69,7 +69,7 @@ async function decodeProbe(receipt) {
   }
   return out;
 }
-if (!state.selfPaid) {
+if (!deployed && !state.selfPaid) {
   const account = privateKeyToAccount(deployer);
   const nonce = BigInt(await rpc(ETHREX, "eth_getTransactionCount", [account.address, "latest"]));
   const tx = await signTx(profile, newTx({
@@ -88,7 +88,7 @@ if (!state.selfPaid) {
 
 // --- the sponsor, unstaked for now
 const MAX_COST = parseEther("0.01");
-const sponsor = await ensure("sponsor", sponsorArt, [swaps, makerAddress, REGISTRY, MAX_COST], parseEther("0.05"));
+const sponsor = deployed?.sponsor.address ?? (await ensure("sponsor", sponsorArt, [swaps, makerAddress, REGISTRY, MAX_COST], parseEther("0.05")));
 
 // --- a swap of the maker's whose user key is test vector 260 (k public), maker key vector 261
 const vectors = JSON.parse(fs.readFileSync(path.join(ROOT, "contracts/test/vectors/spend_auth_g.json"), "utf8")).vectors;
@@ -124,10 +124,10 @@ if (hashTerms(terms) !== (await call(swaps, swapsArt.abi, "getSwap", [id])).term
 const sponsorData = encodeFunctionData({ abi: sponsorArt.abi, functionName: "sponsor", args: [id, terms] });
 const claimData = encodeFunctionData({ abi: swapsArt.abi, functionName: "claim", args: [id, terms, BigInt(z.k)] });
 const withdrawData = encodeFunctionData({ abi: swapsArt.abi, functionName: "withdraw", args: [token, AMOUNT, user] });
-const limits = { verify: 20_000n, pay: 60_000n, payState: 0n, claim: 400_000n, claimState: 600_000n, withdraw: 100_000n, withdrawState: 300_000n };
+const limits = deployed ? CLAIM_LIMITS : { verify: 20_000n, pay: 60_000n, payState: 0n, claim: 400_000n, claimState: 600_000n, withdraw: 100_000n, withdrawState: 300_000n };
 const build = () => signTx(profile, claimTx({
   user, sponsor, swaps, sponsorData, claimData, withdrawData, limits,
-  extra: [frame(profile, "DEFAULT", { target: probe, execution: 1_500_000n })],
+  extra: deployed ? [] : [frame(profile, "DEFAULT", { target: probe, execution: 1_500_000n })],
 }), userKey);
 const tx = await build();
 const raw = encodeTx(profile, tx);
@@ -148,8 +148,8 @@ if (!state.claimed) {
   log("simulating (test vector's share)…");
   report.simulation = await attempt(() => rpc(ETHREX, "ethrex_simulateFrameTransaction", [raw, "latest", { trace: true }]));
   log("canonical mempool (ethrex eth_sendRawTransaction)…");
-  report.canonical = await attempt(() => rpc(ETHREX, "eth_sendRawTransaction", [raw]));
-  const stakeNow = (await call(REGISTRY, registryAbi, "getDepositInfo", [sponsor]))[0];
+  if (!deployed) report.canonical = await attempt(() => rpc(ETHREX, "eth_sendRawTransaction", [raw]));
+  const stakeNow = (await call(REGISTRY, REGISTRY_ABI, "getDepositInfo", [sponsor]))[0];
   if (stakeNow === 0n) {
     log("alt mempool, sponsor unstaked…");
     report.altUnstaked = await attempt(() => rpc(MEMPOOL, "eth_sendFrameTransaction", [toWire(tx)]));
@@ -159,14 +159,14 @@ if (!state.claimed) {
     save({ stake: { hash: staked.transactionHash } });
     report.stake = state.stake;
   }
-  report.stakeInfo = (await call(REGISTRY, registryAbi, "getDepositInfo", [sponsor])).map(String);
+  report.stakeInfo = (await call(REGISTRY, REGISTRY_ABI, "getDepositInfo", [sponsor])).map(String);
   const before = BigInt(await rpc(ETHREX, "eth_getBalance", [sponsor, "latest"]));
   log("alt mempool, sponsor staked…");
   report.altStaked = await attempt(() => rpc(MEMPOOL, "eth_sendFrameTransaction", [toWire(tx)]));
   if (report.altStaked.accepted) {
     const receipt = await waitReceipt(hash);
     const after = BigInt(await rpc(ETHREX, "eth_getBalance", [sponsor, "latest"]));
-    save({ claimed: { hash, block: BigInt(receipt.blockNumber), status: receipt.status, gasUsed: receipt.gasUsed, frames: receipt.frameReceipts, sponsorPaid: before - after, probe: await decodeProbe(receipt) } });
+    save({ claimed: { hash, block: BigInt(receipt.blockNumber), status: receipt.status, gasUsed: receipt.gasUsed, frames: receipt.frameReceipts, sponsorPaid: before - after, ...(deployed ? {} : { probe: await decodeProbe(receipt) }) } });
   }
 }
 report.claimed = state.claimed;
@@ -180,6 +180,6 @@ report.after = {
   userEth: BigInt(await rpc(ETHREX, "eth_getBalance", [user, "latest"])),
 };
 report.explorer = explorerLink(hash);
-const out = path.join(ROOT, `frames/runs/probe-report-${Date.now()}.json`);
+const out = path.join(ROOT, `frames/runs/${deployed ? "smoke" : "probe"}-report-${Date.now()}.json`);
 fs.writeFileSync(out, JSON.stringify(report, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2));
 log(`report: ${out}`);

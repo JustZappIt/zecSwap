@@ -20,6 +20,10 @@ export const MEMPOOL = process.env.FRAMES_MEMPOOL_URL ?? "https://altmempool.for
 export const explorerLink = (hash) => `https://explorer.altmempool.wtf/tx/${hash}`;
 export const REGISTRY = "0xd51c04d7a0b01124e84de152f4e56d9eecb22d2f";
 export const ENTRY_POINT = "0x00000000000000000000000000000000000000aa";
+export const REGISTRY_ABI = [
+  { type: "function", name: "getDepositInfo", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }, { type: "uint32" }, { type: "uint64" }] },
+];
+export const MANIFEST = path.join(ROOT, "deployments/frames-devnet.json");
 /** Legacy transactions: the base fee is 7 wei. */
 export const LEGACY_GAS_PRICE = 2_000_000n;
 /** Frame transactions: what the workshop pays. */
