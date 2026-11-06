@@ -51,7 +51,7 @@ enum Command {
     },
     /// Runs the user side of a swap against a maker, resuming an unfinished one. It pays the
     /// account whose key is in `USER_PRIVATE_KEY`, or with `--relayer`, this seed's Railgun
-    /// wallet.
+    /// wallet, or with `--frames`, the swap's own address through a sponsored frame transaction.
     Swap {
         #[arg(
             long,
@@ -74,6 +74,21 @@ enum Command {
         /// The most the relayer may keep, in token base units.
         #[arg(long, default_value_t = 2_000_000)]
         max_fee: u128,
+        /// Claim with an EIP-8141 frame transaction the swap's own key sends to this ERC-8421
+        /// mempool node, its gas paid by `--sponsor`: the EF's frames devnet only (docs/frames.md).
+        #[arg(
+            long,
+            env = "ZECSWAP_FRAMES_RPC",
+            requires = "sponsor",
+            conflicts_with = "relayer"
+        )]
+        frames: Option<String>,
+        /// The ClaimSponsor contract that pays a frame claim's gas.
+        #[arg(long, env = "ZECSWAP_SPONSOR")]
+        sponsor: Option<Address>,
+        /// Where a frame claim pays; the swap's own address if not given.
+        #[arg(long, requires = "frames")]
+        frames_to: Option<Address>,
         /// Spend Privacy Pass tokens from this issuer where the maker takes them.
         #[arg(long, env = "ZECSWAP_ISSUER_URL")]
         issuer: Option<String>,
@@ -207,12 +222,20 @@ async fn main() -> Result<()> {
             units,
             relayer,
             max_fee,
+            frames,
+            sponsor,
+            frames_to,
             issuer,
             device,
         } => {
-            let payee = match relayer {
-                Some(relayer) => swap::Payee::Railgun { relayer, max_fee },
-                None => swap::Payee::Account(
+            let payee = match (relayer, frames, sponsor) {
+                (Some(relayer), _, _) => swap::Payee::Railgun { relayer, max_fee },
+                (None, Some(mempool), Some(sponsor)) => swap::Payee::Frames {
+                    mempool,
+                    sponsor,
+                    to: frames_to,
+                },
+                _ => swap::Payee::Account(
                     std::env::var("USER_PRIVATE_KEY")
                         .context("USER_PRIVATE_KEY is not set")?
                         .parse()

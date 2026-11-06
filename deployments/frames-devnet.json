@@ -1,0 +1,57 @@
+{
+  "chainId": 1337,
+  "chain": "the EF's EIP-8141 alt-mempool devnet: frame transactions exist nowhere else (docs/frames.md)",
+  "contract": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+  "token": "0x6784ac633ba2a44b143599e5d7124cd01da94f01",
+  "railgun": "0x0000000000000000000000000000000000000000",
+  "minWindowSeconds": 1800,
+  "lateWindowSeconds": 3600,
+  "deploymentTransaction": "0xc190f6905e1470e09e030c4ec629ed86e41b6162bb0286b4e0aa693730092f9b",
+  "deploymentBlock": 4305,
+  "deploymentGasUsed": 27474350,
+  "tokenTransaction": "0xffbff9b9d7aaf1f9c68a88da47d726ea0e87ca2c39683275bf6648ff0799b6b9",
+  "zcashNetwork": "testnet",
+  "maker": "0xd13371Dbb11b61Ad22b9AB120D659f42c00a3233",
+  "sponsor": {
+    "address": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+    "transaction": "0x8706efb3f6e0dd6c220de18a9721e669874c1baa55e6d979525194bd2493f313",
+    "maxCostWei": "5000000000000000",
+    "fundingWei": "200000000000000000",
+    "stake": {
+      "registry": "0xd51c04d7a0b01124e84de152f4e56d9eecb22d2f",
+      "wei": "12000000000000000",
+      "unstakeDelaySeconds": 86400,
+      "transaction": "0x8bba660726650e54cc0786677651490109284e7f7d130effba36b04fa661fb7b"
+    }
+  },
+  "rpc": "https://altmempool.forshtat.com",
+  "mempool": "https://altmempool.forshtat.com/rpc",
+  "explorer": "https://explorer.altmempool.wtf/",
+  "block1Hash": "0x0ffd85bd5d44d9eda64978049debdb00da15b7d4ac5be004fc993aee51ecc559",
+  "deployer": "0x63CE263dDD0d772E01F496DC43423651Be4b9772",
+  "sourceCommit": "b3fcd2d47dee84ca1a21e310aeb8a37318804d38",
+  "deployedAt": "2026-11-06",
+  "status": "active",
+  "liveSwap": {
+    "swap": "0x7d7b2585886561254901002facd066f4d7c8dab418e9d0834b0293b88b7af822",
+    "route": "zecswap-cli swap --frames against a local maker: 1 tUSD for testnet ZEC",
+    "opened": "0x01012e8e9aebfe1348d0e9ff01502fab8eada1073f1b90ed9091d65703cec93f",
+    "deposit": {
+      "zcashTransaction": "9356608ae63136369aac97cac272503ef24b410a1e68b3d41f8b2636bdcb4f00",
+      "zat": 202021
+    },
+    "ready": "0x3ceceabaae4891fa544ea191ae8de2cb21c347dd07ba890fc953926891c6c2c9",
+    "claimed": {
+      "transaction": "0xf0465fe7fa2054feac2d3d63491b7674f1aa5f3fa080f882a9c6305cbc89bc52",
+      "block": 4674,
+      "sender": "0x7e3252de57df5d1ee5b4842896e150a635248e2e",
+      "payer": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+      "gasUsed": 483678,
+      "admitted": "2026-11-06T14:16:15Z",
+      "mined": "2026-11-06T14:16:25Z",
+      "senderEthBalance": "0",
+      "paid": "1000000"
+    },
+    "makerSweep": "cae3d48e769ac214f6c9fff0b06eead1ea8537119eaed40443b157341eec42a4"
+  }
+}

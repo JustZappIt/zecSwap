@@ -1,0 +1,41 @@
+# A maker for the EF's frames devnet (chain 1337), run locally: forward swaps of testnet ZEC for the
+# devnet's tUSD, paid to the swap's own address, which claims by a sponsored frame transaction
+# (docs/frames.md). Copy it to target/frames-maker/maker.toml and fill in sweep_to; the contract and
+# token are deployments/frames-devnet.json's. Its secrets come from .env.frames: MAKER_PRIVATE_KEY
+# (the key the sponsor names as its maker), MAKER_ROOT_SECRET and MAKER_TICKET_SECRET.
+#   set -a; . ./.env.frames; set +a
+#   cargo run -p zecswap-maker -- --config target/frames-maker/maker.toml add-inventory 20000000 --mint
+#   cargo run -p zecswap-maker -- --config target/frames-maker/maker.toml
+network = "testnet"
+# The devnet's ethrex node. Its mempool gateway proxies no eth_feeHistory, which sends need.
+evm_rpc = "https://altmempool.forshtat.com"
+contract = "0x09e06e55eb0600f05e7352a02620a95f420129f5"
+token = "0x6784ac633ba2a44b143599e5d7124cd01da94f01"
+# A testnet u-address you hold: every swap's ZEC is swept to it.
+sweep_to = "<utest1...>"
+confirmations = 2
+# Blocks come every 6 seconds.
+evm_confirmations = 2
+data_dir = "target/frames-maker"
+listen = "127.0.0.1:8899"
+# The sponsor pays one claim per swap of this maker's: this bounds how many wait on deposits.
+max_awaiting_deposit = 5
+
+# 500 tUSD a ZEC, swaps of 1 to 20 tUSD.
+[pricing]
+price_per_zec = 500000000
+spread_bps = 100
+unit = 1000000
+max_units = 20
+
+# For the devnet's 30-minute MIN_WINDOW and 1-hour LATE_WINDOW: t0 45 minutes after the open, so the
+# open has 10 minutes to land, and t1 30 minutes after t0. The client claims through the alt
+# mempool only with 15 minutes of its window left.
+[timing]
+quote_ttl = 300
+t0_after = 2700
+t1_after = 4500
+cancel_after = 900
+t0_margin = 600
+reveal_margin = 300
+tick = 15

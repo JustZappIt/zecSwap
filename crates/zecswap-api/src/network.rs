@@ -54,6 +54,13 @@ const TESTNET: &[Chain] = &[
         railgun: OnChain::None,
         token: None,
     },
+    // The EF's EIP-8141 alt-mempool devnet, where claims go out as sponsored frame transactions
+    // (docs/frames.md).
+    Chain {
+        id: 1_337,
+        railgun: OnChain::None,
+        token: None,
+    },
     // anvil.
     Chain {
         id: 31_337,
@@ -226,6 +233,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(Network::Testnet.check(84_532, Address::ZERO, any), Ok(()));
+        assert_eq!(Network::Testnet.check(1_337, Address::ZERO, any), Ok(()));
         assert_eq!(Network::Testnet.check(31_337, any, any), Ok(()));
         assert_eq!(Network::Mainnet.check(1, MAINNET_RAILGUN, USDC), Ok(()));
         assert_eq!(Network::Mainnet.check(1, Address::ZERO, USDC), Ok(()));
@@ -251,6 +259,14 @@ mod tests {
             Err(Mismatch::Railgun(Network::Testnet, SEPOLIA_RAILGUN))
         );
         assert_eq!(
+            Network::Testnet.check(1_337, SEPOLIA_RAILGUN, any),
+            Err(Mismatch::Railgun(Network::Testnet, SEPOLIA_RAILGUN))
+        );
+        assert_eq!(
+            Network::Mainnet.check(1_337, Address::ZERO, USDC),
+            Err(Mismatch::Chain(Network::Mainnet, 1_337))
+        );
+        assert_eq!(
             Network::Mainnet.check(1, any, USDC),
             Err(Mismatch::Railgun(Network::Mainnet, any))
         );
@@ -271,6 +287,7 @@ mod tests {
             Some(address!("Ac9f360Ae85469B27aEDdEaFC579Ef2d052aD405"))
         );
         assert_eq!(Network::Testnet.relay_adapt(84_532), None);
+        assert_eq!(Network::Testnet.relay_adapt(1_337), None);
         assert_eq!(Network::Testnet.relay_adapt(31_337), None);
         assert_eq!(Network::Mainnet.relay_adapt(11_155_111), None);
     }

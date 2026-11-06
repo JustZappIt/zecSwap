@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use zcash_address::ZcashAddress;
 use zcash_protocol::consensus::Parameters;
+use zecswap_chain::evm::frames::{Mempool, explorer_link};
 use zecswap_chain::evm::{PrivateKeySigner, Settlement, Stage};
 use zecswap_chain::zcash::{AccountUuid, TxId};
 use zecswap_client::{MakerApi, RelayerApi, Route, User, UserSwap};
@@ -34,6 +35,12 @@ pub(crate) enum Payee {
     Account(PrivateKeySigner),
     /// The Railgun wallet of this seed, through a relayer.
     Railgun { relayer: String, max_fee: u128 },
+    /// The swap's own address, or `to`, by a frame transaction `sponsor` pays for.
+    Frames {
+        mempool: String,
+        sponsor: Address,
+        to: Option<Address>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +56,7 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         Some(tokens) => api.with_tokens(tokens.clone()),
         None => api,
     };
+    let frames = matches!(args.payee, Payee::Frames { .. });
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -59,6 +67,18 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
             Route::Railgun {
                 relayer: RelayerApi::new(relayer)?,
                 max_fee,
+            },
+        ),
+        Payee::Frames {
+            mempool,
+            sponsor,
+            to,
+        } => (
+            Settlement::read_only(&args.rpc, args.contract)?,
+            Route::Frames {
+                mempool: Mempool::new(&mempool)?,
+                sponsor,
+                to,
             },
         ),
     };
@@ -117,8 +137,8 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         let chain = user.state(&run.swap).await?;
         let now = user.settlement().now().await?;
         match chain.stage {
-            Stage::Ready | Stage::Claimed => return claim(ctx, &user, &mut run).await,
-            Stage::Open if now >= chain.t0 => return claim(ctx, &user, &mut run).await,
+            Stage::Ready | Stage::Claimed => return claim(ctx, &user, &mut run, frames).await,
+            Stage::Open if now >= chain.t0 => return claim(ctx, &user, &mut run, frames).await,
             Stage::Refunded => return sweep_back(ctx, &user, &mut run).await,
             Stage::Open => println!("  waiting for the maker to confirm the deposit"),
         }
@@ -151,10 +171,15 @@ async fn deposit(ctx: &mut Session, run: &mut Run, joint: &JointAccount) -> Resu
     Ok(())
 }
 
-async fn claim(ctx: &mut Session, user: &User, run: &mut Run) -> Result<()> {
+async fn claim(ctx: &mut Session, user: &User, run: &mut Run, frames: bool) -> Result<()> {
     let paid = user.claim(&run.swap).await?;
     let to = match user.settlement().account() {
         Some(account) => format!("paid {} to {account}", paid.amount),
+        None if frames => format!(
+            "paid {} by a sponsored frame transaction ({})",
+            paid.amount,
+            paid.tx.map(explorer_link).unwrap_or_default()
+        ),
         None => format!("shielded {} into {}", paid.amount, user.railgun().address()),
     };
     // A request that timed out may have paid, in a transaction no answer named.

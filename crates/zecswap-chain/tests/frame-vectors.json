@@ -1,0 +1,262 @@
+{
+  "profile": "ethrex-eip8141-tracer",
+  "vectors": [
+    {
+      "name": "the sponsored claim's shape",
+      "chainId": 1337,
+      "nonce": "0x0",
+      "sender": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+      "maxPriorityFeePerGas": "0x77359400",
+      "maxFeePerGas": "0x77359400",
+      "frames": [
+        {
+          "mode": 1,
+          "flags": 2,
+          "target": null,
+          "execution": "0x4e20",
+          "state": "0x0",
+          "value": "0x0",
+          "data": "0x"
+        },
+        {
+          "mode": 1,
+          "flags": 1,
+          "target": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+          "execution": "0xea60",
+          "state": "0x0",
+          "value": "0x0",
+          "data": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+        },
+        {
+          "mode": 2,
+          "flags": 0,
+          "target": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+          "execution": "0x61a80",
+          "state": "0x493e0",
+          "value": "0x0",
+          "data": "0x0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+        },
+        {
+          "mode": 2,
+          "flags": 0,
+          "target": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+          "execution": "0x186a0",
+          "state": "0x249f0",
+          "value": "0x0",
+          "data": "0x69696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969"
+        }
+      ],
+      "sigHash": "0x15c4905bc73c8047aa68ae1f8e3640c5950eb279788677658cdbee74adb860f8",
+      "signature": "0x007be289ceb900bbd9e5ae35e172665d951b953e4d6785e50f861eb5eb11a6a0b22a243c700770932b018e50ca92fbc5ee8ded867cb459004108cfb39df7e594d8",
+      "raw": "0x06f9047c820539c18080942c7536e3605d9c16a7a3d7b1898e529396a65c23f90406ca010280c4824e20808080f901a401019468cb7bf7010ce289bea39437482db0eaa342f91bc482ea608080b90184ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababf901c802809409e06e55eb0600f05e7352a02620a95f420129f5c883061a80830493e080b901a40e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0ef88702809409e06e55eb0600f05e7352a02620a95f420129f5c8830186a0830249f080b86469696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969f848f846018080b841007be289ceb900bbd9e5ae35e172665d951b953e4d6785e50f861eb5eb11a6a0b22a243c700770932b018e50ca92fbc5ee8ded867cb459004108cfb39df7e594d8cb8477359400847735940080c0c0",
+      "hash": "0xe7f3071104aa14495385ee2b04e2df51330ec8af1e5a24392ee42f231e0ab75f",
+      "wire": {
+        "chainId": "0x539",
+        "nonceKeys": [
+          "0x0"
+        ],
+        "nonceSeq": "0x0",
+        "sender": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+        "frames": [
+          {
+            "mode": 1,
+            "flags": 2,
+            "target": null,
+            "limits": {
+              "execution": "0x4e20",
+              "state": "0x0"
+            },
+            "value": "0x0",
+            "data": "0x"
+          },
+          {
+            "mode": 1,
+            "flags": 1,
+            "target": "0x68cb7bf7010ce289bea39437482db0eaa342f91b",
+            "limits": {
+              "execution": "0xea60",
+              "state": "0x0"
+            },
+            "value": "0x0",
+            "data": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          },
+          {
+            "mode": 2,
+            "flags": 0,
+            "target": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+            "limits": {
+              "execution": "0x61a80",
+              "state": "0x493e0"
+            },
+            "value": "0x0",
+            "data": "0x0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+          },
+          {
+            "mode": 2,
+            "flags": 0,
+            "target": "0x09e06e55eb0600f05e7352a02620a95f420129f5",
+            "limits": {
+              "execution": "0x186a0",
+              "state": "0x249f0"
+            },
+            "value": "0x0",
+            "data": "0x69696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969"
+          }
+        ],
+        "signatures": [
+          {
+            "scheme": 1,
+            "signer": "0x",
+            "msg": "0x",
+            "signature": "0x007be289ceb900bbd9e5ae35e172665d951b953e4d6785e50f861eb5eb11a6a0b22a243c700770932b018e50ca92fbc5ee8ded867cb459004108cfb39df7e594d8"
+          }
+        ],
+        "fees": {
+          "maxPriorityFeePerGas": "0x77359400",
+          "maxFeePerGas": "0x77359400",
+          "maxFeePerBlobGas": "0x0"
+        },
+        "blobVersionedHashes": [],
+        "recentRootReferences": []
+      }
+    },
+    {
+      "name": "every field zero or empty",
+      "chainId": 1337,
+      "nonce": "0x0",
+      "sender": "0xfcad0b19bb29d4674531d6f115237e16afce377c",
+      "maxPriorityFeePerGas": "0x0",
+      "maxFeePerGas": "0x0",
+      "frames": [
+        {
+          "mode": 0,
+          "flags": 0,
+          "target": null,
+          "execution": "0x0",
+          "state": "0x0",
+          "value": "0x0",
+          "data": "0x"
+        }
+      ],
+      "sigHash": "0x1fb7ddf3d0ff872c43c17ecf4c0b298778c11f39c9547706e11d510aa640f349",
+      "signature": "0x0135b60bfc964873b502efe2c6b7e769b1f2a5c917296ace793057cf72b3fc144a48b3043fdae15c5494dea7ada2c251091fc19690a9e16dd47f2dff165e5b495d",
+      "raw": "0x06f875820539c1808094fcad0b19bb29d4674531d6f115237e16afce377cc9c8808080c280808080f848f846018080b8410135b60bfc964873b502efe2c6b7e769b1f2a5c917296ace793057cf72b3fc144a48b3043fdae15c5494dea7ada2c251091fc19690a9e16dd47f2dff165e5b495dc3808080c0c0",
+      "hash": "0x09c4ece7f2adb24dea282c3ec0a71e18640a92306cb3bb73aa88b91ff75d096e",
+      "wire": {
+        "chainId": "0x539",
+        "nonceKeys": [
+          "0x0"
+        ],
+        "nonceSeq": "0x0",
+        "sender": "0xfcad0b19bb29d4674531d6f115237e16afce377c",
+        "frames": [
+          {
+            "mode": 0,
+            "flags": 0,
+            "target": null,
+            "limits": {
+              "execution": "0x0",
+              "state": "0x0"
+            },
+            "value": "0x0",
+            "data": "0x"
+          }
+        ],
+        "signatures": [
+          {
+            "scheme": 1,
+            "signer": "0x",
+            "msg": "0x",
+            "signature": "0x0135b60bfc964873b502efe2c6b7e769b1f2a5c917296ace793057cf72b3fc144a48b3043fdae15c5494dea7ada2c251091fc19690a9e16dd47f2dff165e5b495d"
+          }
+        ],
+        "fees": {
+          "maxPriorityFeePerGas": "0x0",
+          "maxFeePerGas": "0x0",
+          "maxFeePerBlobGas": "0x0"
+        },
+        "blobVersionedHashes": [],
+        "recentRootReferences": []
+      }
+    },
+    {
+      "name": "a later nonce, value, and fees apart",
+      "chainId": 1337,
+      "nonce": "0x12c",
+      "sender": "0xfcad0b19bb29d4674531d6f115237e16afce377c",
+      "maxPriorityFeePerGas": "0x1",
+      "maxFeePerGas": "0x1a13b8607",
+      "frames": [
+        {
+          "mode": 1,
+          "flags": 3,
+          "target": null,
+          "execution": "0x7530",
+          "state": "0x0",
+          "value": "0x0",
+          "data": "0x"
+        },
+        {
+          "mode": 2,
+          "flags": 0,
+          "target": "0x00000000000000000000000000000000000000aa",
+          "execution": "0xc350",
+          "state": "0x30d40",
+          "value": "0x38d7ea4c68000",
+          "data": "0x01"
+        }
+      ],
+      "sigHash": "0xbf8d877d4eedbcc37b71e59148acc0e6ee37c5686bbbe0cab72242281f998ace",
+      "signature": "0x014f48f59702d5d0e7b7679c02b8ad73cb72370bd099cdd77cce8f556dc31376be35370e8568a73799b3afaf954efc12c5c4fa385e79e894c2d62d33f18d0f43ef",
+      "raw": "0x06f8a7820539c18082012c94fcad0b19bb29d4674531d6f115237e16afce377cf4ca010380c4827530808080e802809400000000000000000000000000000000000000aac782c35083030d4087038d7ea4c6800001f848f846018080b841014f48f59702d5d0e7b7679c02b8ad73cb72370bd099cdd77cce8f556dc31376be35370e8568a73799b3afaf954efc12c5c4fa385e79e894c2d62d33f18d0f43efc8018501a13b860780c0c0",
+      "hash": "0x58ed937fc0978b038592d17b70547cbd042a9483e25d4d07fd121992d101d48c",
+      "wire": {
+        "chainId": "0x539",
+        "nonceKeys": [
+          "0x0"
+        ],
+        "nonceSeq": "0x12c",
+        "sender": "0xfcad0b19bb29d4674531d6f115237e16afce377c",
+        "frames": [
+          {
+            "mode": 1,
+            "flags": 3,
+            "target": null,
+            "limits": {
+              "execution": "0x7530",
+              "state": "0x0"
+            },
+            "value": "0x0",
+            "data": "0x"
+          },
+          {
+            "mode": 2,
+            "flags": 0,
+            "target": "0x00000000000000000000000000000000000000aa",
+            "limits": {
+              "execution": "0xc350",
+              "state": "0x30d40"
+            },
+            "value": "0x38d7ea4c68000",
+            "data": "0x01"
+          }
+        ],
+        "signatures": [
+          {
+            "scheme": 1,
+            "signer": "0x",
+            "msg": "0x",
+            "signature": "0x014f48f59702d5d0e7b7679c02b8ad73cb72370bd099cdd77cce8f556dc31376be35370e8568a73799b3afaf954efc12c5c4fa385e79e894c2d62d33f18d0f43ef"
+          }
+        ],
+        "fees": {
+          "maxPriorityFeePerGas": "0x1",
+          "maxFeePerGas": "0x1a13b8607",
+          "maxFeePerBlobGas": "0x0"
+        },
+        "blobVersionedHashes": [],
+        "recentRootReferences": []
+      }
+    }
+  ]
+}

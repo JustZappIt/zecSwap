@@ -1,0 +1,14 @@
+{
+  "name": "zecswap-frames",
+  "private": true,
+  "type": "module",
+  "description": "Sponsored claims through EIP-8141 frame transactions, on the EF's alt-mempool devnet (chain 1337) only",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@forshtat/hegota-support": "0.0.1",
+    "viem": "^2.57.10"
+  }
+}
